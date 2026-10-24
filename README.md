@@ -5,9 +5,10 @@ the **Wraith W75** Hall-effect (magnetic switch) keyboard. It talks to the
 keyboard directly over USB HID. No browser, no account, and no third-party
 analytics are involved.
 
-The goal is a desktop app (Tauri 2). This repository currently contains the
-first phase: a Rust library and a **read-only** command line tool that shows
-the keyboard's settings and makes lossless backups of them.
+The goal is a desktop app (Tauri 2). This repository currently contains a Rust
+library and the `openwraith` command line tool. It shows the keyboard's
+settings, makes lossless backups of one or all four onboard profiles,
+restores them, and changes triggers and the main light.
 
 > **Disclaimer.** OpenWraith is an independent project. It is **not affiliated
 > with, endorsed by, or supported by Wraith** or the keyboard's manufacturer.
@@ -17,52 +18,85 @@ the keyboard's settings and makes lossless backups of them.
 > configurator; no vendor code is included (see
 > [docs/PROTOCOL.md](docs/PROTOCOL.md)). Use at your own risk.
 
-## Status: Phase 1 (read-only)
+## Status: Phase 2 (backup, restore, edits)
 
 | Works now | Planned |
 |---|---|
-| `openwraith list`: find connected keyboards | Restore a backup (after the write commands are verified on real hardware) |
-| `openwraith info`: model, firmware, active profile, capabilities | Editing triggers, lighting, keymap and macros |
-| `openwraith backup`: lossless backup to a JSON file | Desktop app (Tauri 2) |
-| `openwraith show`: triggers, lighting, keymap, macros as tables or JSON | Other models of the family (W60, W65, W100) |
+| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros (read-only) | Desktop app (Tauri 2) |
+| `openwraith backup`: lossless backup of the active profile (read-only) | Keymap and macro editing |
+| `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | SOCD, switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
+| `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | Other models of the family (W60, W65, W100) |
+| `openwraith set trigger` / `set light`: actuation, Rapid Trigger, main light | |
+| `openwraith profile [select N]`: show or switch the active profile | |
 
 Supported hardware: Wraith W75 (product code `W75HEARGB`) connected with the
-USB cable. The protocol was checked against USB captures of firmware
-`V3.22.07` (USB `2e3c:c368`); **OpenWraith itself has not yet been run on
-real hardware**, only against replayed captures. The product IDs
-`2e3c:c365` to `2e3c:c367` are accepted as the spec allows, but unverified.
+USB cable, firmware `V3.22.07` (USB `2e3c:c368`). The read-only commands were
+checked on the maintainer's keyboard. **The commands that write (Phase 2)
+have so far only run against a device simulator; the hardware tests
+([docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)) are still to be done.** The product IDs `2e3c:c365` to `2e3c:c367` are accepted as the
+spec allows, but unverified.
 
 ## Safety
 
-- **Phase 1 never changes the keyboard.** The code can only build *read*
-  requests: the type that a transport sends has no public constructor, and
-  every way to create one is a documented read. There is no write, reset or
-  calibration code at all. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Read-only commands stay read-only.** `list`, `info`, `show`, `profile`
+  (without `select`), `restore --dry-run` and `backup` (without
+  `--all-profiles`) open the keyboard through a transport type that cannot
+  send a write at all (checked by the compiler, see
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+- **These commands write:** `profile select`, `set`, `restore`, and
+  `backup --all-profiles` (profile switches only). They can only send the nine
+  write commands that were confirmed on real hardware (docs/PROTOCOL.md
+  section 3). Reset, calibration, travel test, SOCD, switch types, side light,
+  polling rate and Win-Lock writes cannot even be built.
+- **A safety backup comes first.** Before changing any setting (`set`,
+  `restore`), OpenWraith reads the keyboard, saves a safety backup, reads the
+  saved file back to check it, and only then shows what will change and asks
+  `[y/N]` (or takes `--yes`). `profile select` and `backup --all-profiles`
+  only switch profiles, change no setting and do not ask. Every write is sent one packet at a time, waiting for the
+  keyboard's acknowledgement, and is checked by reading it back. At the end
+  OpenWraith prints the exact command that undoes the change:
+  `openwraith restore <safety backup>`. Nothing is ever rolled back
+  automatically.
+- **Where safety backups go:** `%LOCALAPPDATA%\OpenWraith\safety-backups` on
+  Windows, `$XDG_DATA_HOME/openwraith/safety-backups` (else
+  `~/.local/share/openwraith/safety-backups`) on Linux,
+  `~/Library/Application Support/OpenWraith/safety-backups` on macOS. Choose
+  another directory with `--safety-dir DIR` or the `OPENWRAITH_SAFETY_DIR`
+  environment variable. Safety backups are never deleted automatically.
+- **Close the wraith.software tab completely** before running any command,
+  and especially one that writes. Switching to another tab is not enough:
+  browsers slow down timers in background tabs, so a hidden tab may not be
+  noticed. The vendor site receives OpenWraith's replies too; it then
+  reloads, rewrites its stored copy of your settings, sends its own (no-op)
+  trigger write and can file per-key values under the wrong keys
+  (PROTOCOL.md 4.5.1, 4.11.2, 6.5). Before writing, OpenWraith listens for
+  2 seconds and refuses if it sees another program; it warns after any
+  command that noticed one.
 - **Keyboard resets are never answered.** Holding Fn + Space for a few seconds
   resets the keyboard, which then sends a reset notification. The vendor site
-  answers it with a reset command of its own; OpenWraith stops and tells you
-  instead.
-- **Close the vendor web configurator first.** Close every browser tab of the
-  vendor configurator before running `openwraith info`, `backup` or `show`.
-  Some of its write acknowledgements are byte-identical to OpenWraith's
-  replies, so they cannot be filtered out
-  ([PROTOCOL.md](docs/PROTOCOL.md) 4.7.9). The site also receives
-  OpenWraith's replies: it then reloads, rewrites its stored copy of your
-  settings, sends a (no-op) trigger write and can file per-key trigger values
-  under the wrong keys (PROTOCOL.md 4.5.1, 4.11.2, 6.5). OpenWraith prints a
-  warning when it notices another program; reload the site before changing
-  anything there.
-- **A backup covers the active onboard profile only.** The W75 has four
-  onboard profiles; reading another one requires switching profiles, which is
-  a write and is not part of Phase 1. Triggers and the main light are per
-  profile (seen in the captures). The backup also contains the custom colour
-  tables, polling rate and switch types, which are probably global
-  (unverified, PROTOCOL.md open question Q3).
-- To back up another profile, switch to it (in the vendor configurator, or
-  with the keyboard's profile keys, labelled Fn + 1..4; unverified), close the
-  configurator and run `openwraith backup` again.
-- Do not switch profiles while a backup runs. OpenWraith re-reads the active
-  profile at the end and fails if it changed.
+  answers it with a reset command of its own; OpenWraith stops at once and
+  sends nothing more, not even a switch back to the original profile.
+- **What a restore writes.** Exactly the backup's bytes, table by table:
+  triggers (one key per packet), dead band, keymaps, macros, cleared
+  advanced keys, custom colour table 1 and the main light. Tables without a
+  confirmed write command (side light, custom colour table 2, SOCD, switch
+  types, polling rate, Win-Lock / 6-key) are compared and listed as "not
+  written". Restore never adds defaults that are not in the backup (the
+  vendor site writes its own knob defaults into the keymap; OpenWraith does
+  not). If the keymaps, macros or advanced keys cannot be restored as a whole
+  (for example because a non-empty advanced key would need an unconfirmed
+  write format), that whole group is skipped and the plan says why.
+- **Do not switch profiles on the keyboard while OpenWraith runs.** It checks
+  the active profile before every table and stops if it changed.
+- **Shared tables are checked at the end.** For custom colour table 1, the
+  dead band, the Fn keymap and the advanced keys it is not known yet whether
+  each profile has its own copy. When a restore writes one of them and covers
+  several profiles, it reads every profile again at the end and fails if a
+  table no longer holds the backup's values (the "final check"). A restore
+  limited to some profiles warns that such a write may change the others.
+- Press **Ctrl+C** to stop: OpenWraith finishes the current table, switches
+  back to the original profile and reports what was written. A second Ctrl+C
+  stops immediately. The final check of a restore is not interrupted.
 
 ## Build (Windows)
 
@@ -98,10 +132,13 @@ macOS should work through hidapi but is untested.
 
 ## Usage
 
+Read-only:
+
 ```text
 openwraith list                         # connected keyboards (nothing is opened)
 openwraith info                         # model, firmware, profile, capabilities
-openwraith backup                       # writes openwraith-W75HEARGB-<UTC time>.owbackup.json
+openwraith profile                      # the active onboard profile
+openwraith backup                       # active profile -> openwraith-W75HEARGB-<UTC time>.owbackup.json
 openwraith backup -o my-w75.owbackup.json
 openwraith show triggers                # actuation / Rapid Trigger / dead band per key
 openwraith show light                   # light effect and per-key colour tables
@@ -109,11 +146,46 @@ openwraith show keymap                  # remapped keys on the base and Fn layer
 openwraith show macros                  # the ten macro slots
 openwraith show all --from my-w75.owbackup.json   # read a backup instead of the keyboard
 openwraith show triggers --json         # machine-readable output
+openwraith restore my-w75.owbackup.json --dry-run # compare a backup with the keyboard
 ```
 
+Writing. `set` and `restore` save a safety backup, show the plan and ask
+before they change a setting (unless `--yes`); `profile select` and
+`backup --all-profiles` only switch profiles and do not ask:
+
+```text
+openwraith backup --all-profiles -o all.owbackup.json   # all four profiles (profile switches only)
+openwraith profile select 2                              # switch the active profile
+openwraith set trigger W --actuation 1.20                # actuation point
+openwraith set trigger W A S D --rapid-trigger 0.30      # Rapid Trigger, same press / release
+openwraith set trigger W --rapid-trigger 0.30/0.50       # separate press / release
+openwraith set trigger "Caps Lock" --no-rapid-trigger
+openwraith set light --mode static --color 0000ff --brightness 4
+openwraith restore all.owbackup.json                     # every profile in the backup
+openwraith restore all.owbackup.json --profile 2         # only profile 2
+```
+
+Keys are given as `openwraith show triggers` prints them (case-insensitive:
+`W`, `"Caps Lock"`, `L-Shift`), as an index (`#46`) or a position (`r2c2`).
+Distances are millimetres in steps of 0.02 mm. Light modes are the ones the
+keyboard lists (`static`, `breath`, `wave`, ...) and `custom` (the per-key
+colour table).
+
+`restore` options: `--dry-run` only compares (it reads the active profile and
+never writes; add `--against FILE` to compare with another backup instead of
+the keyboard), `--profile N` (repeatable) limits the restore to some profiles,
+`--packets` prints every packet in hex, `--json` prints the plan and the result
+as JSON (when it asks, the plan is shown on stderr before the question),
+`--allow-firmware-mismatch` is needed when the keyboard runs other firmware
+than the backup was made with.
+
 Global options: `--device <PATH>` picks a keyboard when several are connected
-(paths come from `openwraith list`), `--verbose` prints session statistics.
-`backup` refuses to overwrite an existing file unless `--force` is given.
+(paths come from `openwraith list`), `--verbose` prints session statistics,
+`--safety-dir DIR` chooses where safety backups go. `backup` refuses to
+overwrite an existing file unless `--force` is given. Exit codes: 0 when
+everything planned was written and verified (or there was nothing to do), 1
+on a failure or when the change was not confirmed (the output says whether
+anything was written), 2 for a usage error.
 
 **How sure are the values?** Decoded fields follow the confidence labels of
 [docs/PROTOCOL.md](docs/PROTOCOL.md). In the text output, a `*` marks values
@@ -140,6 +212,39 @@ Triggers (active profile 1)
 * meaning taken from the vendor configurator's code, not yet confirmed on the wire; see docs/PROTOCOL.md
 ```
 
+Example (`openwraith restore my-w75.owbackup.json --dry-run`, shortened):
+
+```text
+Restore plan (dry run: nothing is written)
+  Backup    made 2026-10-24T07:30:00Z, firmware 3.22.07
+  Keyboard  W75HEARGB, firmware 3.22.07, read 2026-10-24T17:53:28Z, active profile 1
+
+Profile 1 (active)
+  Write                                       Packets  Change
+  trigger of W (r2c2)                               1  1.70 mm, RT off -> 1.00 mm, RT 0.30 mm
+  main light with mode change (17 00, 07 00)        2  Static, colour #0000ff, brightness 4, speed 3 -> Custom (per-key), colour #ff0000, brightness 4, speed 3
+  Unchanged (the keyboard already holds the backup's values):
+    dead band, base keymap, Fn keymap, custom colours 1, side light, custom colours 2, ...
+
+Total: 2 writes (3 packets) in profile 1.
+```
+
+### After a firmware update
+
+A firmware update can reset the keyboard's settings. To get them back:
+
+1. Before updating, close the vendor site and run
+   `openwraith backup --all-profiles -o before-update.owbackup.json`.
+2. Update the firmware with the vendor's tool.
+3. Run `openwraith restore before-update.owbackup.json --dry-run
+   --allow-firmware-mismatch` and read the plan. Table formats may change with
+   a firmware update, so check that the values make sense. If the update
+   changed the keyboard's distance unit (the plan warns that the trigger
+   parameters differ), trigger and dead-band values are listed as not
+   written: the stored numbers would mean other distances.
+4. Run `openwraith restore before-update.owbackup.json
+   --allow-firmware-mismatch`, compare the plan again and answer `y`.
+
 ### Backup files
 
 A backup (`*.owbackup.json`) is pretty-printed JSON. For every read request it
@@ -153,6 +258,23 @@ written to a temporary file first and then moved into place, so an
 interrupted save never leaves a half-written file. Backups contain your
 personal configuration; the repository's `.gitignore` excludes them.
 
+There are two kinds:
+
+- **Schema 1** (`openwraith backup`): the active onboard profile plus the
+  tables whose profile scope is unverified (custom colour tables, polling
+  rate, switch types). Phase 1 versions read these files too.
+- **Schema 2** (`openwraith backup --all-profiles`): a complete read of each
+  of the four profiles. The top-level entries hold the profile that was
+  active; `profiles` holds the others. `show` and `info` show the active one;
+  add `--profile N` for another (`openwraith show triggers --from all.owbackup.json
+  --profile 2`). Older OpenWraith versions refuse these files.
+
+Triggers, the main light, the base keymap and the macros are per profile
+(seen in the captures); for the other tables the scope is not known yet, so
+restore re-reads such a table before writing it, skips it when it already
+matches, and checks every profile again at the end (PROTOCOL.md open question
+Q3).
+
 ### Trying it without a keyboard
 
 The USB captures in `captures/` can be replayed instead of a keyboard:
@@ -160,17 +282,19 @@ The USB captures in `captures/` can be replayed instead of a keyboard:
 ```text
 cargo run -p openwraith-hid --features mock --example mock_backup -- captures/capture_06_powercycle_W_persisted.json sample.owbackup.json
 cargo run -p openwraith-cli -- show all --from sample.owbackup.json
+cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against sample.owbackup.json
 ```
 
 ## Development
 
 | Path | What |
 |---|---|
-| `crates/openwraith-protocol` | Pure protocol library: framing, read requests, response matching, decoders, W75 key table. No I/O. |
-| `crates/openwraith-hid` | Transport trait, hidapi transport, read session, device summary, backup, capture-replay mock. |
+| `crates/openwraith-protocol` | Pure protocol library: framing, read requests, the nine confirmed write forms, response matching, decoders, W75 key table. No I/O. |
+| `crates/openwraith-hid` | Transports (read-only and writable), session, device summary, backups (one or all profiles), the guarded writer, restore, edits, safety backups, the capture-replay mock and the device simulator. |
 | `crates/openwraith-cli` | The `openwraith` command. |
 | `docs/PROTOCOL.md` | The protocol specification, with a confidence label on every fact. |
-| `docs/ARCHITECTURE.md` | Crate layout, read-only guarantee, data flow, adding a model. |
+| `docs/ARCHITECTURE.md` | Crate layout, how read-only paths and writes are guarded, data flow, backup format, adding a model. |
+| `docs/HARDWARE_TESTS.md` | The hardware test checklist (H0-H11) for the commands that write, run by hand. |
 | `captures/` | Real USB traffic of the maintainer's W75, used by the tests. |
 
 ```text
@@ -179,10 +303,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Every test runs against the captures through a mock transport; no test opens a
-HID device. Contributions must never copy code or data files from the vendor's
-site: work from [docs/PROTOCOL.md](docs/PROTOCOL.md) and from your own
-captures.
+Every test runs against the captures (through a mock transport) or against a
+simulated keyboard; no test opens a HID device. Contributions must never copy
+code or data files from the vendor's site: work from
+[docs/PROTOCOL.md](docs/PROTOCOL.md) and from your own captures.
 
 ## License
 
@@ -196,8 +320,10 @@ OpenWraith, **Wraith W75** manyetik (Hall-effect) klavyenin tarayıcı tabanlı
 yapılandırma sitesinin yerine geçmeyi amaçlayan açık kaynaklı bir projedir.
 Klavyeyle doğrudan USB HID üzerinden konuşur; tarayıcı, hesap veya üçüncü
 taraf analitik betiği gerekmez. Hedef bir masaüstü uygulamasıdır (Tauri 2). Bu
-depoda şu an birinci aşama var: bir Rust kütüphanesi ve klavyenin ayarlarını
-gösteren, kayıpsız yedek alan **salt okunur** bir komut satırı aracı.
+depoda şu an bir Rust kütüphanesi ve `openwraith` komut satırı aracı var. Araç
+klavyenin ayarlarını gösterir, tek profilin ya da dört onboard profilin
+hepsinin kayıpsız yedeğini alır, yedeği geri yükler, tetikleme ayarlarını ve
+ana ışığı değiştirir.
 
 > **Uyarı.** OpenWraith bağımsız bir projedir; Wraith veya üretici ile **hiçbir
 > bağlantısı yoktur, onlar tarafından onaylanmamış veya desteklenmemektedir.**
@@ -206,43 +332,84 @@ gösteren, kayıpsız yedek alan **salt okunur** bir komut satırı aracı.
 > belgelenmiştir; sitenin kodu projede yer almaz. Kullanım sorumluluğu size
 > aittir.
 
-**Durum: Faz 1 (salt okunur).** `list` (bağlı klavyeleri listeler, hiçbirini
-açmaz), `info` (model, firmware, aktif profil, özellikler), `backup` (JSON
-dosyasına kayıpsız yedek) ve `show` (tetikleme, ışık, tuş ataması, makrolar;
-tablo veya `--json`) komutları hazır. Yedeği geri yükleme, ayar değiştirme ve
-masaüstü uygulaması sonraki aşamalarda gelecek. Protokol, V3.22.07
-firmware'li bir klavyenin (USB `2e3c:c368`) USB kayıtlarıyla kontrol edildi;
-**OpenWraith henüz gerçek donanımda çalıştırılmadı**, yalnızca kayıtlar
-yeniden oynatılarak test edildi. `2e3c:c365`-`2e3c:c367` ürün kimlikleri
-spesifikasyona göre kabul edilir ama doğrulanmamıştır.
+**Durum: Faz 2 (yedek, geri yükleme, ayar değiştirme).** Salt okunur
+komutlar: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
+`backup` (aktif profil), `show` (tablo veya `--json`) ve
+`restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
+(yalnızca profil geçişi yapar), `profile select N`, `set trigger`, `set light`
+ve `restore`. Salt okunur komutlar bakımcının klavyesinde (firmware
+V3.22.07, USB `2e3c:c368`) denendi. **Yazan komutlar şimdiye kadar yalnızca
+klavye simülatörüne karşı test edildi; gerçek donanım testleri
+([docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)) henüz yapılmadı.** Tuş ataması ve makro düzenleme, SOCD, switch tipi, yan ışık,
+polling rate ve Win-Lock yazmaları ile masaüstü uygulaması sonraki aşamalarda
+gelecek.
 
 **Güvenlik:**
 
-- Faz 1 klavyede **hiçbir şeyi değiştirmez**. Kod yalnızca okuma isteği
-  üretebilir; yazma, sıfırlama veya kalibrasyon kodu hiç yoktur.
-- Fn + Space birkaç saniye basılı tutulursa klavye kendini sıfırlar ve bir
-  bildirim gönderir. Site bu bildirime kendi sıfırlama komutuyla cevap verir;
-  OpenWraith ise **asla cevap vermez**, durur ve size haber verir.
-- **Önce üreticinin yapılandırma sitesini kapatın.** `openwraith info`,
-  `backup` veya `show` komutlarını çalıştırmadan önce sitenin açık olduğu tüm
-  tarayıcı sekmelerini kapatın. Sitenin bazı yazma onayları OpenWraith'in
-  beklediği yanıtlarla bayt bayt aynıdır, bu yüzden ayıklanamaz
-  (PROTOCOL.md 4.7.9). Ayrıca site OpenWraith'in yanıtlarını da alır: bunun
-  üzerine ayarları yeniden okur, tarayıcıda sakladığı kopyayı yeniden yazar,
-  etkisiz bir tetikleme yazması gönderir ve tuş başına tetikleme değerlerini
-  yanlış tuşlara kaydedebilir (PROTOCOL.md 4.5.1, 4.11.2, 6.5). OpenWraith
-  başka bir programın klavyeyle konuştuğunu fark ederse uyarı verir; o
-  durumda sitede bir şey değiştirmeden önce sayfayı yenileyin.
-- Yedek yalnızca **aktif onboard profili** kapsar. Tetikleme ayarları ve ana
-  ışık profile özeldir (kayıtlarda görüldü). Yedek ayrıca özel renk
-  tablolarını, polling rate'i ve switch tiplerini de içerir; bunlar muhtemelen
-  tüm profillerde ortaktır (doğrulanmadı, PROTOCOL.md açık soru Q3).
-- Başka bir profili yedeklemek için o profile geçin (yapılandırma sitesinden
-  ya da klavyede Fn + 1..4 olarak etiketlenmiş profil tuşlarıyla;
-  doğrulanmadı), siteyi kapatın ve `openwraith backup` komutunu yeniden
-  çalıştırın.
-- Yedek alınırken profil değiştirmeyin. OpenWraith sonunda aktif profili
-  yeniden okur ve değiştiyse hata verir.
+- **Salt okunur komutlar salt okunur kalır.** `list`, `info`, `show`,
+  `profile` (`select` olmadan), `restore --dry-run` ve `backup`
+  (`--all-profiles` olmadan), klavyeyi yazma gönderemeyen bir aktarım tipiyle
+  açar; bunu derleyici denetler.
+- **Yazan komutlar:** `profile select`, `set`, `restore` ve
+  `backup --all-profiles` (yalnızca profil geçişi). Bu komutlar yalnızca
+  gerçek donanımda doğrulanmış dokuz yazma komutunu gönderebilir. Sıfırlama,
+  kalibrasyon, tuş yolu testi, SOCD, switch tipi, yan ışık, polling rate ve
+  Win-Lock yazmaları kodda oluşturulamaz bile.
+- **Önce güvenlik yedeği.** OpenWraith bir ayarı değiştirmeden önce (`set`,
+  `restore`) klavyeyi okur, bir güvenlik yedeği kaydeder, kaydedilen dosyayı
+  geri okuyup denetler; ancak ondan sonra neyin değişeceğini gösterir ve
+  `[y/N]` diye sorar (`--yes` ile sormaz). `profile select` ve
+  `backup --all-profiles` yalnızca profil değiştirir, hiçbir ayarı
+  değiştirmez ve sormaz. Her yazma paket paket gönderilir, klavyenin onayı
+  beklenir ve yazılan değer klavyeden geri okunarak karşılaştırılır. Sonunda
+  değişikliği geri alan komut yazdırılır:
+  `openwraith restore <güvenlik yedeği>`. Hiçbir şey kendiliğinden geri
+  alınmaz.
+- **Güvenlik yedeklerinin yeri:** Windows'ta
+  `%LOCALAPPDATA%\OpenWraith\safety-backups`, Linux'ta
+  `$XDG_DATA_HOME/openwraith/safety-backups` (yoksa
+  `~/.local/share/openwraith/safety-backups`), macOS'ta
+  `~/Library/Application Support/OpenWraith/safety-backups`. Başka bir klasör
+  için `--safety-dir KLASÖR` seçeneğini ya da `OPENWRAITH_SAFETY_DIR` ortam
+  değişkenini kullanın. Güvenlik yedekleri hiçbir zaman otomatik silinmez.
+- **wraith.software sekmesini tamamen kapatın.** Herhangi bir komuttan, hele
+  yazan bir komuttan önce sitenin açık olduğu tüm sekmeleri kapatın; başka bir
+  sekmeye geçmek yetmez. Tarayıcılar arka plandaki sekmelerin zamanlayıcılarını
+  yavaşlattığı için gizli bir sekme fark edilmeyebilir. Site OpenWraith'in
+  yanıtlarını da alır: bunun üzerine ayarları yeniden okur, sakladığı kopyayı
+  yeniden yazar, kendi (etkisiz) tetikleme yazmasını gönderir ve tuş başına
+  değerleri yanlış tuşlara kaydedebilir (PROTOCOL.md 4.5.1, 4.11.2, 6.5).
+  OpenWraith yazmadan önce 2 saniye dinler ve başka bir program görürse
+  yazmayı reddeder; başka bir program fark ettiği her komuttan sonra da uyarı
+  verir.
+- **Klavye sıfırlama bildirimine asla cevap verilmez.** Fn + Space birkaç
+  saniye basılı tutulursa klavye kendini sıfırlar ve bir bildirim gönderir.
+  Site bu bildirime kendi sıfırlama komutuyla cevap verir; OpenWraith ise
+  hemen durur ve bir daha hiçbir şey göndermez, eski profile geri geçmeyi
+  bile denemez.
+- **Geri yükleme ne yazar?** Yedekteki baytların aynısını, tablo tablo:
+  tetikleme ayarları (her pakette tek tuş), dead band, tuş atamaları,
+  makrolar, boşaltılan gelişmiş tuşlar, 1 numaralı özel renk tablosu ve ana
+  ışık. Doğrulanmış yazma komutu olmayan tablolar (yan ışık, 2 numaralı renk
+  tablosu, SOCD, switch tipleri, polling rate, Win-Lock / 6 tuş) yalnızca
+  karşılaştırılır ve "not written" (yazılmadı) olarak listelenir. Geri yükleme
+  yedekte olmayan varsayılanları asla eklemez (site tuş tablosuna kendi düğme
+  varsayılanlarını yazar; OpenWraith yazmaz). Tuş atamaları, makrolar ve
+  gelişmiş tuşlar bir bütün olarak geri yüklenemiyorsa (örneğin boş olmayan
+  bir gelişmiş tuş, doğrulanmamış bir yazma biçimi gerektirdiği için) bu grup
+  tümüyle atlanır ve plan nedenini söyler.
+- OpenWraith çalışırken klavyeden profil değiştirmeyin; her tablodan önce
+  aktif profili denetler ve değiştiyse durur.
+- **Paylaşılan tablolar sonda denetlenir.** 1 numaralı özel renk tablosu,
+  dead band, Fn tuş tablosu ve gelişmiş tuşlar için her profilin kendi kopyası
+  olup olmadığı henüz bilinmiyor. Geri yükleme bunlardan birini yazar ve
+  birden fazla profili kapsarsa, sonunda bütün profilleri yeniden okur ve bir
+  tablo artık yedekteki değerleri taşımıyorsa hata verir ("final check").
+  Yalnızca bazı profillerle sınırlı bir geri yükleme, böyle bir yazmanın diğer
+  profilleri de değiştirebileceği konusunda uyarır.
+- **Ctrl+C** ile durdurabilirsiniz: OpenWraith o anki tabloyu bitirir, eski
+  profile geri geçer ve neyin yazıldığını bildirir. İkinci Ctrl+C hemen
+  durdurur. Geri yüklemenin son denetimi yarıda kesilmez.
 - Metin çıktısında `*` ile işaretlenen değerlerin anlamı üreticinin sitesinin
   kodundan alınmıştır ve henüz USB trafiğinde doğrulanmamıştır; JSON
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.
@@ -256,15 +423,50 @@ gerekmez. Linux için yukarıdaki udev kuralına bakın.
 **Kullanım:**
 
 ```text
-openwraith list
 openwraith info
-openwraith backup -o w75-yedek.owbackup.json
+openwraith profile                                  # aktif profil
+openwraith backup -o w75-yedek.owbackup.json        # aktif profil (salt okunur)
+openwraith backup --all-profiles -o tum.owbackup.json   # dört profil (yalnızca profil geçişi)
 openwraith show triggers
-openwraith show all --from w75-yedek.owbackup.json
+openwraith show all --from tum.owbackup.json --profile 2
+openwraith restore tum.owbackup.json --dry-run      # yalnızca karşılaştırır, yazmaz
+openwraith restore tum.owbackup.json                # planı gösterir, sorar, yazar, doğrular
+openwraith restore tum.owbackup.json --profile 2    # yalnızca 2. profil
+openwraith profile select 2
+openwraith set trigger W --actuation 1.20
+openwraith set trigger W --rapid-trigger 0.30/0.50
+openwraith set light --mode static --color 0000ff
 ```
 
-Yedek dosyası, her yanıt raporunu ham hâliyle (63 bayt, hex) ve çözülmüş
-görünümüyle birlikte saklar; ham veri esastır. Dosya yüklenirken çözülmüş
-görünümler, cihaz bilgisi ve aktif profil ham veriden yeniden üretilir. Protokol belgesi:
-[docs/PROTOCOL.md](docs/PROTOCOL.md). Mimari:
+Tuşlar `openwraith show triggers` çıktısındaki adlarıyla (büyük/küçük harf
+fark etmez: `W`, `"Caps Lock"`, `L-Shift`), indeksle (`#46`) ya da konumla
+(`r2c2`) verilir. Mesafeler milimetredir ve 0,02 mm'nin katı olmalıdır.
+Çıkış kodları: her şey yazılıp doğrulandıysa (ya da yapılacak bir şey yoksa)
+0, bir hata olduysa ya da değişiklik onaylanmadıysa 1 (çıktı bir şey yazılıp
+yazılmadığını söyler), hatalı kullanımda 2.
+
+**Firmware güncellemesinden sonra:** Güncellemeden önce siteyi kapatıp
+`openwraith backup --all-profiles -o guncelleme-oncesi.owbackup.json`
+çalıştırın. Güncellemeden sonra önce
+`openwraith restore guncelleme-oncesi.owbackup.json --dry-run --allow-firmware-mismatch`
+ile planı okuyun (tablo biçimleri firmware ile değişebilir, değerlerin mantıklı
+olduğunu kontrol edin), ardından aynı komutu `--dry-run` olmadan çalıştırıp
+planı yeniden gözden geçirin ve `y` ile onaylayın. Güncelleme klavyenin mesafe
+birimini değiştirdiyse (plan tetikleme parametrelerinin farklı olduğunu
+söyler), tetikleme ve dead band değerleri yazılmaz: kayıtlı sayılar başka
+mesafeler anlamına gelirdi.
+
+**Yedek dosyaları:** Her yanıt raporu ham hâliyle (63 bayt, hex) ve çözülmüş
+görünümüyle birlikte saklanır; ham veri esastır. Dosya yüklenirken çözülmüş
+görünümler, cihaz bilgisi ve aktif profil ham veriden yeniden üretilir.
+`openwraith backup` şema 1 dosyası yazar (aktif profil; Faz 1 sürümleri de
+okuyabilir). `openwraith backup --all-profiles` şema 2 dosyası yazar: dört
+profilin her biri eksiksiz okunur; `show` ve `info` aktif olanı gösterir,
+başka bir profil için `--profile N` ekleyin. Eski OpenWraith sürümleri şema 2
+dosyalarını reddeder. Tetikleme ayarları, ana ışık, temel tuş tablosu ve
+makrolar profile özeldir (kayıtlarda görüldü); diğer tabloların kapsamı henüz
+bilinmiyor, bu yüzden geri yükleme böyle bir tabloyu yazmadan önce yeniden
+okur ve zaten eşleşiyorsa atlar.
+
+Protokol belgesi: [docs/PROTOCOL.md](docs/PROTOCOL.md). Mimari:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Lisans: GPL-3.0-or-later.

@@ -38,7 +38,53 @@ pub struct Model {
     pub knob_index: Option<u8>,
     /// Index of the Fn key, if known.
     pub fn_index: Option<u8>,
+    /// Absolute ceilings for the values OpenWraith writes to this model.
+    pub write_ceilings: WriteCeilings,
 }
+
+/// Absolute value ceilings for writes to one model, compiled into this
+/// crate.
+///
+/// The write builders intersect the limits the keyboard reports (`21/04`,
+/// `0A`) with these ceilings, and always take them from the model in
+/// [`MODELS`] with the same product code (never from a [`Model`] the caller
+/// built). So neither fabricated limits nor a forged reply can produce a value
+/// above them. Distances are trigger units of 0.02 mm, the only unit
+/// OpenWraith writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteCeilings {
+    /// Smallest actuation point, in trigger units.
+    pub min_actuation: u16,
+    /// Largest actuation point, in trigger units.
+    pub max_actuation: u16,
+    /// Largest Rapid Trigger sensitivity, in trigger units.
+    pub max_sensitivity: u16,
+    /// Largest dead-band value (top or bottom), in trigger units.
+    pub max_dead_band: u16,
+    /// Largest main-light brightness.
+    pub max_light_brightness: u8,
+    /// Largest main-light speed.
+    pub max_light_speed: u8,
+    /// Main-light mode IDs that may ever be written (never `0x64`).
+    pub light_modes: &'static [u8],
+}
+
+/// The W75's write ceilings: actuation 0.10-3.40 mm (5..=170 units), Rapid
+/// Trigger sensitivity up to 1.70 mm (85), dead band up to 1.00 mm (50),
+/// brightness and speed up to 4, and the light modes of its `0A` list plus
+/// Custom (`0x0A`). These are the values the keyboard reports (`21/04`, `0A`;
+/// spec sections 4.7.1 and 4.11.5).
+pub const W75_WRITE_CEILINGS: WriteCeilings = WriteCeilings {
+    min_actuation: 5,
+    max_actuation: 170,
+    max_sensitivity: 85,
+    max_dead_band: 50,
+    max_light_brightness: 4,
+    max_light_speed: 4,
+    light_modes: &[
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F, 0x10,
+    ],
+};
 
 /// The Wraith W75 (75 % layout, 82 positions, rotary knob).
 pub static W75: Model = Model {
@@ -51,6 +97,7 @@ pub static W75: Model = Model {
     knob_index: Some(15),
     // GUESS (strong): the only bit of the 0x0E Fn-locked mask.
     fn_index: Some(121),
+    write_ceilings: W75_WRITE_CEILINGS,
 };
 
 /// Every model this crate knows.
@@ -62,6 +109,13 @@ pub fn model_for_product(product_code: &str) -> Option<&'static Model> {
         .iter()
         .copied()
         .find(|m| m.product_code == product_code)
+}
+
+/// The model of [`MODELS`] with the product code of `model`: write
+/// builders use it instead of the caller's [`Model`], whose fields are public
+/// and could be fabricated.
+pub(crate) fn known_model(model: &Model) -> Option<&'static Model> {
+    model_for_product(model.product_code)
 }
 
 impl Model {
@@ -138,5 +192,21 @@ mod tests {
         assert_eq!(W75.layout_mask().positions().len(), 82);
         assert_eq!(W75.selectable_mask().positions().len(), 81);
         assert_eq!(W75.selectable_mask().0[15], 0x2e);
+    }
+
+    #[test]
+    fn known_models_come_from_the_static_table() {
+        let fake = Model {
+            knob_index: None,
+            ..W75
+        };
+        // The fabricated copy resolves to the real W75 (knob at index 15).
+        assert!(std::ptr::eq(known_model(&fake).unwrap(), &W75));
+        let unknown = Model {
+            product_code: "AP61HEARGB",
+            ..W75
+        };
+        assert!(known_model(&unknown).is_none());
+        assert!(!W75.write_ceilings.light_modes.contains(&0x64));
     }
 }

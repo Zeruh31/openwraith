@@ -1,6 +1,9 @@
 //! Runs the `openwraith` binary on backup files replayed from the USB
-//! captures. Only `--from` paths, help and argument errors are exercised:
-//! these tests never enumerate or open a HID device.
+//! captures (and on all-profile backups made with the device simulator).
+//! Only `--from` paths, offline `restore --dry-run --against` plans, help and
+//! argument errors are exercised: these tests never enumerate or open a HID
+//! device. The commands that write are tested against the simulator by the
+//! CLI's unit tests.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -299,4 +302,262 @@ fn help_mentions_read_only_and_has_no_write_commands() {
     }
     let out = openwraith(&["restore"]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// An all-profile backup (schema 2) of the device simulator, in which
+/// profile 2 has factory triggers and the factory light while profile 1
+/// keeps c06 (W 1.00 mm RT 0.30, Custom red). No HID device is involved.
+fn all_profiles_backup() -> Backup {
+    use openwraith_hid::protocol::{ProfileId, W75};
+    use openwraith_hid::{ConsentOrigin, DeviceSim, ProfilesOptions, SimTable, WriteConsent};
+    let c06 = c06_backup();
+    let mut sim = DeviceSim::from_backup(&c06);
+    let mut factory = DeviceSim::from_backup(&c06);
+    factory.factory_reset_all();
+    for profile in ProfileId::ALL.into_iter().skip(1) {
+        for key in W75.positions() {
+            if let Some(record) = factory.trigger(profile, key) {
+                sim.set_trigger(profile, key, record);
+            }
+        }
+        sim.set_table(
+            profile,
+            SimTable::MainLight,
+            openwraith_hid::sim::FACTORY_LIGHT.to_vec(),
+        );
+    }
+    let options = ProfilesOptions {
+        backup: BackupOptions {
+            tool: ToolInfo {
+                name: "openwraith-cli-tests".into(),
+                version: "0".into(),
+            },
+            created_at: Some(UNIX_EPOCH + Duration::from_secs(1_792_827_000)),
+        },
+        ..ProfilesOptions::default()
+    };
+    let mut session = Session::new(sim);
+    openwraith_hid::read_all_profiles(
+        &mut session,
+        WriteConsent::new(ConsentOrigin::CommandLineFlag),
+        &options,
+        |_| std::ops::ControlFlow::Continue(()),
+    )
+    .expect("all-profile backup")
+}
+
+#[test]
+fn help_lists_the_commands_that_write() {
+    let out = openwraith(&["--help"]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    assert!(
+        text.contains("list, info, show and backup are READ-ONLY"),
+        "{text}"
+    );
+    assert!(
+        text.contains("These commands write to the keyboard: profile select, set, restore, and"),
+        "{text}"
+    );
+    assert!(text.contains("a tab in the"), "{text}");
+    for command in ["profile", "set", "restore", "--safety-dir"] {
+        assert!(text.contains(command), "{command}");
+    }
+    let out = openwraith(&["restore", "--help"]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    for option in [
+        "--dry-run",
+        "--against",
+        "--yes",
+        "--allow-firmware-mismatch",
+        "--packets",
+    ] {
+        assert!(text.contains(option), "{option}");
+    }
+}
+
+#[test]
+fn usage_errors_exit_with_code_2_before_anything_is_opened() {
+    for args in [
+        vec!["set"],
+        vec!["restore"],
+        vec!["set", "trigger", "W"],
+        vec!["set", "trigger", "Knob", "--actuation", "1.20"],
+        vec!["set", "trigger", "W", "--actuation", "1.21"],
+        vec!["set", "socd"],
+        vec!["reset-triggers"],
+        vec!["profile", "select", "9"],
+        vec!["show", "triggers", "--profile", "2"],
+        vec!["restore", "x.json", "--dry-run", "--yes"],
+    ] {
+        let out = openwraith(&args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(!stderr(&out).contains("Reading the keyboard"), "{args:?}");
+    }
+}
+
+#[test]
+fn offline_restore_plan_against_another_backup() {
+    let target = c06_backup_file("restore-target");
+    // The "keyboard": c06 with W back at factory values.
+    let mut current = c06_backup();
+    let w = ReadRequest::KeyTrigger(KeyPos::new(2, 2).expect("W"));
+    let mut bytes = [0u8; REPORT_LEN];
+    bytes[..17].copy_from_slice(&[
+        0x21, 0, 0, 0, 0x0c, 0x05, 0x00, 0x55, 0x55, 0x01, 0x01, 0, 0, 0, 0, 0x02, 0x02,
+    ]);
+    let raw = RawResponse::from_reports(w, [Report::new(bytes)]).expect("valid reply");
+    let entry = current
+        .entries
+        .iter_mut()
+        .find(|e| e.request() == w)
+        .expect("W entry");
+    *entry = BackupEntry::new(raw);
+    let against = temp_backup_path("restore-against");
+    current.save(&against, true).expect("saved");
+
+    let out = openwraith(&[
+        "restore",
+        path_str(&target),
+        "--dry-run",
+        "--against",
+        path_str(&against),
+        "--packets",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with("Restore plan (dry run: nothing is written)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("1.70 mm, RT off -> 1.00 mm, RT 0.30 mm"),
+        "{text}"
+    );
+    assert!(text.contains("21 00 00 00 18 0c 00 00 04"), "{text}");
+    assert!(
+        text.contains("Total: 1 write (1 packet) in profile 1."),
+        "{text}"
+    );
+
+    let out = openwraith(&[
+        "restore",
+        path_str(&target),
+        "--dry-run",
+        "--against",
+        path_str(&against),
+        "--json",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(json["dry_run"], true);
+    let items = json["plan"]["profiles"][0]["items"]
+        .as_array()
+        .expect("items");
+    let write = items
+        .iter()
+        .find(|i| i["action"]["action"] == "write")
+        .expect("a write");
+    assert_eq!(write["table"], "triggers");
+    assert_eq!(write["action"]["packets"], 1);
+    assert!(json.get("report").is_none(), "{json}");
+
+    // A missing backup file is an error, not a usage error.
+    let missing = std::env::temp_dir().join("openwraith-cli-test-no-such-backup.json");
+    let out = openwraith(&[
+        "restore",
+        path_str(&missing),
+        "--dry-run",
+        "--against",
+        path_str(&against),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    std::fs::remove_file(target).ok();
+    std::fs::remove_file(against).ok();
+}
+
+#[test]
+fn profiles_of_an_all_profile_backup() {
+    let file = temp_backup_path("all-profiles");
+    let backup = all_profiles_backup();
+    assert!(backup.is_all_profiles());
+    backup.save(&file, true).expect("saved");
+
+    // Without --profile: the profile that was active, and a note.
+    let out = openwraith(&["show", "triggers", "--from", path_str(&file)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Rapid Trigger on 1 key(s): W."),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("all-profile backup (profiles 1, 2, 3, 4)"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Profile 2: factory triggers.
+    let out = openwraith(&[
+        "show",
+        "triggers",
+        "--json",
+        "--from",
+        path_str(&file),
+        "--profile",
+        "2",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(json["active_profile"], 2);
+    let keys = json["keys"].as_array().expect("keys");
+    let w = keys.iter().find(|k| k["name"] == "W").expect("W");
+    assert_eq!(w["actuation_mm"], 1.7);
+    assert_eq!(w["rapid_trigger"], false);
+
+    let out = openwraith(&["info", "--from", path_str(&file), "--profile", "3"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("showing profile 3"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A single-profile backup has no profile 2.
+    let single = c06_backup_file("single-profile");
+    let out = openwraith(&[
+        "show",
+        "light",
+        "--from",
+        path_str(&single),
+        "--profile",
+        "2",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("holds no profile 2"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Restoring profile 2 of the file, planned offline against the file
+    // itself: nothing to write.
+    let out = openwraith(&[
+        "restore",
+        path_str(&file),
+        "--profile",
+        "2",
+        "--dry-run",
+        "--against",
+        path_str(&file),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Total: nothing to write."),
+        "{}",
+        stdout(&out)
+    );
+    std::fs::remove_file(file).ok();
+    std::fs::remove_file(single).ok();
 }

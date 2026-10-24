@@ -77,13 +77,13 @@ These rules apply to the code we write. They are engineering policy, not protoco
 | Command | Effect | Level | Confidence of effect |
 |---|---|---|---|
 | `14 00 00 00 01 01` | Reset current profile (scope not verified) | **DANGEROUS** | CODE-ONLY |
-| `21 00 00 00 18 06` | Reset all key triggers | **DANGEROUS** | CODE-ONLY |
+| `21 00 00 00 18 06` | Reset all key triggers of the active profile | **DANGEROUS** | CONFIRMED (c11) |
 | `21 00 00 00 18 0F 00` / `10 00`, `08 00` / `08 01` | Start/stop calibration. An interrupted or careless calibration can leave keys misbehaving until recalibrated (GUESS) | **DANGEROUS** | CODE-ONLY |
 | `21 00 00 00 18 07 <row> <col>` | Single-key calibration. Dead code in the site, never exercised | **DANGEROUS** (do not implement) | CODE-ONLY |
 | `14 03 00 00 01 MM` | Gamepad mode. The UI says the device restarts; PID probably changes | **DANGEROUS** | CODE-ONLY |
 | `21 00 00 00 00 09 01 RR` | Poll rate. The UI says the device restarts | CAUTION | CODE-ONLY |
 | `14 00 00 00 01 00 ...` | Win-Lock/6-key options. **Byte 5 must stay `00`**; `01` turns it into the reset above | CAUTION | CODE-ONLY |
-| `18 00` / `18 02`, `19 0n`, `22 nn`, `26 01`, `25 01`, `24 00`, `09 00` / `09 01` | Whole-table writes | CAUTION: read-modify-write and back up first | CODE-ONLY (except `09 00`: CONFIRMED) |
+| `18 00` / `18 02`, `19 0n`, `22 nn`, `26 01`, `25 01`, `24 00`, `09 00` / `09 01` | Whole-table writes | CAUTION: read-modify-write and back up first | CONFIRMED for `09 00`, `18 00` / `18 02`, `19 0n`, `26 01` and `22 nn` with zero content (capture session 2); CODE-ONLY for `25 01`, `24 00`, `09 01` and non-empty `22 nn` |
 | Input `14 ... [5]=01` | The site treats it as "reset everything" and sends a reset | Hazard on the **receive** side: ignore it | CODE-ONLY |
 
 ### 1.3 Firmware update is out of band
@@ -170,7 +170,7 @@ These rules apply to the code we write. They are engineering policy, not protoco
 - **Multi-chunk replies:** one request makes the device stream every chunk back to back, 0-3 ms apart. Each chunk carries its own index (byte 3) and length (byte 4); the last chunk is shorter. CONFIRMED.
 - **Pipelining:** the site sometimes sends a second request before the first reply arrives (c01 +1080 `24 02` then `24 01`; +1142 `09 20` then `09 80`; +2756 heartbeat between per-key reads; +3394 trigger write and read in the same ms). Replies came back in request order. CONFIRMED. Our app should still serialise.
 - **Unsolicited reports:**
-  - One `0x01` status report arrived with no request at c02 +137946, 3 ms after the `0x17` ack and the first `07 00` light write. OBSERVED. GUESS: the firmware pushes status when the music-rhythm state is set. It is the only `0x17` in the captures; later `07 00` writes caused no push.
+  - An unsolicited `0x01` status report followed the `0x17` ack in both captured leaves: c02 (`17` at +137930, ack +137943, status +137946) and c07 (`17` at +118182, ack +118194, status +118199), each 3-5 ms after the ack and each just after a mode-changing `07 00` write. OBSERVED (n=2). GUESS: the firmware pushes status when the music-rhythm state is set. These are the only two `0x17` packets in the captures; later `07 00` writes (same mode, no `0x17`) caused no push.
   - Handled in the site code but never seen (CODE-ONLY): `0x21` byte 5 = `01` (live travel stream), `0x21` byte 5 = `08`/`0F` (calibration status), `0x14` byte 5 = `01` (reset notification), `0x21` byte 5 = `11` (profile change).
 
 **Reply sizes per request** (CONFIRMED by byte 4 values in c01/c03)
@@ -192,27 +192,35 @@ Single-packet replies (byte 4): `01` 18; `0E` 22; `0A` 18; `02` 4; `07` 12; `08`
 
 | Write | Table size | Chunk payload | Pacing in the site | Confidence |
 |---|---|---|---|---|
-| `18 00` / `18 02` | 528 | 56 -> 10 packets (last 24) | none | CODE-ONLY |
-| `19 0n` (n = 0-9) | 256 per slot | 58 -> 5 packets (last 24) | after each chunk waits <= 10 zero-ms timer ticks for an input `0x19` with byte 1 < `0x80` | CODE-ONLY |
+| `18 00` / `18 02` | 528 | 56 -> 10 packets (last 24) | none | CONFIRMED (c09, c13; Fn layer with zero content only) |
+| `19 0n` (n = 0-9) | 256 per slot | 58 -> 5 packets (last 24) | after each chunk waits <= 10 zero-ms timer ticks for an input `0x19` with byte 1 < `0x80` | CONFIRMED (c09, c13) |
 | `09 00` / `09 01` | 396 | 54 -> 8 packets (last 18) | 5 ms sleep after each chunk (`agreement.js:1725`) | CONFIRMED for `09 00` (c02) |
 | `25 01` | 132 | 58 -> 3 packets (58, 58, 16) | none | CODE-ONLY |
-| `26 01` | 264 | 58 -> 5 packets (last 32) | none | CODE-ONLY |
+| `26 01` | 264 | 58 -> 5 packets (last 32) | none | CONFIRMED (c12) |
 | `24 00` | 80 | 2 packets, byte 4 = 40 | none | CODE-ONLY |
-| `22 nn` (nn = 0-39) | 1 packet per slot, byte 4 = 50 | - | none | CODE-ONLY |
+| `22 nn` (nn = 0-39) | 1 packet per slot, byte 4 = 50 | - | none | CONFIRMED with all-zero content (c09, c13); non-empty content CODE-ONLY |
 
 `0x09` pacing on the wire (OBSERVED, c02): an isolated frame shows 7-8 ms gaps (+160405..+160460). While the colour ring is dragged the site starts new frames before old ones finish, so chunks of different frames interleave (chunk index sequence 0,0,1,0,1,2,0,1,2,3,... from +160978) and the median OUT gap is 0 ms.
 
 ### 2.7 Acknowledgements
 
-| Write | Device reply | Confidence |
-|---|---|---|
-| `0x21` trigger writes | `21 00 00 00 01 00` after 4-7 ms. Byte 5 is `00` even after a `0x0C` write, so it is not a mode echo (GUESS: status OK). The site has no handler for it. | OBSERVED (c01 +3394 -> +3400; c03 16 writes -> 16 acks) |
-| `0x17` | `17 00 00 00 00`, 13 ms later. The site does not wait for it. | OBSERVED (c02 +137930 -> +137943) |
-| `09 00` colour chunks | `09 00 00 00 00` (length 0), within about 1 ms in isolated bursts. **1681 acks for 2064 chunks** in c02 (c02 has 1682 length-0 `0x09` replies; one of them is the `09 20` answer from the connect). The site's dispatcher also treats every such ack as "custom slot 1 selected" (`agreement.js:287-289`). | CONFIRMED |
-| `07 00` light write | **no reply** (10 writes, 0 replies in c02) | CONFIRMED |
-| `0x14` writes | The site shows a "Success" toast on any `0x14` input (except byte 1 = 2) and clears its `isResetTrigger` flag (`agreement.js:320-330`). Reply format unknown. | CODE-ONLY |
-| `0x19` writes | The site waits for an input `0x19` with byte 1 < `0x80` (`agreement.js:481-487, 1549-1552`). | CODE-ONLY |
-| `18`, `22`, `24`, `25`, `26` writes | The site parses no reply. Unknown whether the device sends one. | - |
+**General rules** (CONFIRMED, capture session 2): an acknowledgement never carries a chunk index (byte 3 is `00` in every ack), and unless stated otherwise it has length 0. A chunk can therefore only be matched to its ack by sending one chunk at a time and waiting for the ack before the next (stop-and-wait). Match acks on bytes 0-4 (plus byte 5 for the `0x21` family) and ignore the stale bytes after the declared length. Several acks do **not** echo byte 1 of the write.
+
+| Write | Device reply | Latency | Confidence |
+|---|---|---|---|
+| `0x21` trigger writes | `21 00 00 00 01 00`. Byte 5 is `00` even after a `0x0C` write, so it is not a mode echo (GUESS: status OK). The site has no handler for it. | 2-7 ms, max 34 ms | OBSERVED (c01 +3394 -> +3400; c03 16 writes -> 16 acks; c10) |
+| `21/12` profile select | `21 00 00 00 02 12 01`, then the push `21 00 00 00 03 11 PP 00` | 3-4 ms | CONFIRMED (c04, c08, c10) |
+| `0x17` music-rhythm leave | `17 00 00 00 00`. The site does not wait for it: in both samples the next `07 00` is sent in the same millisecond the ack arrives. An unsolicited `0x01` status report follows 3-5 ms after the ack. | 12-13 ms | OBSERVED (c02 +137930 -> +137943; c07 +118182 -> +118194) |
+| `09 00` colour chunks | `09 00 00 00 00` (length 0), within about 1 ms in isolated bursts. **1681 acks for 2064 chunks** in c02 (c02 has 1682 length-0 `0x09` replies; one of them is the `09 20` answer from the connect). The missing acks all fall in two flood bursts (+160978: 1 missing, up to 66 chunks outstanding; +164554: 382 missing, up to 448 outstanding); every isolated 8-chunk burst, and the 296-, 192-, 96- and 56-chunk bursts, is fully acked, which supports stop-and-wait. The ack is byte-identical to the `09 20` reply; the site's dispatcher also treats every such ack as "custom slot 1 selected" (`agreement.js:287-289`). | about 1 ms | CONFIRMED |
+| `07 00` light write | **no reply** (10 writes, 0 replies in c02) | - | CONFIRMED |
+| `18 00` / `18 02` keymap chunks | `18 00 00 00 00` for **both** layers: byte 1 is not echoed. 80 of 80 chunks acked. | 0-24 ms | CONFIRMED (c09, c13) |
+| `19 0n` macro chunks | `19 00 00 00 00` for **every** slot: the slot is not echoed. 300 of 300 chunks acked. The site waits for an input `0x19` with byte 1 < `0x80` (`agreement.js:481-487, 1549-1552`), which this ack satisfies. | first chunk of a slot up to 28 ms, max 63 ms | CONFIRMED (c09, c13) |
+| `22 SS` advanced-key slot | `22 00 00 00 00`: the slot is not echoed. 240 of 240 writes acked (all with zero content). The site does not wait, so acks queue up behind its pipelined writes. | up to 98 ms behind the site's queue | CONFIRMED (zero content) |
+| `26 01` dead-band chunks | `26 01 00 00 00`: byte 1 **is** echoed. 185 of 185 chunks acked. | 0-4 ms | CONFIRMED (c12) |
+| `0x14` writes | The site shows a "Success" toast on any `0x14` input (except byte 1 = 2) and clears its `isResetTrigger` flag (`agreement.js:320-330`). Reply format unknown. | - | CODE-ONLY |
+| `24`, `25` writes | The site parses no reply. Unknown whether the device sends one. | - | - |
+
+"Foreign" acks: an ack-shaped report that answers none of our writes (for example the ack of the vendor site's empty-mask trigger write at connect, section 4.11.4) shows that another program is writing to the keyboard. OpenWraith counts them and refuses to write while it sees them.
 
 ### 2.8 Site waiting behaviour, and the policy for our app
 
@@ -385,7 +393,7 @@ Every command the site builds (`agreement.js`, plus `0x0D` from `wmIndex.js`; `w
 - `heartbeat` then sends it every 1000 ms without waiting (`wmIndex.js:6138`). Observed intervals 985-1842 ms.
 - **The heartbeat is not required.** CODE-ONLY: later replies only drive the battery/link display and the mode-change reload. USER-REPORTED: blocking it for 90 s changed nothing on the keyboard. Our app needs one `0x01` at connect to read the flags; periodic polling is optional.
 
-**Reply:** all 267 independent status reports in the captures (c02: 198 including c01's 44; c03: 69) are identical, one of them unsolicited (c02 +137946):
+**Reply:** all 267 independent status reports in the captures (c02: 198 including c01's 44; c03: 69) are identical, one of them unsolicited (c02 +137946; a second unsolicited one is in c07 at +118199, also right after a `0x17` ack):
 
 `01 00 00 00 12 | 00 00 00 00 00 00 00 00 00 01 00 00 df 04 01 01 00 00`
 
@@ -506,20 +514,22 @@ Reply `21 00 00 00 03 | 11 PP XX`:
 - Numbering: the `#profiles` radios in `v1.html:608-629` are ProfileDef, Profile1..Profile4. On a `0x11` reply the site ticks `"Profile"+PP` and hides ProfileDef (`agreement.js:578, 624`). So there are **4 onboard profiles numbered 1-4 on the wire** (CODE-ONLY). Whether 0 is valid is unknown.
 - `PP` = 1 in both captures. Whether that is the factory default is not shown.
 
-#### 4.5.3 Select a profile: `0x21`, byte 5 = `0x12` (CODE-ONLY)
+#### 4.5.3 Select a profile: `0x21`, byte 5 = `0x12` (CONFIRMED)
 
 - **Request:** `21 00 00 00 00 12 PP` + zeros (`agreement.js:2255-2265`), PP = 1-4.
 - The site sends it when a profile tab is clicked and PP differs from `presetNumber` (`wmIndex.js:1014-1023`). It does not await a reply, does not update `presetNumber` and re-reads nothing by itself.
 - The site's UI resyncs only when a `0x21` report with byte 5 = `0x11` arrives. GUESS: it also pushes one when the profile is changed on the keyboard (Fn + 1..4 per `fnKeys.json`).
 - **On the wire** (OBSERVED, c04, 11 site-initiated switches from entry 8293 on, all four profiles): the keyboard acks `21 00 00 00 00 12 PP` with `21 00 00 00 02 12 01` within 3-17 ms and pushes `21 00 00 00 03 11 PP 00` right after it (0-2 ms later). Byte 7 of that push is `00`, while replies to our `21/11` query carry `01`. The meaning of ack byte 6 (`01`) is unknown. Every `0x11` report in c04 follows a site-sent `0x12`; **no keyboard-initiated switch has been captured** (the Fn + 1..4 question of Q2 stays open).
-- **Our app:** after sending `0x12`, poll `21/11` until it reports the new profile, then re-read every table (section 6.10).
+- **Captured again** (CONFIRMED, c08 x2, c10 x2): ack `21 00 00 00 02 12 01` within 3-4 ms, then the push. Selecting a profile changes no setting: the site writes nothing after a select, and the tables read afterwards are the target profile's.
+- **Our app:** after sending `0x12`, poll `21/11` until it reports the new profile, then re-read every table (section 6.10). OpenWraith waits up to 500 ms for the ack and the push (reading the push before any `21/11` query, whose reply has the same shape), confirms with `21/11` and retries once. It never selects profile 0 (Q11).
 
 #### 4.5.4 What the site re-reads after a `0x11` report (`agreement.js:572-633`)
 
 - **Re-read** (CONFIRMED c01/c03): `07 01`, `21/04`, `21/05` x 82, `19 80`..`89`, `22 80`, `24 02`/`01`, `26 00`, `18 80`, `18 82`. GUESS: these tables are per profile.
 - **Not re-read:** `08 01` side light, `09 80`/`81` custom colours, `21/09` poll rate, `25 02` switch types, `0E`, `01` status (Win-Lock/6-key bits come only from the first `01` reply). GUESS: global settings, or an omission in the site.
 - OBSERVED (c04, after the site switched profiles): W's `21/05` reads `05 0c 32 32 0f 0f` (1.00 mm, RT 0.30) only in profile 1 and `05 00 55 55 01 01` in profiles 2-4; the main light `07` reads mode `0x0A` in profile 1 and `0x02` in profiles 2-4. So **triggers and the main light are per profile**. `09 80`/`81`, `21/09` and `25 02` were never re-read after a switch, so their scope is still unknown.
-- Which settings really are per profile is open question Q3 (partly answered above).
+- OBSERVED (c10, capture session 2): after the c09 keymap Applies on profile 1, profile 2 read an all-zero base keymap (`18 80`) while profile 1 read the site's knob defaults, and profile 2 read every macro slot as all `FF` while profile 1 read all `00`. So **the base keymap and the macro slots are per profile** too.
+- Which settings really are per profile is open question Q3 (partly answered above). Still unknown: `18 82` (Fn keymap), `22 80`, `26 00`, `09 80`/`81`, `09 20`, `08 01`, `24 01`/`02`, `25 02`, `21/09` and the status Win-Lock / 6-key bits; they read identically in every capture. OpenWraith treats them as possibly global: before writing one in a restore it re-reads it and skips the write when it already matches.
 
 ### 4.6 Global settings
 
@@ -716,7 +726,7 @@ From the radio values in `v1.html:928-933`. On each mode selection the site chec
 | 5 | 1 = enter, 0 = leave |
 | 6 | same as byte 5 (purpose of the duplicate unknown) |
 
-- **Leave** (`00 00`) is sent before every main-mode change other than 100, even on devices without music support (`agreement.js:96-107`). The device acks `17 00 00 00 00`; the site does not wait (c02 +137930 -> ack +137943, logged after the next `07 00` write). CONFIRMED. The earlier draft's "begin edit / `02`" was this packet; `02` is the length.
+- **Leave** (`00 00`) is sent before every main-mode change other than 100, even on devices without music support (`agreement.js:96-107`). The device acks `17 00 00 00 00`; the site does not wait (c02 +137930 -> ack +137943 and c07 +118182 -> ack +118194, each logged after the next `07 00` write of the same millisecond). CONFIRMED. The earlier draft's "begin edit / `02`" was this packet; `02` is the length.
 - **Enter** (`01 01`) when the user picks mode 100, or automatically at load when status byte 21 = 1; followed by a `07 00` write with mode `0x64` (CODE-ONLY). The audio-reactive effect needs a separately downloaded Windows plugin (`wmIndex.js:1689-1708`); its protocol is unknown.
 - **W75: not supported** (flag A bit 5 = 0). Whether the leave packet is needed at all on the W75 is unknown (GUESS: not needed).
 
@@ -738,19 +748,21 @@ From the radio values in `v1.html:928-933`. On each mode selection the site chec
 
 ### 4.8 Keymap (0x18)
 
-All captured keymap tables are factory-blank and no keymap write was captured, so **every write and every non-zero entry format is CODE-ONLY**.
+Keymap writes were captured in session 2 (c09: W -> A and back; c13: a macro bound to Caps and removed). The write framing and acks, plain key entries `00 HH 00 00` and macro entries `10 39 SS 00` are CONFIRMED; the other entry kinds are CODE-ONLY. Fn-layer writes were only captured with zero content.
 
 #### 4.8.1 Read `18 80` (base) / `18 82` (Fn layer) (CONFIRMED framing)
 
 - Request `18 80 00 00 00` or `18 82 00 00 00`, no payload (`agreement.js:1067-1091`).
 - Reply: 10 reports `18 8x 00 <chunk 0..9> <len>`, len `0x38` (56) for chunks 0-8 and `0x18` (24) for chunk 9 = 528 bytes = 132 entries x 4 bytes. Entry for key k at offset 4k (chunk k / 14, offset (k mod 14) x 4); no entry crosses a chunk. CONFIRMED.
 - Timing (c01): `18 80` at +1084, chunk 9 at +1103; `18 82` at +1108.
-- **W75 content:** all `00` in both tables in all captures. CONFIRMED. `00 00 00 00` means "no override" (the site writes it for unmapped keys, `agreement.js:1148-1151, 1221-1224`). That the firmware then uses its built-in default is inferred from the keyboard typing normally.
+- **W75 content:** all `00` in both tables in every capture up to c08. CONFIRMED. Since the site's c09 Apply, profile 1's base table reads the site's forced knob defaults at 16-21 and `01 00 00 00` at 121 (section 4.10); profile 2's still reads all `00` (c10). `00 00 00 00` means "no override" (the site writes it for unmapped keys, `agreement.js:1148-1151, 1221-1224`). That the firmware then uses its built-in default is inferred from the keyboard typing normally.
 - Sub-commands other than `00`/`02`/`80`/`82` are never used by the site; whether `01`/`81` exists is unknown.
 
-#### 4.8.2 Write `18 00` (base) / `18 02` (Fn layer) (CODE-ONLY, CAUTION)
+#### 4.8.2 Write `18 00` (base) / `18 02` (Fn layer) (CONFIRMED; Fn layer with zero content only; CAUTION)
 
-- Always the whole 528-byte table: 10 reports `18 00|02 00 <chunk> <len>` + table bytes [chunk x 56, +len), len `0x38` x 9 then `0x18` (`setKeyValue` `agreement.js:1102-1187`, `setFnKeyValue` `1188-1262`). No wait between chunks. Device ack unknown (the site ignores `0x18` inputs other than `80`/`82`).
+- Always the whole 528-byte table: 10 reports `18 00|02 00 <chunk> <len>` + table bytes [chunk x 56, +len), len `0x38` x 9 then `0x18` (`setKeyValue` `agreement.js:1102-1187`, `setFnKeyValue` `1188-1262`). No wait between chunks in the site. CONFIRMED (c09, c13).
+- **Ack:** `18 00 00 00 00` per chunk, for both layers (section 2.7). CONFIRMED. The site ignores `0x18` inputs other than `80`/`82`.
+- **Read-back:** c10 and c11 read back the site's c09 table byte for byte, including its forced knob defaults at 16-21 and `01 00 00 00` at 121 (section 4.10). CONFIRMED. A read-back of a non-zero Fn layer has never been captured.
 - Sent only from the keymap "Apply" flow (section 6.7).
 - How the site fills entries it was not asked to change (verified, `agreement.js:1102-1160, 1218-1236`):
   - Base layer, no remap: `00 00 00 00`, except: the layout key `KeyFn` gets code1 = 1 (`01 <layout hid> 00 00`) unless the layout supplies its own code1; layout keys with an explicit code1 get `<code1> <hid> 00 00`; keys named M1-M4 take code1/hid/code3 from `keys.json`; knob virtual keys get their layout codes; then (W75 has a knob, PID != `0xC365`) **slots 16-21 are overwritten with knob defaults** (section 4.10).
@@ -815,14 +827,15 @@ All captured keymap tables are factory-blank and no keymap write was captured, s
 
 - Request `19 8n 00 00 00`, slots in order, 150 ms timeout per slot (`agreement.js:1438-1466`). CONFIRMED.
 - Reply: 5 reports, chunks 0-3 len `0x3A` (58), chunk 4 len `0x18` (24) = **256 bytes per slot**; padding after `len` is `FF` in chunk 4. About 8 ms per slot (c01 from +919). CONFIRMED.
-- **W75 content:** every slot is all `FF` (factory, all captures). CONFIRMED. The site treats a slot as empty when header byte 3 is < 4 or > 248 (covers `FF` and `00`).
+- **W75 content:** every slot is all `FF` (factory, all captures up to c09). CONFIRMED. After the site has written empty slots (256 x `00`) they read back as 256 x `00` (OBSERVED, c10). The site treats a slot as empty when header byte 3 is < 4 or > 248 (covers `FF` and `00`). A read-back of a **non-empty** slot has never been captured, so the read layout of non-empty content stays CODE-ONLY.
 - Chunk c holds slot bytes [c x 58, +len) ("flat" layout, matching the writer). CODE-ONLY: the site's parser also supports a "page" layout that repeats the header in every chunk, and actually picks it for all-FF slots; the captures cannot tell the layouts apart.
 
-#### 4.9.2 Write `19 0n` (CODE-ONLY, CAUTION)
+#### 4.9.2 Write `19 0n` (CONFIRMED for keyboard steps played once; CAUTION)
 
 - `setMacroValue` (`agreement.js:1468-1558`) rewrites **all 10 slots** on every Apply: 5 reports `19 0n 00 <c> <len>` with len 58, 58, 58, 58, 24.
 - Slot assignment: macro bindings are collected base layer first, then Fn layer, in insertion order; binding i goes into slot i, and that slot number is written into the key's keymap entry b2. Unused slots are 256 x `00` (not `FF`).
-- After each chunk the site waits up to 10 zero-ms ticks for an input `0x19` with byte 1 < `0x80` (treated as ack), then continues anyway. No ack captured.
+- After each chunk the site waits up to 10 zero-ms ticks for an input `0x19` with byte 1 < `0x80` (treated as ack), then continues anyway. **Ack:** `19 00 00 00 00` for every slot (section 2.7). CONFIRMED (c09, c13).
+- c13 slot 0 = `00 00 00 10 00 01 00 00 | 04 10 00 64 | 04 00 00 64 | 05 10 00 64 | 05 00 00 00` (ID 0, play once, 16 step bytes, count 1: A down 100 ms, A up 100 ms, B down 100 ms, B up), matching the layout of 4.9.3 byte for byte; the typing test passed. CONFIRMED.
 - **Macros must be written before the keymap** that references their slots.
 
 #### 4.9.3 Slot layout (256 bytes, CODE-ONLY)
@@ -871,18 +884,18 @@ Macro names exist only in the site's localStorage. The slot has no name field; n
 
 | Byte 5 | Dir | Function | Confidence |
 |---|---|---|---|
-| `00`, `0C`, `0D` | W | trigger write; byte 5 = mode (4.11.3) | `00`/`0C` CONFIRMED; `0D` CODE-ONLY |
+| `00`, `0C`, `0D` | W | trigger write; byte 5 = mode (4.11.3) | CONFIRMED (`0D` in c10) |
 | `00` | IN | trigger write ack `21 00 00 00 01 00` | OBSERVED |
 | `01` | IN | live travel stream | CODE-ONLY |
 | `02` / `03` | W | open / close travel test | CODE-ONLY |
 | `04` | R | global trigger parameters | CONFIRMED |
 | `05` | R | one key's trigger settings | CONFIRMED |
-| `06` | W | **reset all triggers** | CODE-ONLY |
+| `06` | W | **reset all triggers** | CONFIRMED (c11) |
 | `07` | W | **single-key calibration** (no caller in the site) | CODE-ONLY |
 | `08` | W / IN | **all-key calibration** start/stop and status (devices without the any-key flag) | CODE-ONLY |
 | `09` | R / W | polling rate (section 4.6.1) | read CONFIRMED; write CODE-ONLY |
 | `0F` / `10` | W / IN | **any-key calibration** start / stop and status (W75 path) | CODE-ONLY |
-| `11` / `12` | R / W | active profile / select profile (section 4.5) | read CONFIRMED; select CODE-ONLY |
+| `11` / `12` | R / W | active profile / select profile (section 4.5) | CONFIRMED |
 
 GUESS: byte 5 acts as both sub-command and trigger mode; the firmware may treat `00`/`0C`/`0D` as three write sub-commands.
 
@@ -909,7 +922,7 @@ If min travel is 0 the site substitutes a unit-dependent value (CODE-ONLY). Read
 | Byte | W75 as read | Meaning | Confidence |
 |---|---|---|---|
 | 5 | `05` | echo | CONFIRMED |
-| 6 | `00` | mode: `00` RT off, `0C` RT, `0D` RT with separate press/release | value 0 CONFIRMED; `0C`/`0D` CODE-ONLY |
+| 6 | `00` | mode: `00` RT off, `0C` RT, `0D` RT with separate press/release | CONFIRMED (`0C`: c04-c06 W; `0D`: c10 W) |
 | 7 | `55` | actuation travel, low byte (85 = 1.70 mm) | CONFIRMED |
 | 8 | `55` | second travel value, low byte; equals byte 7; ignored by the site | GUESS: reset/release point |
 | 9 | `01` | RT press sensitivity (interval1), low byte | CONFIRMED |
@@ -945,9 +958,10 @@ If min travel is 0 the site substitutes a unit-dependent value (CODE-ONLY). Read
 | 35 | release sensitivity, high byte | |
 | 36-62 | `00` | |
 
-- Layout CONFIRMED for modes `00` and `0C` by the 15 W writes in c03 (+34733..+48277). Mode `0D` CODE-ONLY.
+- Layout CONFIRMED for modes `00` and `0C` by the 15 W writes in c03 (+34733..+48277) and for mode `0D` by c10 (W press 0.30 mm `0f`, release 0.50 mm `19`).
 - **Ack** `21 00 00 00 01 00`, 5-7 ms later (OBSERVED). The site neither handles nor waits for it. GUESS: byte 5 = status OK.
-- Whether bytes 29-35 (beyond the declared length 24) are applied is not yet visible: no trigger read follows the writes (capture plan C2).
+- **Read-back** (OBSERVED, c10): after the `0D` write W reads `05 0d 55 55 0f 19 00 00 00 00 02 02`. So write byte 28 maps to read byte 7 (payload p[2]), 29 to p[3], 30 to p[4], 31 to p[5], and the high bytes 32-35 to p[6..9]. The second travel value (byte 29 / p[3]) has only ever been written equal to the actuation point.
+- **Key mask:** only single-key masks have been captured (c03 W; c10 Q mask byte 7 = `04`, W). A mask with more than one key has **never** been captured, so multi-key writes stay CODE-ONLY. OpenWraith writes one key per packet.
 
 **c03 W edit, byte by byte** (CONFIRMED). The user set W to 1.00 mm, then enabled RT at 0.30 mm:
 
@@ -971,7 +985,7 @@ After the `0x11` reply the site fires its RT checkbox handler with no keys selec
 
 #### 4.11.5 Multi-key edits and value ranges
 
-- With several keys selected the site sends one packet: union mask + one value set. Site quirk: travel and mode come from the UI, but the sensitivities come from the **last** selected key (`agreement.js:1806-1813`). CODE-ONLY.
+- With several keys selected the site sends one packet: union mask + one value set. Site quirk: travel and mode come from the UI, but the sensitivities come from the **last** selected key (`agreement.js:1806-1813`). CODE-ONLY: a multi-key mask has never been captured (the Select-All part of capture plan C8 was skipped). OpenWraith sends one packet per key, each with that key's own values, until a hardware test confirms multi-key masks.
 - `setAllTriggerValue` (grouping keys with identical settings, one packet per group) runs only in software-profile mode (`wmIndex.js:1087`), never on the W75.
 - UI ranges (units; W75 unit 0.02 mm; CODE-ONLY):
 
@@ -985,7 +999,7 @@ After the `0x11` reply the site fires its RT checkbox handler with no keys selec
 - Writes happen on slider release, once per +/- click, and on Enter/blur in the mm box.
 - Firmware clamping is unknown: never send values outside these ranges. The site has no "continuous RT" option.
 
-#### 4.11.6 `21/06`: reset all triggers (**DANGEROUS**, CODE-ONLY)
+#### 4.11.6 `21/06`: reset all triggers (**DANGEROUS**, CONFIRMED in c11)
 
 - Request `21 00 00 00 18 06` (`agreement.js:940-953`).
 - "Reset Trigger" button: send, sleep 100 ms, re-read `21/04` and all `21/05` (`wmIndex.js:1382-1392`). Also step 2 of the full reset (section 4.6.3).
@@ -1015,7 +1029,8 @@ Requests `21 00 00 00 18 <sub> <arg>` (`agreement.js:1884-1895`; UI `wmIndex.js:
 `readDeadBand`, `setDeadBand`, `resetDeadBand` (`agreement.js:2180-2244`; parser `878-895`).
 
 - **Read** (CONFIRMED framing): request `26 00 00 00 00` + zeros (c01 +1736). Reply: 5 chunks, byte 3 = 0..4, byte 4 = `3A 3A 3A 3A 20` = 264 bytes = 132 keys x 2. Chunk p, pair i -> key p x 29 + i. Byte 2i = **top**, 2i+1 = **bottom** (order CODE-ONLY: every captured value is 0). W75: all zero.
-- **Write** (CODE-ONLY, CAUTION): `26 01 <chunk hi> <chunk lo> <len>` + data; flat array [2 x idx] = top, [2 x idx + 1] = bottom; chunks 58, 58, 58, 58, 32; positions without a key sent as 0. W (index 46) = flat offsets 92/93 = chunk 1, report bytes 39/40. The site writes the whole table on every slider change (`wmIndex.js:1926-1945`).
+- **Write** (CONFIRMED, c12; CAUTION): `26 01 <chunk hi> <chunk lo> <len>` + data; flat array [2 x idx] = top, [2 x idx + 1] = bottom; chunks 58, 58, 58, 58, 32; positions without a key sent as 0. W (index 46) = flat offsets 92/93 = chunk 1, report bytes 39/40: W top 0.10 mm wrote `05` at 92 and bottom 0.20 mm `0a` at 93. Each chunk is acked `26 01 00 00 00` (section 2.7). The site writes the whole table on every slider change (`wmIndex.js:1926-1945`; 37 full writes in about 20 s in c12).
+- A **non-zero dead-band read** has never been captured (the session ended with the table back at zero), so the read order top/bottom is still CODE-ONLY on the read side.
 - UI: 0-1.00 mm, initial 0.04 mm; help text recommends 0.1 mm. GUESS: top = ignored travel from rest, bottom = ignored travel before bottom-out.
 - **"Reset dead band" is the read request** (CODE-ONLY): `resetDeadBand` sends exactly `26 00` (`agreement.js:2235-2244` vs `2180-2189`). Used only in the full reset. GUESS: it resets nothing; the `0x14` reset may clear dead bands itself.
 - **`isInitDeadBand` flag** (verified): the reply handler sets it when page 4 arrives (`agreement.js:892-894`); `readDeadBand` clears it after its bounded wait (`agreement.js:2190-2195`). So it is normally false, but after `resetDeadBand` (which never clears it) or a page 4 that arrives after the wait, it stays true until the next `readDeadBand`. While true, the full reset skips `26 00` and a software-mode profile push skips the dead band.
@@ -1031,7 +1046,7 @@ Requests `21 00 00 00 18 <sub> <arg>` (`agreement.js:1884-1895`; UI `wmIndex.js:
 ### 4.14 Advanced keys (0x22)
 
 - **Read** (CONFIRMED framing): `22 80 00 00 00` -> 40 chunks, bytes 2-3 = slot (BE16), byte 4 = `0x28` (40), byte 5 = type. W75: all 40 slots all `00` (c01 +1008). One read = 1600 bytes.
-- **Write** (CODE-ONLY, CAUTION): one packet per slot, `22 <slot> 00 00 32 <type> ...` (byte 4 = 50). On every keymap Apply the site writes **all 40 slots**; empty slots go out as zeros, clearing them. No reply parsed. Read 40 B / write 50 B: the sizes are asymmetric.
+- **Write** (CAUTION): one packet per slot, `22 <slot> 00 00 32 <type> ...` (byte 4 = 50). On every keymap Apply the site writes **all 40 slots**; empty slots go out as zeros, clearing them. Each write is acked `22 00 00 00 00` (section 2.7); the site parses no reply. Framing and acks CONFIRMED with all-zero content (c09, c13: 240 writes); **non-empty slots have never been captured**, so their write format stays CODE-ONLY. Read 40 B / write 50 B: the sizes are asymmetric. OpenWraith only ever writes all-zero slots (clearing a slot).
 - 40 slots; at most 40 entries, at most 5 MDS.
 
 | Type (byte 5) | Name | Offered on W75 |
@@ -1386,7 +1401,7 @@ Ordered by value for our application. "Resolved by" lists the capture-plan items
 |---|---|---|
 | Q1 | **Partly resolved (C2): triggers (`0x21`, incl. RT bytes 30-31) and `0x07` persist across reconnect and USB power loss.** Still open: do the remaining writes persist across a USB power cycle: per-key colours (`0x09`, shown only across a page reload), keymap, macros, dead band, SOCD, switch types? Are trigger bytes beyond the declared length (29-35) applied? | C2, then reconnects in C7, C13, C14 |
 | Q2 | **Partly resolved (c04): `21/12` is acked with `21 .. 02 12 01` and followed by a `21 .. 03 11 PP 00` push (section 4.5.3).** Still open: does the keyboard push a `0x11` report when the profile is changed on the keyboard (Fn + 1..4)? | C3, C6 |
-| Q3 | **Partly resolved (c04): triggers (`21/05`) and the main light (`07`) are per profile (section 4.5.4).** Still open: which of the others are per onboard profile and which are global (`08`, `09` tables, keymaps, macros, advanced keys, SOCD, dead band, switch types, poll rate, Win-Lock/6-key, gamepad)? | C5 |
+| Q3 | **Partly resolved (c04, c10): triggers (`21/05`), the main light (`07`), the base keymap (`18 80`) and the macro slots (`19 8n`) are per profile (section 4.5.4).** Still open: which of the others are per onboard profile and which are global (`08`, `09` tables, Fn keymap, advanced keys, SOCD, dead band, switch types, poll rate, Win-Lock/6-key, gamepad)? | C5, app test (an all-profile backup shows which tables differ between profiles) |
 | Q4 | What does `14 00 00 00 01 01` reset (current profile or all)? Does it include triggers and dead band? What is its reply, and does that reply carry byte 5 = 1 (which would make the site loop)? | C23 |
 | Q5 | What do replies to other `0x14` writes look like (Win-Lock, 6-key, gamepad)? Does `14 03 .. 01 01` (Xbox) get echoed with byte 5 = 1, colliding with the site's reset trigger? | C9, C22 |
 | Q6 | What does the layout file `W75HEARGB.json` contain (names, codes, indices, Fn code1, knob regions, layout type)? Are the inferred legends in section 5 right? | C1, C12 |
@@ -1455,13 +1470,15 @@ Instructions for the maintainer. Use the existing capture hook with logging on, 
 
 Captures `c08`-`c13` (`captures/capture_08_profile_switch.json` … `capture_13_macro_ab_on_caps.json`). Plan items done: C3, C7, C8 (a, b; the Select-All part was skipped), C13, C14 (create, bind to Caps, typing test, unbind), C19. All confirmations are already reflected in the master table (section 3).
 
-- **Profiles (C3):** `21/12` select is acked and followed by an unsolicited `11 PP` push; the site re-reads everything and writes nothing. **Main light and per-key triggers are per onboard profile** (profile 2 kept factory triggers and its own light while profile 1 had Q 1.50 mm and W RT 0D; the user saw the light change). Q3 is answered for these two; keymap, macros, dead band, SOCD and switch types are still unverified for scope.
+- **Profiles (C3):** `21/12` select is acked and followed by an unsolicited `11 PP` push; the site re-reads everything and writes nothing. **Main light and per-key triggers are per onboard profile** (profile 2 kept factory triggers and its own light while profile 1 had Q 1.50 mm and W RT 0D; the user saw the light change). **The base keymap and the macro slots are per profile too** (OBSERVED, c10: profile 2 read an all-zero base keymap and all-`FF` macro slots while profile 1 read the site's c09 knob defaults and all-`00` slots). Q3 is answered for these four; Fn keymap, advanced keys, dead band, SOCD, colour tables and switch types are still unverified for scope.
 - **Key mask orientation (C8, Q9): CONFIRMED** byte = 6 + column, bit = 1 << row (Q at row 2, col 1 -> byte 7 = `0x04`).
 - **Separate press/release (C8, Q16): CONFIRMED** mode `0D`, byte 30 press, byte 31 release.
 - **Reset Trigger (C19): CONFIRMED**, see row 34; only the active profile was affected as far as the captures show (profile 2 was already at factory values, so this is not proof).
 - **Keymap / macros / advanced keys (C7, C14):** every Apply rewrites 10 macro slots (5 chunks each), both keymap layers (10 chunks each) and 40 advanced-key slots: 110 packets, every packet acked with a zero-length report of the same cmd. The site also forces its knob defaults into the base keymap (slots 16-21: `07 12`, `07 11`, `07 10`, `02 02`, `03 01`, `03 00`) and `01 00 00 00` at Fn (121) although the device had all zeros before; these now read back from the device. **The lossy whole-table rewrite (section 6.1 row c) is CONFIRMED.**
 - **Dead band (C13): CONFIRMED** layout and units; the site rewrites the whole 264-byte table on every slider step (37 full writes in about 20 s).
+- **Acknowledgements:** every write of the session was acked (section 2.7); acks carry no chunk index, and `18`, `19` and `22` acks do not echo byte 1.
 - **Implications for our writer:** read the table from the device first, change only the target entries, write it back once (debounced), and verify by reading it back; never synthesise defaults for entries we did not change.
+- **Never captured** (keep these CODE-ONLY until a capture or a hardware test shows them): a trigger mask with more than one key; a read-back of a non-empty macro slot; a non-zero dead-band read; Fn-layer writes with non-zero content; non-empty advanced-key writes; persistence of keymap, macros and dead band across a power cycle (Q1).
 
 ## Appendix A. Corrections to the earlier draft
 

@@ -11,16 +11,21 @@
 //!
 //! # Scope
 //!
-//! A backup holds the **active onboard profile** only. The W75 has four
-//! onboard profiles; reading another one would require switching profiles,
-//! which is a write and is out of scope for Phase 1. Triggers and the main
-//! light are per profile (seen in capture c04). The backup also contains the
-//! custom colour tables, the polling rate and the switch types, which are
-//! probably global; that is unverified (spec section 4.5.4, open question
-//! Q3). [`read_all`] reads the active profile at the start and again at the
-//! end and fails with [`BackupError::ProfileChanged`] if it changed in
+//! A plain backup ([`read_all`], schema 1) holds the **active onboard
+//! profile** only; reading it never writes anything. The W75 has four
+//! onboard profiles; triggers, the main light, the base keymap and the macros
+//! are per profile (captures c04 and c10). The backup also contains the
+//! custom colour tables, the polling rate, the switch types and the other
+//! tables whose profile scope is unverified (spec section 4.5.4, open
+//! question Q3). [`read_all`] reads the active profile at the start and again
+//! at the end and fails with [`BackupError::ProfileChanged`] if it changed in
 //! between (a switch away and back during the backup is only noticed if the
 //! keyboard reports it).
+//!
+//! An all-profile backup ([`read_profiles`](crate::read_profiles), schema 2)
+//! also holds a complete snapshot of every other profile. Reading them
+//! switches profiles (`21/12`, the only write it sends) and returns to the
+//! original profile.
 //!
 //! # File format
 //!
@@ -44,20 +49,29 @@
 //! }
 //! ```
 //!
+//! Schema 2 is schema 1 plus `"scope": "profiles"` and a `profiles` array
+//! with one complete snapshot per other profile:
+//! `"profiles": [{ "profile": 2, "entries": [...] }, ...]`. The top-level
+//! `entries` stay the snapshot of the profile that was active when the
+//! backup started, so everything that reads a schema-1 backup works on it.
+//! Single-profile backups are still written as schema 1, byte for byte.
+//!
 //! When a backup is read, only `format`, `schema_version`, `tool`,
-//! `created_at`, `scope`, `note`, `device.usb` and `entries[].raw` are taken
-//! from the file. Everything else is derived from the raw reports.
+//! `created_at`, `scope`, `note`, `device.usb`, `entries[].raw` and
+//! `profiles[].entries[].raw` are taken from the file. Everything else
+//! (including each snapshot's `profile`) is derived from the raw reports.
 
 use std::collections::HashSet;
 use std::io::Write as _;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openwraith_protocol::{
     ActiveCustomTable, ActiveProfile, AdvancedKeys, ColorTable, DeadBandTable, Decoded,
     DeviceEvent, DeviceInfo, FnLockedKeys, FromResponse, KeyTrigger, KeymapTable, LightEffect,
-    LightModeList, MacroSlot, Model, PollRate, RawResponse, ReadRequest, SocdPairs, SocdSettings,
-    Status, SwitchTypeList, SwitchTypeTable, TriggerGlobal, model_for_product,
+    LightModeList, MacroSlot, Model, PollRate, ProfileId, RawResponse, ReadRequest, SocdPairs,
+    SocdSettings, Status, SwitchTypeList, SwitchTypeTable, TriggerGlobal, model_for_product,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,18 +82,39 @@ use crate::transport::{Transport, UsbInfo};
 
 /// Value of the `format` field of every backup file.
 pub const BACKUP_FORMAT: &str = "openwraith-backup";
-/// Current (and highest readable) backup schema version.
+/// Schema version of single-profile backups (written by [`read_all`]).
 pub const BACKUP_SCHEMA_VERSION: u32 = 1;
+/// Schema version of all-profile backups (written by
+/// [`read_profiles`](crate::read_profiles) when it read more than one
+/// profile).
+pub const BACKUP_SCHEMA_VERSION_PROFILES: u32 = 2;
+/// Highest schema version this crate reads.
+pub const BACKUP_SCHEMA_MAX: u32 = 2;
 /// File name extension of backup files (without the leading dot).
 pub const BACKUP_EXTENSION: &str = "owbackup.json";
-/// Value of the `scope` field: what a backup covers.
+/// Value of the `scope` field of a single-profile backup.
 pub const BACKUP_SCOPE: &str = "active_profile_and_global_settings";
-/// Human-readable explanation stored in every backup.
+/// Value of the `scope` field of an all-profile backup (schema 2).
+pub const BACKUP_SCOPE_PROFILES: &str = "profiles";
+/// Human-readable explanation stored in every single-profile backup.
 pub const BACKUP_NOTE: &str = "Read-only snapshot of the ACTIVE onboard profile. Other onboard \
 profiles are not included. Tables whose profile scope is unverified (custom colour tables, \
 polling rate, switch types) are included as read. The raw reports are authoritative; the decoded \
 views, the device header and the active profile are regenerated from them when the file is \
 loaded.";
+
+/// The `note` of an all-profile backup whose primary snapshot is `profile`.
+fn profiles_note(profile: u8) -> String {
+    format!(
+        "Snapshot of several onboard profiles. `entries` hold profile {profile}, the profile that \
+         was active when the backup started; `profiles` hold the others. Reading them switched the \
+         keyboard's active profile (the lighting changed briefly) and switched back to profile \
+         {profile} at the end; nothing else was written. Every snapshot is a complete read, \
+         including the tables whose profile scope is unverified. The raw reports are \
+         authoritative; the decoded views, the device header and each snapshot's profile number \
+         are regenerated from them when the file is loaded."
+    )
+}
 
 /// Name and version of the program that made a backup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,38 +236,58 @@ impl From<BackupEntryRepr> for BackupEntry {
     }
 }
 
+/// A complete snapshot of one more onboard profile in an all-profile backup
+/// (schema 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileSnapshot {
+    /// The profile (1-4), derived from the snapshot's raw `21/11` reply when
+    /// the backup is loaded.
+    pub profile: u8,
+    /// Every reply of the snapshot, in the order the requests were sent (the
+    /// same plan as a single-profile backup).
+    pub entries: Vec<BackupEntry>,
+}
+
 /// A backup of the keyboard's settings. See the [module docs](self).
 ///
 /// Deserializing a `Backup` (with [`from_json`](Self::from_json) or with
 /// any serde deserializer) checks `format` and `schema_version`, rejects
-/// files that store a request twice, and rebuilds the decoded views, the
-/// `device` header and `active_profile` from the raw reports.
+/// files that store a request twice, validates every profile snapshot, and
+/// rebuilds the decoded views, the `device` header, `active_profile` and
+/// each snapshot's profile from the raw reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "BackupRepr")]
 pub struct Backup {
     /// Always [`BACKUP_FORMAT`].
     pub format: String,
-    /// Schema version, currently [`BACKUP_SCHEMA_VERSION`].
+    /// Schema version: [`BACKUP_SCHEMA_VERSION`] (1) for a single-profile
+    /// backup, [`BACKUP_SCHEMA_VERSION_PROFILES`] (2) for an all-profile one.
     pub schema_version: u32,
     /// Program that made the backup.
     pub tool: ToolInfo,
     /// Creation time, RFC 3339 in UTC (e.g. `2026-10-24T07:19:00Z`).
     pub created_at: String,
-    /// What the backup covers, currently always [`BACKUP_SCOPE`].
+    /// What the backup covers: [`BACKUP_SCOPE`] or [`BACKUP_SCOPE_PROFILES`].
     pub scope: String,
-    /// Human-readable explanation of the scope ([`BACKUP_NOTE`]).
+    /// Human-readable explanation of the scope.
     pub note: String,
     /// The keyboard (derived from the raw device-info reply).
     pub device: DeviceIdentity,
-    /// Active onboard profile (1-4) the tables belong to (derived from the
-    /// raw `21/11` reply).
+    /// Active onboard profile (1-4) the top-level entries belong to (derived
+    /// from the raw `21/11` reply).
     pub active_profile: Option<u8>,
-    /// Every reply, in the order the requests were sent.
+    /// Every reply of the primary snapshot (the profile that was active when
+    /// the backup started), in the order the requests were sent.
     pub entries: Vec<BackupEntry>,
+    /// Snapshots of the other onboard profiles, in ascending profile order
+    /// (schema 2 only; empty in a single-profile backup).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileSnapshot>,
 }
 
 /// What deserialization reads of a [`Backup`]. Derived fields (`device`
-/// except `usb`, `active_profile`, decoded views) are not read.
+/// except `usb`, `active_profile`, decoded views, snapshot profiles) are not
+/// read.
 #[derive(Deserialize)]
 struct BackupRepr {
     format: String,
@@ -244,6 +299,14 @@ struct BackupRepr {
     note: String,
     #[serde(default)]
     device: DeviceRepr,
+    entries: Vec<BackupEntry>,
+    #[serde(default)]
+    profiles: Option<Vec<ProfileSnapshotRepr>>,
+}
+
+/// What deserialization reads of a [`ProfileSnapshot`]: the raw replies.
+#[derive(Deserialize)]
+struct ProfileSnapshotRepr {
     entries: Vec<BackupEntry>,
 }
 
@@ -259,12 +322,7 @@ impl TryFrom<BackupRepr> for Backup {
 
     fn try_from(repr: BackupRepr) -> Result<Self, BackupError> {
         check_header(Some(repr.format.as_str()), Some(repr.schema_version))?;
-        let mut seen = HashSet::new();
-        if let Some(entry) = repr.entries.iter().find(|e| !seen.insert(e.request())) {
-            return Err(BackupError::DuplicateEntry {
-                request: entry.request(),
-            });
-        }
+        check_duplicates(&repr.entries)?;
         let mut backup = Backup {
             format: repr.format,
             schema_version: repr.schema_version,
@@ -275,6 +333,7 @@ impl TryFrom<BackupRepr> for Backup {
             device: DeviceIdentity::unknown(None),
             active_profile: None,
             entries: repr.entries,
+            profiles: Vec::new(),
         };
         // The raw replies are authoritative: the header is derived from them.
         backup.device = match backup.device_info() {
@@ -286,8 +345,115 @@ impl TryFrom<BackupRepr> for Backup {
             None => DeviceIdentity::unknown(repr.device.usb),
         };
         backup.active_profile = backup.active_profile_record().map(|p| p.profile);
+        if let Some(snapshots) = repr.profiles {
+            if backup.schema_version < BACKUP_SCHEMA_VERSION_PROFILES {
+                return Err(BackupError::InvalidSnapshot {
+                    profile: None,
+                    reason: format!(
+                        "a schema {} backup cannot contain other profiles",
+                        backup.schema_version
+                    ),
+                });
+            }
+            backup.profiles = validate_snapshots(&backup, snapshots)?;
+        }
         Ok(backup)
     }
+}
+
+/// Rejects a list of entries that stores a request twice.
+fn check_duplicates(entries: &[BackupEntry]) -> Result<(), BackupError> {
+    let mut seen = HashSet::new();
+    match entries.iter().find(|e| !seen.insert(e.request())) {
+        Some(entry) => Err(BackupError::DuplicateEntry {
+            request: entry.request(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The profile of a list of entries, from its raw `21/11` reply.
+fn entries_profile(entries: &[BackupEntry]) -> Option<u8> {
+    entries
+        .iter()
+        .find(|e| e.request() == ReadRequest::ActiveProfile)
+        .and_then(|e| ActiveProfile::from_response(&e.raw).ok())
+        .map(|p| p.profile)
+}
+
+/// The product code of a list of entries, from its raw `0D` reply.
+fn entries_product(entries: &[BackupEntry]) -> Option<String> {
+    entries
+        .iter()
+        .find(|e| e.request() == ReadRequest::DeviceInfo)
+        .and_then(|e| DeviceInfo::from_response(&e.raw).ok())
+        .and_then(|info| info.product)
+}
+
+/// Validates the snapshots of a schema-2 backup and derives their profiles.
+fn validate_snapshots(
+    backup: &Backup,
+    snapshots: Vec<ProfileSnapshotRepr>,
+) -> Result<Vec<ProfileSnapshot>, BackupError> {
+    let invalid =
+        |profile: Option<u8>, reason: String| BackupError::InvalidSnapshot { profile, reason };
+    let Some(primary) = backup
+        .active_profile
+        .filter(|p| ProfileId::new(*p).is_some())
+    else {
+        return Err(invalid(
+            None,
+            "an all-profile backup needs an active-profile reply (1-4) in its primary snapshot"
+                .to_string(),
+        ));
+    };
+    let Some(product) = backup.device.product.clone() else {
+        return Err(invalid(
+            None,
+            "an all-profile backup needs a device-info reply in its primary snapshot".to_string(),
+        ));
+    };
+    let mut seen = vec![primary];
+    let mut out = Vec::with_capacity(snapshots.len());
+    for snapshot in snapshots {
+        check_duplicates(&snapshot.entries)?;
+        let Some(profile) = entries_profile(&snapshot.entries) else {
+            return Err(invalid(
+                None,
+                "a profile snapshot has no active-profile reply".to_string(),
+            ));
+        };
+        if ProfileId::new(profile).is_none() {
+            return Err(invalid(
+                Some(profile),
+                format!("a profile snapshot reports profile {profile}, outside 1-4"),
+            ));
+        }
+        if seen.contains(&profile) {
+            return Err(invalid(
+                Some(profile),
+                format!("profile {profile} is stored more than once"),
+            ));
+        }
+        seen.push(profile);
+        match entries_product(&snapshot.entries) {
+            Some(p) if p == product => {}
+            other => {
+                return Err(invalid(
+                    Some(profile),
+                    format!(
+                        "the snapshot of profile {profile} is from another keyboard ({})",
+                        other.as_deref().unwrap_or("no device-info reply")
+                    ),
+                ));
+            }
+        }
+        out.push(ProfileSnapshot {
+            profile,
+            entries: snapshot.entries,
+        });
+    }
+    Ok(out)
 }
 
 /// Checks the `format` marker and the schema version of a backup.
@@ -299,11 +465,188 @@ fn check_header(format: Option<&str>, schema_version: Option<u32>) -> Result<(),
         });
     }
     match schema_version {
-        Some(found) if found > BACKUP_SCHEMA_VERSION => Err(BackupError::UnsupportedSchema {
+        Some(found) if found > BACKUP_SCHEMA_MAX => Err(BackupError::UnsupportedSchema {
             found,
-            supported: BACKUP_SCHEMA_VERSION,
+            supported: BACKUP_SCHEMA_MAX,
         }),
         _ => Ok(()),
+    }
+}
+
+/// Read-only view of one profile snapshot of a [`Backup`]: the primary
+/// snapshot (top-level `entries`) or one of the `profiles`.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotView<'a> {
+    profile: Option<u8>,
+    primary: bool,
+    entries: &'a [BackupEntry],
+}
+
+/// Generates a view accessor returning the first decoded value of one variant.
+macro_rules! view_first {
+    ($(#[$doc:meta])* $name:ident => $variant:ident($ty:ty)) => {
+        $(#[$doc])*
+        pub fn $name(&self) -> Option<&'a $ty> {
+            self.decoded().find_map(|d| match d {
+                Decoded::$variant(value) => Some(value),
+                _ => None,
+            })
+        }
+    };
+}
+
+/// Generates a view accessor returning every decoded value of one variant.
+macro_rules! view_all {
+    ($(#[$doc:meta])* $name:ident => $variant:ident($ty:ty)) => {
+        $(#[$doc])*
+        pub fn $name(&self) -> Vec<&'a $ty> {
+            self.decoded()
+                .filter_map(|d| match d {
+                    Decoded::$variant(value) => Some(value),
+                    _ => None,
+                })
+                .collect()
+        }
+    };
+}
+
+impl<'a> SnapshotView<'a> {
+    /// The profile of the snapshot (from its raw `21/11` reply), if known.
+    pub fn profile(&self) -> Option<u8> {
+        self.profile
+    }
+
+    /// Whether this is the primary snapshot (the top-level `entries`).
+    pub fn is_primary(&self) -> bool {
+        self.primary
+    }
+
+    /// Every entry of the snapshot.
+    pub fn entries(&self) -> &'a [BackupEntry] {
+        self.entries
+    }
+
+    /// The model, from the snapshot's device-info reply.
+    pub fn model(&self) -> Option<&'static Model> {
+        self.device_info()
+            .and_then(|info| info.product.as_deref())
+            .and_then(model_for_product)
+    }
+
+    /// The raw reply to `request`, if the snapshot has one.
+    pub fn response(&self, request: ReadRequest) -> Option<&'a RawResponse> {
+        self.entries
+            .iter()
+            .map(|e| &e.raw)
+            .find(|raw| raw.request() == request)
+    }
+
+    /// Decodes the reply to `request` as `M` (from the raw reports).
+    pub fn get<M: FromResponse>(
+        &self,
+        request: ReadRequest,
+    ) -> Option<Result<M, openwraith_protocol::DecodeError>> {
+        self.response(request).map(M::from_response)
+    }
+
+    /// Every decoded reply, in request order.
+    pub fn decoded(&self) -> impl Iterator<Item = &'a Decoded> + 'a {
+        self.entries.iter().filter_map(|e| e.decoded.as_ref())
+    }
+
+    /// Entries whose raw reports could not be decoded.
+    pub fn undecoded(&self) -> impl Iterator<Item = &'a BackupEntry> + 'a {
+        self.entries.iter().filter(|e| e.decoded.is_none())
+    }
+
+    view_first!(
+        /// Device info (`0D`).
+        device_info => DeviceInfo(DeviceInfo)
+    );
+    view_first!(
+        /// Status and capability flags (`01`).
+        status => Status(Status)
+    );
+    view_first!(
+        /// Fn-layer locked keys (`0E`).
+        fn_locked_keys => FnLockedKeys(FnLockedKeys)
+    );
+    view_first!(
+        /// Active onboard profile (`21/11`).
+        active_profile_record => ActiveProfile(ActiveProfile)
+    );
+    view_first!(
+        /// Main-light mode list (`0A`).
+        main_light_modes => MainLightModes(LightModeList)
+    );
+    view_first!(
+        /// Side-light mode list (`02`).
+        side_light_modes => SideLightModes(LightModeList)
+    );
+    view_first!(
+        /// Main light effect (`07 01`).
+        main_light => MainLight(LightEffect)
+    );
+    view_first!(
+        /// Side light effect (`08 01`).
+        side_light => SideLight(LightEffect)
+    );
+    view_first!(
+        /// Active custom colour table (`09 20`).
+        active_custom_table => ActiveCustomTable(ActiveCustomTable)
+    );
+    view_all!(
+        /// Custom colour tables (`09 80` / `09 81`).
+        custom_colors => CustomColors(ColorTable)
+    );
+    view_all!(
+        /// Keymap layers (`18 80` / `18 82`).
+        keymaps => Keymap(KeymapTable)
+    );
+    view_all!(
+        /// Macro slots (`19 80`..`19 89`).
+        macros => Macro(MacroSlot)
+    );
+    view_first!(
+        /// Advanced keys (`22 80`).
+        advanced_keys => AdvancedKeys(AdvancedKeys)
+    );
+    view_first!(
+        /// SOCD power and hotkey (`24 02`).
+        socd_settings => SocdSettings(SocdSettings)
+    );
+    view_first!(
+        /// SOCD pairs (`24 01`).
+        socd_pairs => SocdPairs(SocdPairs)
+    );
+    view_first!(
+        /// Supported switch types (`25 00`).
+        switch_type_list => SwitchTypeList(SwitchTypeList)
+    );
+    view_first!(
+        /// Per-key switch types (`25 02`).
+        switch_types => SwitchTypes(SwitchTypeTable)
+    );
+    view_first!(
+        /// Dead band table (`26 00`).
+        dead_band => DeadBand(DeadBandTable)
+    );
+    view_first!(
+        /// Global trigger parameters (`21/04`).
+        trigger_global => TriggerGlobal(TriggerGlobal)
+    );
+    view_all!(
+        /// Per-key trigger settings (`21/05`), in request (key index) order.
+        key_triggers => KeyTrigger(KeyTrigger)
+    );
+    view_first!(
+        /// Polling rate (`21/09`).
+        poll_rate => PollRate(PollRate)
+    );
+
+    /// Trigger settings of the key with this index.
+    pub fn key_trigger(&self, index: u8) -> Option<&'a KeyTrigger> {
+        self.key_triggers().into_iter().find(|t| t.index() == index)
     }
 }
 
@@ -335,13 +678,57 @@ macro_rules! all_decoded {
     };
 }
 
+/// The typed accessors of [`Backup`] read the **primary** snapshot (the
+/// top-level `entries`); use [`Backup::snapshot`] for another profile.
 impl Backup {
     /// The model the backup was read from, if this version knows it.
     pub fn model(&self) -> Option<&'static Model> {
         self.device.product.as_deref().and_then(model_for_product)
     }
 
-    /// The raw reply to `request`, if the backup has one.
+    /// Whether this is an all-profile backup (schema 2).
+    pub fn is_all_profiles(&self) -> bool {
+        self.schema_version >= BACKUP_SCHEMA_VERSION_PROFILES
+    }
+
+    /// The primary snapshot (the profile that was active when the backup
+    /// started).
+    pub fn primary(&self) -> SnapshotView<'_> {
+        SnapshotView {
+            profile: self.active_profile,
+            primary: true,
+            entries: &self.entries,
+        }
+    }
+
+    /// The snapshot of `profile`, if the backup has one.
+    pub fn snapshot(&self, profile: ProfileId) -> Option<SnapshotView<'_>> {
+        self.snapshots()
+            .into_iter()
+            .find(|s| s.profile == Some(profile.get()))
+    }
+
+    /// Every snapshot: the primary one first, then the other profiles in
+    /// stored (ascending) order.
+    pub fn snapshots(&self) -> Vec<SnapshotView<'_>> {
+        let mut out = vec![self.primary()];
+        out.extend(self.profiles.iter().map(|s| SnapshotView {
+            profile: Some(s.profile),
+            primary: false,
+            entries: &s.entries,
+        }));
+        out
+    }
+
+    /// The profiles the backup holds (1-4), ascending.
+    pub fn profile_numbers(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.snapshots().iter().filter_map(|s| s.profile).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The raw reply to `request` in the primary snapshot, if any.
     pub fn response(&self, request: ReadRequest) -> Option<&RawResponse> {
         self.entries
             .iter()
@@ -357,12 +744,13 @@ impl Backup {
         self.response(request).map(M::from_response)
     }
 
-    /// Every decoded reply, in request order.
+    /// Every decoded reply of the primary snapshot, in request order.
     pub fn decoded(&self) -> impl Iterator<Item = &Decoded> {
         self.entries.iter().filter_map(|e| e.decoded.as_ref())
     }
 
-    /// Entries whose raw reports could not be decoded.
+    /// Entries of the primary snapshot whose raw reports could not be
+    /// decoded ([`SnapshotView::undecoded`] for the others).
     pub fn undecoded(&self) -> impl Iterator<Item = &BackupEntry> {
         self.entries.iter().filter(|e| e.decoded.is_none())
     }
@@ -452,7 +840,7 @@ impl Backup {
         poll_rate => PollRate(PollRate)
     );
 
-    /// Trigger settings of the key with this index.
+    /// Trigger settings of the key with this index (primary snapshot).
     pub fn key_trigger(&self, index: u8) -> Option<&KeyTrigger> {
         self.key_triggers().into_iter().find(|t| t.index() == index)
     }
@@ -467,12 +855,14 @@ impl Backup {
     /// Parses a backup and rebuilds every derived field from the raw reports.
     ///
     /// Checks the `format` marker and refuses schema versions newer than
-    /// [`BACKUP_SCHEMA_VERSION`] before looking at the rest of the file, so
+    /// [`BACKUP_SCHEMA_MAX`] before looking at the rest of the file, so
     /// these problems are reported as [`BackupError::NotABackup`] and
     /// [`BackupError::UnsupportedSchema`]. Every raw reply is re-validated
-    /// (all chunks present, every report matching its request), and a file
-    /// that stores a request twice is refused
-    /// ([`BackupError::DuplicateEntry`]).
+    /// (all chunks present, every report matching its request), a file that
+    /// stores a request twice is refused ([`BackupError::DuplicateEntry`]),
+    /// and every profile snapshot is checked ([`BackupError::InvalidSnapshot`]:
+    /// profile 1-4 from its `21/11` reply, unique, not the primary's, same
+    /// product; a schema-1 file must not have snapshots).
     pub fn from_json(text: &str) -> Result<Backup, BackupError> {
         #[derive(Deserialize)]
         struct Header {
@@ -549,6 +939,15 @@ impl Backup {
     /// Suggested file name: `openwraith-<product>-<YYYYMMDD-HHMMSS>.owbackup.json`
     /// (time in UTC, from [`created_at`](Self::created_at)).
     pub fn default_file_name(&self) -> String {
+        format!(
+            "openwraith-{}-{}.{BACKUP_EXTENSION}",
+            self.file_product(),
+            self.file_stamp()
+        )
+    }
+
+    /// The product code for file names (`keyboard` if unknown).
+    pub(crate) fn file_product(&self) -> String {
         let product: String = self
             .device
             .product
@@ -557,13 +956,64 @@ impl Backup {
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
             .collect();
-        let product = if product.is_empty() {
+        if product.is_empty() {
             "keyboard".to_string()
         } else {
             product
+        }
+    }
+
+    /// `YYYYMMDD-HHMMSS` of the creation time, or `undated`.
+    pub(crate) fn file_stamp(&self) -> String {
+        file_stamp(&self.created_at).unwrap_or_else(|| "undated".to_string())
+    }
+
+    /// A backup of one snapshot (schema 1) or of several (schema 2).
+    pub(crate) fn from_snapshots(
+        primary: Snapshot,
+        others: Vec<Snapshot>,
+        tool: ToolInfo,
+        created_at: String,
+        usb: Option<UsbInfo>,
+    ) -> Backup {
+        let device = DeviceIdentity::new(&primary.info, Some(primary.model), usb);
+        let (schema_version, scope, note) = match (others.is_empty(), primary.profile) {
+            (false, Some(profile)) => (
+                BACKUP_SCHEMA_VERSION_PROFILES,
+                BACKUP_SCOPE_PROFILES.to_string(),
+                profiles_note(profile),
+            ),
+            _ => (
+                BACKUP_SCHEMA_VERSION,
+                BACKUP_SCOPE.to_string(),
+                BACKUP_NOTE.to_string(),
+            ),
         };
-        let stamp = file_stamp(&self.created_at).unwrap_or_else(|| "undated".to_string());
-        format!("openwraith-{product}-{stamp}.{BACKUP_EXTENSION}")
+        let mut profiles: Vec<ProfileSnapshot> = others
+            .into_iter()
+            .filter_map(|s| {
+                s.profile.map(|profile| ProfileSnapshot {
+                    profile,
+                    entries: s.entries,
+                })
+            })
+            .collect();
+        profiles.sort_by_key(|s| s.profile);
+        if schema_version == BACKUP_SCHEMA_VERSION {
+            profiles.clear();
+        }
+        Backup {
+            format: BACKUP_FORMAT.to_string(),
+            schema_version,
+            tool,
+            created_at,
+            scope,
+            note,
+            device,
+            active_profile: primary.profile,
+            entries: primary.entries,
+            profiles,
+        }
     }
 }
 
@@ -619,7 +1069,52 @@ pub fn read_all_with<T: Transport>(
     options: &BackupOptions,
     mut progress: impl FnMut(Progress),
 ) -> Result<Backup, BackupError> {
+    read_all_cancellable(session, options, |p| {
+        progress(p);
+        ControlFlow::Continue(())
+    })
+}
+
+/// [`read_all_with`] with a progress callback that can cancel the backup:
+/// returning [`ControlFlow::Break`] stops after the current request with
+/// [`BackupError::Cancelled`].
+pub fn read_all_cancellable<T: Transport>(
+    session: &mut Session<T>,
+    options: &BackupOptions,
+    mut progress: impl FnMut(Progress) -> ControlFlow<()>,
+) -> Result<Backup, BackupError> {
     let created_at = rfc3339_utc(options.created_at.unwrap_or_else(SystemTime::now));
+    let snapshot = read_snapshot(session, None, &mut progress)?;
+    let usb = session.transport().usb_info();
+    Ok(Backup::from_snapshots(
+        snapshot,
+        Vec::new(),
+        options.tool.clone(),
+        created_at,
+        usb,
+    ))
+}
+
+/// One complete read of the active profile.
+pub(crate) struct Snapshot {
+    /// Decoded device info.
+    pub(crate) info: DeviceInfo,
+    /// The model.
+    pub(crate) model: &'static Model,
+    /// Every reply, in plan order.
+    pub(crate) entries: Vec<BackupEntry>,
+    /// The profile from the plan's `21/11` reply.
+    pub(crate) profile: Option<u8>,
+}
+
+/// Reads the [`ReadRequest::full_read_plan`] of the active profile (see
+/// [`read_all_with`]). With `expected_profile`, the plan's `21/11` reply and
+/// the final check must report that profile.
+pub(crate) fn read_snapshot<T: Transport>(
+    session: &mut Session<T>,
+    expected_profile: Option<u8>,
+    progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
+) -> Result<Snapshot, BackupError> {
     let events_before = session.events().len();
 
     let (info_raw, info, model) = identify(session)?;
@@ -639,12 +1134,26 @@ pub fn read_all_with<T: Transport>(
             Some(pos) => prefetched.swap_remove(pos),
             None => session.request(request)?,
         };
-        entries.push(BackupEntry::new(raw));
-        progress(Progress {
+        let entry = BackupEntry::new(raw);
+        if let (Some(expected), Some(Decoded::ActiveProfile(p))) =
+            (expected_profile, &entry.decoded)
+        {
+            if p.profile != expected {
+                return Err(BackupError::ProfileChanged {
+                    before: expected,
+                    after: p.profile,
+                });
+            }
+        }
+        entries.push(entry);
+        let step = Progress {
             done: i + 1,
             total,
             request,
-        });
+        };
+        if progress(step).is_break() {
+            return Err(BackupError::Cancelled);
+        }
     }
 
     let active_profile = entries.iter().find_map(|e| match &e.decoded {
@@ -652,12 +1161,15 @@ pub fn read_all_with<T: Transport>(
         _ => None,
     });
     let check: ActiveProfile = session.read(ReadRequest::ActiveProfile)?;
-    progress(Progress {
+    let step = Progress {
         done: total,
         total,
         request: ReadRequest::ActiveProfile,
-    });
-    if let Some(before) = active_profile {
+    };
+    if progress(step).is_break() {
+        return Err(BackupError::Cancelled);
+    }
+    if let Some(before) = expected_profile.or(active_profile) {
         let reported = session.events()[events_before..]
             .iter()
             .filter_map(|event| match event {
@@ -672,16 +1184,11 @@ pub fn read_all_with<T: Transport>(
         }
     }
 
-    Ok(Backup {
-        format: BACKUP_FORMAT.to_string(),
-        schema_version: BACKUP_SCHEMA_VERSION,
-        tool: options.tool.clone(),
-        created_at,
-        scope: BACKUP_SCOPE.to_string(),
-        note: BACKUP_NOTE.to_string(),
-        device: DeviceIdentity::new(&info, Some(model), session.transport().usb_info()),
-        active_profile,
+    Ok(Snapshot {
+        info,
+        model,
         entries,
+        profile: active_profile,
     })
 }
 
@@ -765,14 +1272,18 @@ mod tests {
     #[test]
     fn header_checks() {
         assert!(check_header(Some(BACKUP_FORMAT), Some(1)).is_ok());
+        assert!(check_header(Some(BACKUP_FORMAT), Some(2)).is_ok());
         assert!(check_header(Some(BACKUP_FORMAT), None).is_ok());
         assert!(matches!(
             check_header(Some("something-else"), Some(1)),
             Err(BackupError::NotABackup { found: Some(f), .. }) if f == "something-else"
         ));
         assert!(matches!(
-            check_header(Some(BACKUP_FORMAT), Some(2)),
-            Err(BackupError::UnsupportedSchema { found: 2, .. })
+            check_header(Some(BACKUP_FORMAT), Some(3)),
+            Err(BackupError::UnsupportedSchema {
+                found: 3,
+                supported: 2
+            })
         ));
     }
 }

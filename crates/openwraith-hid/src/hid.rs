@@ -12,10 +12,11 @@ use std::time::Duration;
 use hidapi::{HidApi, HidDevice};
 use openwraith_protocol::{
     CONFIG_USAGE, CONFIG_USAGE_PAGE, OutPacket, PRODUCT_IDS, REPORT_LEN, Report, VENDOR_ID,
+    WritePacket,
 };
 
 use crate::error::TransportError;
-use crate::transport::{Transport, UsbInfo};
+use crate::transport::{Transport, UsbInfo, WriteTransport};
 
 /// Whether a HID interface with these identifiers is the configuration
 /// interface of a supported keyboard.
@@ -115,6 +116,16 @@ impl HidBackend {
             descriptor: device.clone(),
         })
     }
+
+    /// Opens the configuration interface described by `device` for writing
+    /// (Phase 2): the returned transport implements [`WriteTransport`] as
+    /// well as [`Transport`]. Use [`open`](Self::open) for read-only work.
+    pub fn open_writable(
+        &self,
+        device: &DeviceDescriptor,
+    ) -> Result<WritableHidTransport, TransportError> {
+        self.open(device).map(WritableHidTransport)
+    }
 }
 
 /// An open configuration interface of a real keyboard.
@@ -150,7 +161,7 @@ impl Transport for HidTransport {
         let n = self
             .device
             .read_timeout(&mut buf, timeout_millis(timeout))
-            .map_err(|e| TransportError::Read(e.to_string()))?;
+            .map_err(|e| read_error(&e.to_string()))?;
         if n == 0 {
             return Ok(None);
         }
@@ -162,6 +173,63 @@ impl Transport for HidTransport {
     fn usb_info(&self) -> Option<UsbInfo> {
         Some(self.descriptor.usb.clone())
     }
+}
+
+/// An open configuration interface of a real keyboard that may also be
+/// written to (Phase 2). Opened with [`HidBackend::open_writable`].
+///
+/// Writes go through [`WriteTransport::write_command`], which only accepts a
+/// [`WritePacket`]. Use it through a [`Writer`](crate::Writer).
+pub struct WritableHidTransport(HidTransport);
+
+impl WritableHidTransport {
+    /// The descriptor this transport was opened from.
+    pub fn descriptor(&self) -> &DeviceDescriptor {
+        self.0.descriptor()
+    }
+}
+
+impl Transport for WritableHidTransport {
+    fn write(&mut self, packet: &OutPacket) -> Result<(), TransportError> {
+        self.0.write(packet)
+    }
+
+    fn read(&mut self, timeout: Duration) -> Result<Option<Report>, TransportError> {
+        self.0.read(timeout)
+    }
+
+    fn usb_info(&self) -> Option<UsbInfo> {
+        self.0.usb_info()
+    }
+}
+
+impl WriteTransport for WritableHidTransport {
+    fn write_command(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
+        // hidapi expects the report ID first: 0x01 + 63 payload bytes.
+        self.0
+            .device
+            .write(&packet.to_hid_report())
+            .map(drop)
+            .map_err(|e| TransportError::Write(e.to_string()))
+    }
+}
+
+/// The error of a failed read. On Linux and macOS hidapi's `poll` fails with
+/// `EINTR` when a signal handler runs (Ctrl+C: `poll` is never restarted,
+/// whatever `SA_RESTART` says); its message is `strerror(EINTR)`. That is
+/// [`TransportError::Interrupted`], which sessions retry, not a lost
+/// connection.
+fn read_error(message: &str) -> TransportError {
+    if is_interrupted(message) {
+        TransportError::Interrupted
+    } else {
+        TransportError::Read(message.to_string())
+    }
+}
+
+/// Whether hidapi's message describes `EINTR`.
+fn is_interrupted(message: &str) -> bool {
+    message.contains("Interrupted system call") || message.contains("EINTR")
 }
 
 /// hidapi timeout in whole milliseconds, rounded up so that a short but
@@ -201,6 +269,22 @@ mod tests {
         assert_eq!(timeout_millis(Duration::from_micros(1)), 1);
         assert_eq!(timeout_millis(Duration::from_millis(100)), 100);
         assert_eq!(timeout_millis(Duration::from_secs(u64::MAX)), i32::MAX);
+    }
+
+    #[test]
+    fn interrupted_reads_are_not_disconnects() {
+        assert!(matches!(
+            read_error("Interrupted system call"),
+            TransportError::Interrupted
+        ));
+        assert!(matches!(
+            read_error("hid_read_timeout: Error polling: EINTR"),
+            TransportError::Interrupted
+        ));
+        assert!(matches!(
+            read_error("hid_read_timeout: unexpected poll error (device disconnected)"),
+            TransportError::Read(_)
+        ));
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //!
 //! This crate does no I/O. It knows how to build **read** requests, how to
 //! recognise the input reports that answer them, and how to decode the
-//! collected reports into typed models. Talking to a real device is the job of
-//! the `openwraith-hid` crate.
+//! collected reports into typed models. The separate [`write`](mod@write) module builds
+//! the few write packets that are confirmed on hardware (Phase 2). Talking to
+//! a real device is the job of the `openwraith-hid` crate.
 //!
 //! The protocol is described in `docs/PROTOCOL.md` (our own document, written
 //! from USB captures and an analysis of the vendor's web configurator). Section
@@ -13,8 +14,8 @@
 //!
 //! # Read-only by construction
 //!
-//! Phase 1 of OpenWraith must never change anything on the keyboard. The crate
-//! enforces this structurally:
+//! Reading must never change anything on the keyboard. The crate enforces
+//! this structurally:
 //!
 //! * An [`OutPacket`] (the only thing a transport can send) has no public
 //!   constructor. The only way to obtain one is [`ReadRequest::packet`].
@@ -29,6 +30,11 @@
 //! // Arbitrary packets cannot be built outside this crate.
 //! let packet = openwraith_protocol::OutPacket([0x14; 63]);
 //! ```
+//!
+//! Writes use a different packet type, [`WritePacket`], produced only by
+//! [`WriteRequest::steps`] for the nine write forms confirmed on hardware.
+//! There is no conversion between `OutPacket` and `WritePacket`, so code that
+//! handles only `OutPacket`s cannot send a write. See the [`write`](mod@write) module.
 //!
 //! # Typical flow
 //!
@@ -76,6 +82,7 @@ pub mod request;
 pub mod response;
 pub mod units;
 pub mod usage;
+pub mod write;
 
 pub use decode::{
     ActiveCustomTable, ActiveProfile, AdvancedKey, AdvancedKeySlot, AdvancedKeys, CapabilityFlagsA,
@@ -85,7 +92,7 @@ pub use decode::{
     PollRate, Rgb, SocdEntry, SocdPairs, SocdSettings, Status, SwitchTypeList, SwitchTypeTable,
     TriggerGlobal, TriggerMode, WinLockOptions, decode, switch_type_name,
 };
-pub use error::{DecodeError, FrameError, ResponseError};
+pub use error::{DecodeError, FrameError, ResponseError, WriteBuildError};
 pub use event::{DeviceEvent, is_keyboard_reset};
 pub use frame::{HEADER_LEN, MAX_CHUNK_PAYLOAD, OutPacket, REPORT_ID, REPORT_LEN, Report};
 pub use hex::HexBytes;
@@ -93,10 +100,18 @@ pub use layout::{
     KEY_MASK_LEN, Key, KeyMask, KeyPos, MATRIX_COLS, MATRIX_ROWS, MATRIX_SIZE, W75_KEYS,
 };
 pub use model::{
-    CONFIG_USAGE, CONFIG_USAGE_PAGE, MODELS, Model, PRODUCT_IDS, VENDOR_ID, W75, model_for_product,
+    CONFIG_USAGE, CONFIG_USAGE_PAGE, MODELS, Model, PRODUCT_IDS, VENDOR_ID, W75,
+    W75_WRITE_CEILINGS, WriteCeilings, model_for_product,
 };
 pub use request::{
     CustomTable, Layer, MacroSlotId, ReadRequest, ResponseSpec, SubMatch, TableLayout,
 };
 pub use response::{Offer, RawResponse, ResponseCollector};
 pub use units::Distance;
+pub use write::{
+    AckOffer, AckSpec, AckTracker, AdvancedSlotId, CanonicalMacro, ColorTableData, DeadBandData,
+    DeadBandWrite, KeymapData, KeymapReference, LightLimits, LightRecord, MacroData,
+    MainLightWrite, Mismatch, MismatchKind, ProfileId, TableId, TriggerGrouping, TriggerLimits,
+    TriggerSetting, TriggerWrite, TriggerWriteMode, WritePacket, WriteRequest, WriteStep,
+    is_write_ack,
+};

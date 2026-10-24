@@ -1,17 +1,19 @@
 # OpenWraith architecture
 
-This document explains how the code is organised, how the read-only guarantee
-of Phase 1 is enforced, how data flows from the keyboard to a backup file, and
-how to add another keyboard model. The protocol itself is described in
-[PROTOCOL.md](PROTOCOL.md); section numbers below ("spec 2.8") refer to it.
+This document explains how the code is organised, how read-only code paths
+are kept read-only, how the guarded write path (Phase 2) works, how data flows
+from the keyboard to a backup file and back, and how to add another keyboard
+model. The protocol itself is described in [PROTOCOL.md](PROTOCOL.md);
+section numbers below ("spec 2.8") refer to it.
 
 ## Crate layout
 
 ```
-openwraith-cli  (bin "openwraith")      commands, text/JSON output
+openwraith-cli  (bin "openwraith")      commands, text/JSON output, prompts
       |
-openwraith-hid                          transports, session, backup
-      |
+openwraith-hid                          transports, session, backup, writer,
+      |                                 restore, edits, safety backups,
+      |                                 mock + simulator (feature "mock")
 openwraith-protocol                     pure protocol: no I/O
 ```
 
@@ -21,12 +23,13 @@ A future Tauri app will sit next to the CLI and use the same two libraries.
 
 | Module | Contents |
 |---|---|
-| `frame` | `REPORT_ID`, `REPORT_LEN` (63), `MAX_CHUNK_PAYLOAD` (58). `OutPacket` (no public constructor) and `Report` (any 63-byte input report; tolerates byte-4 quirks and stale bytes, spec 2.3 / 2.4). |
+| `frame` | `REPORT_ID`, `REPORT_LEN` (63), `MAX_CHUNK_PAYLOAD` (58). `OutPacket` (no public constructor; read requests only) and `Report` (any 63-byte input report; tolerates byte-4 quirks and stale bytes, spec 2.3 / 2.4). |
 | `request` | `ReadRequest`: one variant per read command of the spec, all CONFIRMED. Each knows its packet bytes, its `ResponseSpec` (how replies are recognised, spec 2.3 / 2.8), its chunk layout and its timeout. `full_read_plan` lists everything a backup reads. |
 | `response` | `ResponseCollector` (accepts matching chunks, ignores the rest, flags a second copy of a chunk with different data as `Offer::Conflict`, detects completion) and `RawResponse` (a complete, validated reply; the lossless unit of a backup). |
 | `decode` | Typed models for every reply (`DeviceInfo`, `Status`, `LightEffect`, `ColorTable`, `KeymapTable`, `MacroSlot`, `KeyTrigger`, ...). Every model keeps its raw bytes. Field docs repeat the spec's confidence labels. |
+| `write` | The nine confirmed write forms (W1-W9 below). `WritePacket` (no public constructor, separate from `OutPacket`), `WriteRequest` (Serialize only) with `steps()` (packets, acknowledgement spec, pauses), `verify_reads()` and `check()`, `AckSpec` / `AckTracker`, `TableId`, and the validated table data built from raw replies: `KeymapData`, `MacroData` (canonical flat layout only), `ColorTableData` (custom table 1 only), `DeadBandData` / `DeadBandWrite` (range-checked), `LightRecord` / `LightLimits` / `MainLightWrite`, `TriggerSetting` / `TriggerLimits` / `TriggerWrite` with the closed `TriggerWriteMode` (`00`, `0C`, `0D`; no `From<u8>`). `ProfileId`, `AdvancedSlotId`. |
 | `event` | Classification of unsolicited reports: keyboard reset (`14 .. 01 01`), profile reports, status pushes. |
-| `layout`, `model` | Key positions (`KeyPos`, index = row x 22 + col), key masks, the W75 key table and the `Model` description (spec 5). |
+| `layout`, `model` | Key positions (`KeyPos`, index = row x 22 + col), key masks, the W75 key table and the `Model` description (spec 5), including its `WriteCeilings` (absolute limits for written values). |
 | `units` | `Distance` in trigger units of 0.02 mm. |
 | `capture` (feature) | Parser for the JSON capture files and the request/reply pairing used by tests and the mock transport. |
 
@@ -34,53 +37,311 @@ A future Tauri app will sit next to the CLI and use the same two libraries.
 
 | Module | Contents |
 |---|---|
-| `transport` | `Transport` trait: `write(&OutPacket)`, `read(timeout) -> Option<Report>`, `usb_info()`. |
-| `hid` | `HidBackend` (hidapi; enumerates and filters supported interfaces, nothing is opened) and `HidTransport` (an open configuration interface). |
-| `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection. |
-| `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` (and a GUI's device page), with the model check shared with `read_all`. |
-| `backup` | `Backup` (file format), `read_all` / `read_all_with`, save/load, typed accessors. |
-| `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. |
+| `transport` | `Transport` trait: `write(&OutPacket)`, `read(timeout) -> Option<Report>`, `usb_info()`, `now()` (the clock every timeout is measured on: the system clock, or the simulator's virtual clock). `WriteTransport: Transport` adds `write_command(&WritePacket)`. |
+| `hid` | `HidBackend` (hidapi; enumerates and filters supported interfaces, nothing is opened), `HidTransport` (read-only) and `WritableHidTransport` (opened with `HidBackend::open_writable`). |
+| `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). |
+| `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` and `openwraith profile`, with the model check shared with `read_all`. |
+| `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable`, save/load, typed accessors. |
+| `writer` | `WriteConsent`, `WriteOptions`, the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`), stop-and-wait writes with read-back verification, profile selection, poisoning after a reset or a lost connection. |
+| `profiles` | `read_profiles` / `read_all_profiles`: the all-profile backup (switches profiles and back). |
+| `safety` | `default_dir`, `Backup::save_safety` and `SavedBackup` (the proof that a verified safety backup exists). |
+| `restore` | `plan_restore` (pure), `dry_run_restore` (read-only), `prepare_restore`, `execute_restore`, and the serialisable plan, progress and report types. |
+| `edit` | `plan_trigger_edit` / `apply_trigger_edit` and `plan_light_edit` / `apply_light_edit`. |
+| `error` | Error types and `ErrorKind` (serialisable, for a GUI). |
+| `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. Read-only. |
+| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the nine write forms, configurable table scopes, fault injection and a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time). |
 
 ### `openwraith-cli`
 
 | Module | Contents |
 |---|---|
-| `main` | clap definitions, the four subcommands, friendly error messages with hints. |
-| `device` | Choosing and opening the keyboard (`--device`, several-keyboard handling). |
+| `main` | clap definitions, the read-only commands (`list`, `info`, `show`, `backup`), `--from` / `--profile` for backup files, friendly error messages with hints, exit codes. |
+| `args` | Arguments of `profile select`, `set` and `restore`, and the value parsers: key names (`W`, `"Caps Lock"`, `#46`, `r2c2`; the knob is refused), millimetres (decimal text to micrometres, no floats, multiples of 0.02 mm), Rapid Trigger values, colours, light modes. |
+| `commands` | The commands that may write (`profile [select]`, `backup --all-profiles`, `set trigger`, `set light`, `restore`), generic over a `Connector` and a `Ui`. |
+| `device` | Choosing and opening the keyboard (`--device`, several-keyboard handling); the `Connector` trait and `HidConnector`. |
+| `ui` | The `Ui` trait (output, progress, the `[y/N]` question, cancellation) and `Terminal` (stdout/stderr/stdin, Ctrl+C handler). |
 | `view` | Serialisable views over a `Backup` or a `DeviceSummary` (used for both text and `--json`); `JsonOutput` adds the confidence `note` and the list of undecoded replies to every JSON output. |
-| `render`, `table` | Text output. Values whose meaning the spec labels CODE-ONLY or GUESS are marked `*`, with one legend line per command. Text from the device or a backup file is stripped of control characters before it is printed. |
+| `render`, `report`, `table` | Text output: settings tables (`render`), restore plans, restore and edit reports (`report`). Values whose meaning the spec labels CODE-ONLY or GUESS are marked `*`, with one legend line per command. Text from the device or a backup file is stripped of control characters before it is printed. |
 
-## The read-only guarantee
+## Read-only paths
 
-Phase 1 must not be able to send anything that changes the keyboard. This is
-enforced by types, not by convention:
+Code that only reads must not be able to send anything that changes the
+keyboard. This is enforced by types, not by convention:
 
-1. **Only `OutPacket`s can be sent.** `Transport::write` takes an `&OutPacket`
-   and nothing else. `OutPacket` has no public constructor; the only way to get
-   one is `ReadRequest::packet()`. A `compile_fail` doctest checks that
-   `OutPacket([0x14; 63])` does not compile.
+1. **Read code can only send `OutPacket`s.** `Transport::write` takes an
+   `&OutPacket` and nothing else. `OutPacket` has no public constructor; the
+   only way to get one is `ReadRequest::packet()`. A `compile_fail` doctest
+   checks that `OutPacket([0x14; 63])` does not compile.
 2. **`ReadRequest` contains only reads.** Its variants are the read commands
    labelled CONFIRMED in spec section 3. Parameters are range-checked types
    (`KeyPos`, `MacroSlotId`), so an invalid request cannot be built. A unit
    test enumerates all 163 constructible requests and checks each packet
    against the documented read forms (no `0x14`, no `0x17`, no write
    sub-commands, byte 6 of the poll-rate read stays 0, ...).
-3. **No raw access.** `HidTransport` keeps its hidapi handle private, and no
-   API in the workspace accepts raw bytes for sending. Captured packets are
-   kept as plain byte arrays precisely because they can be writes.
-4. **Reset notifications are never answered.** When the keyboard sends
+3. **Writing needs a separate trait.** Sending a `WritePacket` needs
+   `WriteTransport`. `Transport` has no method that could write, so
+   code that is generic over `Transport` (`read_all`, `read_summary`,
+   `dry_run_restore`, `plan_trigger_edit`, `plan_light_edit`) provably
+   cannot write. `Session::writer` exists only for `Session<T:
+   WriteTransport>`; a `compile_fail` doctest checks that
+   `Session<HidTransport>` has none.
+4. **Read-only commands open a read-only transport.** `list`, `info`,
+   `show`, `backup`, `profile` and `restore --dry-run` open `HidTransport`,
+   which does not implement `WriteTransport`. Only `profile select`, `set`,
+   `restore` and `backup --all-profiles` open `WritableHidTransport`.
+5. **No raw access.** The hidapi handle is private, and no API in the
+   workspace accepts raw bytes for sending. Captured packets are kept as plain
+   byte arrays precisely because they can be writes.
+6. **Reset notifications are never answered.** When the keyboard sends
    `14 .. 01 01` (Fn + Space held, spec 4.6.3), the session returns
-   `SessionError::KeyboardReset` and sends nothing. Tests inject the real
-   notification from capture c07 and assert that no further packet was
-   written.
-5. **The CLI has no write subcommand.** A test checks that `set`, `write`,
-   `restore`, `reset` and `calibrate` are rejected by the argument parser.
-6. **Tests check what was sent.** The hid tests assert that every packet the
-   mock received during a full backup is a read request and never a `0x14`.
+   `SessionError::KeyboardReset` and is marked: every later write call fails
+   without sending anything. Tests inject the real notification from capture
+   c07 and assert that no further packet was written.
+7. **Tests check what was sent.** The hid tests assert that every packet the
+   mock received during a full backup is a read request and never a `0x14`;
+   the CLI tests assert the same for `restore --dry-run` against the
+   simulator.
 
-Phase 2 (restore and editing) will need a separate, deliberately designed
-write path with explicit user confirmation and read-modify-write (spec 1.2).
-It must not loosen the rules above for the read path.
+## The guarded write path (Phase 2)
+
+### What can be written
+
+Only these nine forms, all CONFIRMED on hardware (byte layouts in the
+`write` module documentation and spec section 3):
+
+| # | Write | Packets | Acknowledgement |
+|---|---|---|---|
+| W1 | `21/12` select profile 1-4 | 1 | `21 .. 02 12` and the push `21 .. 03 11 PP 00` |
+| W2 | `17 00 .. 02 00 00` music-rhythm leave | 1, only right before a mode-changing W3 | `17 00 00 00 00` (optional) |
+| W3 | `07 00` main light | 1 | none |
+| W4 | `09 00` custom colour table 1 | 8 | `09 00 00 00 00` each |
+| W5 | `18 00` / `18 02` keymap base / Fn | 10 | `18 00 00 00 00` each |
+| W6 | `19 0n` macro slot | 5 | `19 00 00 00 00` each |
+| W7 | `22 SS` advanced-key slot, **all-zero content only** | 1 | `22 00 00 00 00` |
+| W8 | `21 .. 18 MM` trigger, MM in `00`/`0C`/`0D`, **one key per packet** | 1 | `21 .. 01 00` |
+| W9 | `26 01` dead band | 5 | `26 01 00 00 00` each |
+
+`WritePacket` has no public constructor and no conversion from `OutPacket`
+or bytes; `WriteRequest::steps()` is the only way to get one. W2 is not a
+variant of its own: it can only appear as the first step of a main-light
+write that changes the mode. Every other output packet (`0x14` resets and
+Win-Lock, `17` enter, `08 00`, `09 01`, `24`, `25 01`, `21/06`, calibration,
+travel test, poll-rate set, the vendor site's empty-mask trigger write) is
+impossible to construct. A protocol test checks every constructible request
+(a seeded sample of 2,316 packets) against an independent predicate written
+from the table above, and checks that no write packet parses as a read.
+
+Table builders take validated raw replies, never decoded models: a restore
+writes the backup's own bytes, and an edit changes exactly the bytes it was
+asked to change in a table read from the keyboard.
+
+Values are checked when a request is built: `TriggerWrite::new` (keys and
+travel values), `MainLightWrite::new` (mode, brightness, speed, ...) and
+`DeadBandWrite::new` (every top and bottom value). The limits come from the
+keyboard's replies (`21/04`, `0A`) through `TriggerLimits::new(model, ..)` and
+`LightLimits::new(model, ..)`, and are always capped by the model's
+compiled-in `WriteCeilings` (W75: actuation 5-170 units, Rapid Trigger
+sensitivity up to 85, dead band up to 50, brightness and speed up to 4, the
+known light modes). The ceilings and the selectable keys are taken from the
+model in `MODELS` with the given product code, never from the `Model` a caller
+passes (its fields are public), and an unknown product is refused. The
+protocol crate validates framing and ranges, not authenticity (anyone can
+build a `RawResponse`), so the ceilings are what bounds a forged reply or
+fabricated decoded limits.
+
+### Consent, the "other program" gate and the writer
+
+```
+Session<T: WriteTransport>::writer(WriteConsent)
+  1. drain and classify every queued report
+  2. listen until the keyboard was observed for at least 2 s since the
+     session opened (or since the last rearm_gate)
+  3. refuse if the session saw, in that time, status reports it did not
+     request (the vendor site's heartbeat replies), write acknowledgements it
+     did not cause or profile reports it did not cause:
+     WriteError::ProfileChanged when the only evidence is a report of another
+     profile than the one last read (a switch on the keyboard or by another
+     program), else WriteError::OtherProgramActive
+  -> Writer
+```
+
+The evidence sticks for the session: the CLI opens a new session per
+command, and a long-lived session (a GUI) calls `Session::rearm_gate` after
+the user confirmed that the vendor site is closed, which needs another full
+observation period before the next writer.
+
+`WriteConsent` records how the user agreed (`interactive_prompt`,
+`command_line_flag`, `application`); it is written into every report.
+
+`Writer::write_guarded(&SavedBackup, &WriteRequest)` is the only public way
+to write a table (the unguarded primitive is crate-private; a `compile_fail`
+doctest checks it):
+
+1. refuses after foreign activity; checks that the `SavedBackup` belongs to
+   this keyboard model (`0D`, read once per writer) and holds the active
+   profile, confirmed with `21/11` (`WriteError::NotBackedUp` otherwise);
+2. re-reads exactly the bytes the write changes; when the keyboard already
+   holds them nothing is sent (`AlreadyMatched`);
+3. rebuilds a main-light write from a fresh `0A` + `07` read right before it
+   is sent, so W2 precedes W3 exactly when the keyboard's *current* mode
+   changes;
+4. waits, before the first packet, for a late acknowledgement of an earlier
+   write that looks exactly like this table's acknowledgements and is still
+   expected (at most its 2 s window), so it cannot be taken for the first
+   packet's ack;
+5. sends one packet at a time and waits up to 500 ms for its
+   acknowledgement (acks carry no chunk index, so only stop-and-wait can
+   match them). On a timeout the rest of the table is not sent; a single chunk
+   is never sent again. The pauses after W3 (20 ms) and each W4 chunk (5 ms)
+   come from the write itself (`WriteStep::gap_after`);
+6. verifies by reading the table back (`verify_reads` + `check`); on a
+   mismatch reads once more after 100 ms;
+7. if it still differs, listens 200 ms, rebuilds the request from a fresh
+   read where the bytes depend on it (the main light's W2), sends the
+   **whole** table once more and verifies again; otherwise
+   `WriteError::VerifyFailed`;
+8. counts sends per (profile, table): a third send is refused
+   (`RepeatedWrite`), which stops loops and floods.
+
+Restores and edits use the same steps 3-8 through a crate-private guarded
+write that additionally refuses a table whose bytes changed since the plan.
+
+`Writer::select_profile` sends nothing when the profile is already active;
+otherwise it sends W1, waits for the acknowledgement and the push (reading
+the push before any `21/11` query), confirms with `21/11` and retries once.
+
+During an operation an unexpected profile report or a reset notification
+aborts; a foreign acknowledgement or heartbeat stops the operation after the
+current table. After a reset notification or a transport failure the writer
+is *poisoned*: every later call fails without sending anything, not even a
+switch back to the original profile.
+
+### Safety backups
+
+Every public way to write a table (`Writer::write_guarded`,
+`execute_restore`, `apply_trigger_edit`, `apply_light_edit`) takes a
+`&SavedBackup` covering the profile it writes; the unguarded write primitive
+is crate-private. Only `Backup::save_safety` creates a `SavedBackup`: it
+saves the backup under a new name
+(`openwraith-<product>-<stamp>-<reason>[-N].owbackup.json`) without replacing
+any file, reads it back and checks that it is identical. So "back up first"
+is enforced by the types. Profile selects (`Writer::select_profile`) change
+no stored setting and need no backup. The directory is `--safety-dir`, else
+`OPENWRAITH_SAFETY_DIR`, else the per-user data directory
+(`%LOCALAPPDATA%\OpenWraith\safety-backups`,
+`$XDG_DATA_HOME/openwraith/safety-backups` or `~/.local/share/...`,
+`~/Library/Application Support/OpenWraith/safety-backups`); if none can be
+determined the operation fails before anything is written, never falling back
+to the current directory. Safety backups are never deleted automatically.
+
+### Restore
+
+```
+openwraith restore FILE [--profile N]...
+  Backup::load(FILE)
+  open WritableHidTransport
+  prepare_restore
+    identify; model must match (hard error), firmware must match unless
+    --allow-firmware-mismatch
+    safety = read_profiles(active ∪ scope)    only the active profile in scope:
+                                              a pure read; otherwise switches
+                                              profiles (W1) and back
+    plan = plan_restore(target, safety)       pure
+  save_safety(dir, "restore")                 verified
+  print the plan (with --json: on stderr before the question, the JSON
+  document after it); nothing to write -> exit 0 without a question
+  [y/N] (or --yes)
+  execute_restore (with the options the restore was prepared with)
+    writer (gate); refused -> report the profile the keyboard reported, or
+    "unknown" after a reset or a lost connection
+    for each profile with writes (the original one first, then ascending):
+      select_profile
+      for each table, in order: triggers (one key per packet), dead band,
+      keymap group (macros bound by a keymap before the keymaps, 18 00,
+      18 02, the other macros, advanced-key clears), custom colours 1,
+      main light (W2 only on a mode change):
+        cancelled (Ctrl+C)? stop here
+        confirm 21/11
+        re-read exactly the bytes the write changes
+        already the target?        -> AlreadyMatched (a global table written
+                                      in an earlier profile)
+        neither planned nor ours?  -> changed_since_plan, stop
+        else write (stop-and-wait, verify, one whole-table retry)
+      confirm 21/11
+    select the original profile again (unless poisoned)
+    a table of unknown scope written and two or more profiles compared?
+      -> final check (not cancellable): read every profile again, compare
+         every written table and every unknown-scope table the plan left
+         unchanged (a shared table written in another profile changes it)
+  print the report: what was written and verified, what failed (with the
+  read-back difference), what was not attempted, the active profile now,
+  the safety backup and the undo command
+```
+
+`plan_restore` classifies each table of each profile as `unchanged`,
+`write`, `skip` (with a machine-readable reason) or `not_in_backup`. Tables
+without a confirmed write command are skipped when they differ. The keymap
+group (both keymaps, ten macro slots, forty advanced-key slots) is planned as
+one unit and skipped as a whole when it would need a non-empty advanced-key
+write, a non-canonical macro, or holds a malformed reference. An empty macro
+slot (all `00` or all `FF`) is written as 256 x `00`; nothing else is ever
+normalised, and defaults the backup does not contain are never written.
+
+Trigger and dead-band values are raw counts of the keyboard's distance unit
+(`21/04` raw unit x the status high-precision flag). They are restored only
+when the backup and the keyboard both use 0.02 mm units; otherwise every
+differing trigger key and the dead band are skipped with
+`distance_unit_changed` (the same numbers would mean other distances; values
+are never converted). This matters after a firmware update, the main use case
+of a restore.
+
+Plan warnings point out tables of unknown scope: written while the restore
+does not cover every profile (`shared_tables_may_change_other_profiles`), or
+held in different copies by the backup while the keyboard holds one copy in
+every profile (`likely_shared_table_differs`).
+
+A dry run (`restore --dry-run`) reads only the active profile through the
+read-only transport (`dry_run_restore`, no `21/12`) and lists the other
+profiles as not compared; `--against FILE` plans against another backup
+without a keyboard. A serialised plan is for display only: only a
+`PreparedRestore` (not deserialisable) can be executed.
+
+### Edits
+
+`set trigger` and `set light` read the current values (`plan_*_edit`,
+read-only), save a safety backup of the active profile, show "now -> new",
+ask, and write (`apply_*_edit`). Each key or the light record is re-read
+right before writing: if it changed since planning the edit stops with
+`changed_since_plan`, if it already holds the new value nothing is written.
+Triggers are written one key per packet (the only captured form; multi-key
+masks are CODE-ONLY, hardware test H10 in
+[HARDWARE_TESTS.md](HARDWARE_TESTS.md)). A light edit sends W2 only when the
+mode changes and then sets the direction to the mode's default. The write
+itself goes through the same guarded steps as `Writer::write_guarded`.
+
+### The CLI around it
+
+The commands that write live in `commands`, generic over a `Connector`
+(which opens read-only and writable sessions) and a `Ui` (output, progress,
+the question, cancellation). The binary uses `HidConnector` and `Terminal`;
+the unit tests use a connector over `DeviceSim` and a scripted console, so
+they run exactly the command code without any HID device. The binary has no
+simulator mode.
+
+- Commands that write print the close-the-vendor-site note first. With stdin
+  not a terminal and no `--yes` they refuse before the keyboard is opened.
+- Before the safety backup and the question, a session that already saw
+  another program is refused (the writer's gate would refuse later anyway).
+- Ctrl+C sets a flag that the progress callbacks turn into a cancellation at
+  the next table boundary; the original profile is selected again. A second
+  Ctrl+C exits at once with a warning. The final check of a restore is not
+  cancellable. On Linux the signal interrupts the blocking HID read (`poll`
+  is never restarted); the transport reports `TransportError::Interrupted`
+  and the session reads again, so the first Ctrl+C never looks like a lost
+  connection.
+- Exit codes: 0 when everything planned was written and verified (skipped
+  tables allowed and printed) or there was nothing to do, 1 on a failure or
+  when the change was not confirmed, 2 for usage errors.
 
 ## Data flow
 
@@ -92,7 +353,7 @@ openwraith backup
        HidBackend::new()            enumerate HID devices
        HidBackend::devices()        keep VID 0x2E3C, PIDs C365-C368,
                                     usage page 0xFF1B, usage 0x91
-       HidBackend::open()           -> HidTransport
+       HidBackend::open()           -> HidTransport (read-only)
   -> read_all_with(session)
        DeviceInfo   (0D)            model check: product code must be known
        Status       (01)            capability flags select optional reads
@@ -102,6 +363,12 @@ openwraith backup
                                     then moved into place (never replacing
                                     an existing file without --force)
 ```
+
+`openwraith backup --all-profiles` uses `read_all_profiles` on a writable
+session: the same plan for the active profile P, the gate, then for each
+other profile `21/12` select, a complete read with `21/11` checked at the
+start and the end, and finally `21/12` back to P (also after a failure,
+unless the writer is poisoned).
 
 `openwraith info` uses `read_summary` instead: device info (with the same
 model check), status, active profile, global trigger parameters and the
@@ -114,10 +381,12 @@ For each request, `Session::request`:
 3. reads reports and offers each to the request's `ResponseCollector`.
    Matching uses byte 0, byte 1 (or byte 5 for the `0x21` family) and the
    row/col echo for per-key triggers, never arrival order (spec 2.8 rule 2);
-4. ignores unrelated reports and counts them: heartbeats and pushes,
+4. ignores unrelated reports and classifies them: heartbeats and pushes,
    acknowledgements of another program's writes, profile reports (recorded as
-   events). Unrelated reports never extend the deadline, and the drain stops
-   after `max_drain` reports;
+   events). Reports that our own writes cause (the profile push after a
+   select, the status push after W2, a late acknowledgement) are expected
+   and consumed. Unrelated reports never extend the deadline, and the drain
+   stops after `max_drain` reports;
 5. stops with an error on a reset notification;
 6. completes when every chunk index has arrived; the wait is extended while
    chunks keep arriving;
@@ -140,21 +409,27 @@ For each request, `Session::request`:
   re-reads, sends its no-op empty-mask trigger write) and assigns `21/05`
   replies by arrival order, so our extra replies can land under the wrong
   keys in its model (spec 4.5.1, 4.11.2, 6.5).
+- Browsers throttle timers in background tabs (to about once a minute), so a
+  hidden vendor tab may send nothing during the 2 s gate and go unnoticed.
 
-The README therefore tells users to close the vendor site first, and the CLI
-warns after any device command that saw status reports it did not ask for or
-an unsolicited profile report.
+The README therefore tells users to close the vendor tab completely, the
+writer refuses to start when it saw another program, and the CLI warns after
+any device command that saw status reports it did not ask for, write
+acknowledgements it did not cause, or an unsolicited profile report.
 
 ### Reading a backup file
 
 ```
-openwraith show all --from FILE
+openwraith show all --from FILE [--profile N]
   -> Backup::load
-       check "format" and "schema_version"
+       check "format" and "schema_version" (1 or 2)
        RawResponse re-validated (all chunks, every report matches its request)
        a request stored twice is refused
+       schema 2: every snapshot checked (profile 1-4 from its own 21/11
+       reply, unique, not the primary's, same product)
        decoded views, device header and active profile rebuilt from the raw
        reports
+  -> --profile N: the snapshot of profile N as a single-profile view
   -> view::* (TriggersView, LightView, ...) -> render::* or JSON
 ```
 
@@ -179,43 +454,93 @@ keep backups usable across versions:
   the CLI lists such replies instead of silently skipping them.
 - `schema_version` is checked: files from a newer schema are refused with a
   clear message instead of being half-understood.
-- `scope` / `note` state that only the active onboard profile is included,
-  plus the tables whose profile scope is unverified (custom colours, polling
-  rate, switch types; spec 4.5.4, 6.9, 6.10, Q3). The `scope` value
-  `active_profile_and_global_settings` is kept for compatibility.
+- **Schema 1** (single profile, `read_all`) is unchanged since Phase 1, byte
+  for byte, so Phase 1 binaries still read it. `scope` / `note` state that
+  only the active onboard profile is included, plus the tables whose profile
+  scope is unverified (custom colours, polling rate, switch types; spec 4.5.4,
+  6.9, 6.10, Q3). The `scope` value `active_profile_and_global_settings` is
+  kept for compatibility.
+- **Schema 2** (all profiles, `read_profiles`) adds `"scope": "profiles"` and
+  `"profiles": [{ "profile": n, "entries": [...] }]` for the profiles other
+  than the primary. The top-level `entries` remain the primary snapshot (the
+  profile that was active, read before any switch), so every accessor and
+  view keeps working on it. Each snapshot is a complete read (including `0D`,
+  `01` and `21/11`); there is no split into "global" and "per-profile"
+  entries, because the scope of most tables is unknown. Identical copies
+  across snapshots are free scope evidence. `profile` in JSON is
+  informational: it is re-derived from the snapshot's raw `21/11` reply.
 
 ## Testing
 
 - `crates/openwraith-protocol/tests/captures.rs` decodes every reply in the
-  seven captures and checks known facts (factory triggers, W key settings,
-  reset behaviour).
+  captures and checks known facts (factory triggers, W key settings, reset
+  behaviour).
 - `crates/openwraith-protocol/tests/decode_fuzz.rs` decodes a few hundred
   header-valid replies with arbitrary lengths and contents for every
   constructible request (fixed seed): decoders must never panic.
+- `crates/openwraith-protocol/src/write/tests.rs` checks every constructible
+  write against an independent predicate of the allowed forms, the forbidden
+  forms and read/write disjointness;
+  `crates/openwraith-protocol/tests/write_captures.rs` checks that the
+  builders produce the captured packets byte for byte (c02, c03, c08-c13),
+  including a read-modify-write of the keymap that equals the vendor site's
+  write and the c09 chunks that differ only by the site's forced knob
+  defaults.
 - `crates/openwraith-hid/tests/` run sessions, summaries and full backups
-  against `MockTransport` built from the captures: noise interleaving, lost
-  replies and retries, a retry that completes a partial table, a table that
-  changes between attempts, endless unrelated traffic (drain cap and
-  deadline), timeouts, stale input, the real reset notification, profile
-  changes, unknown models, undecodable replies, JSON and plain-serde round
-  trips, edited headers, atomic saves.
+  against `MockTransport` built from the captures (noise, lost replies and
+  retries, partial tables, endless unrelated traffic, timeouts, stale input,
+  the real reset notification, profile changes, unknown models, undecodable
+  replies, JSON and plain-serde round trips, edited headers, atomic saves),
+  and the writer, all-profile backups, restore and edits against `DeviceSim`
+  (round trips, both scope configurations of every unknown-scope table, ack
+  loss and retries, late acks of an earlier table, verification failures and
+  final-check mismatches, reset notifications, disconnects, interrupted
+  reads, keyboard-side profile changes, foreign heartbeats and acks, the 2 s
+  gate observation and the expectation windows on the virtual clock,
+  cancellation, the `RepeatedWrite` guard, writes without a safety backup).
+  `tests/planner.rs` pins every skip reason, block cause and plan warning of
+  `plan_restore`. Every simulator test ends with `assert_clean`: the
+  simulator refuses and records any packet outside the allowed read and write
+  forms (including dead-band values above 50).
+- `crates/openwraith-cli/src/sim_tests.rs` runs the CLI's commands exactly as
+  parsed from the command line against `DeviceSim`: dry runs (reads only,
+  read-only session), restores with `--yes`, a "y" and an "n" answer, the
+  undo command, all-profile backups, `set trigger` / `set light`, `profile
+  select`, Ctrl+C at a table boundary, another program, a failed
+  verification, the refusal without a terminal or `--yes`.
 - `crates/openwraith-cli/tests/cli.rs` runs the real binary on backup files
-  replayed from the captures (`--from` only), including crafted files with
-  edited headers and escape sequences.
+  replayed from the captures or made with the simulator (`--from`,
+  `restore --dry-run --against`), including crafted files with edited headers
+  and escape sequences, plus help texts and argument errors.
 - No test enumerates or opens a HID device. Keep it that way: hardware tests
-  must be run by hand by someone who has the keyboard.
+  must be run by hand by someone who has the keyboard. The checklist (H0-H11:
+  preconditions, exact commands, what to compare, pass criteria) is
+  [HARDWARE_TESTS.md](HARDWARE_TESTS.md).
 
-## Deferred to Phase 2 (library API for the desktop app)
+## Deferred (library API for the desktop app)
 
-The Phase 1 API is enough for the CLI. Before the Tauri app is written these
-need a deliberate design, driven by the app's actual needs:
+Done in Phase 2: serialisable error kinds (`ErrorKind`, `ErrorInfo`),
+cancellable progress (`read_all_cancellable`, `WriteProgress`,
+`ProfilesProgress`, all `ControlFlow` based), serialisable plans and reports.
 
-- serialisable, machine-readable error kinds (timeout, keyboard reset, not
-  found, busy, ...) for command results;
+Also done: `execute_restore` uses the options the restore was prepared with
+(`PreparedRestore::options`), `WriteProgress::Writing` carries `send` (2
+while a table is sent a second time), and a long-lived session can re-arm the
+writer's gate (`Session::rearm_gate`).
+
+Still open, to be designed with the Tauri app:
+
 - device selection in the library (only-one-device rule, open by path) and a
   serialisable device list (`DeviceDescriptor` holds a private `CString`);
-- a cancellable progress callback for `read_all_with` (for example
-  `ControlFlow` plus `BackupError::Cancelled`).
+- `Deserialize` for the intents a GUI sends (`TriggerEdit`, `LightEdit`,
+  `RtEdit`, `ProfileSet`, `RestoreOptions`, `WriteOptions`); they derive only
+  `Serialize` today, so a Tauri command needs mirror types;
+- an `EditError` type: `plan_*_edit` / `apply_*_edit` report problems as
+  `RestoreError` (`InvalidRequest`, `SafetyBackupMismatch`);
+- keymap and macro editing on top of `KeymapData::set_entry` and
+  `MacroData`;
+- multi-key trigger masks (`TriggerGrouping::SameSetting`, CODE-ONLY until
+  hardware test H10 in [HARDWARE_TESTS.md](HARDWARE_TESTS.md)).
 
 ## Adding a model
 
@@ -232,13 +557,18 @@ product IDs `0xC365`-`0xC368`; the model is identified by field 4 of the
    and usages are facts about the keyboard (spec 5 explains how the W75 table
    was verified).
 3. **Model.** In `model.rs`, add a `static <MODEL>: Model` (name, product
-   code from the `0x0D` string, PIDs, key table, knob and Fn index) and append
-   it to `MODELS`. `model_for_product` then recognises it, and
+   code from the `0x0D` string, PIDs, key table, knob and Fn index, and its
+   `WriteCeilings` from its `21/04` and `0A` replies) and append it to
+   `MODELS`. `model_for_product` then recognises it, and
    `ReadRequest::full_read_plan` reads its keys.
 4. **Units.** `Distance` assumes 0.02 mm per unit (the W75 reports
    `rawUnit` 2 in `21/04` and no high-precision flag). If the new model reports
    another unit, extend `Distance` before showing millimetres; the CLI already
-   warns when the unit differs.
-5. **Tests.** Add capture-based assertions for the new model (device info,
+   warns when the unit differs, `set trigger` refuses to write and `restore`
+   skips trigger and dead-band values.
+5. **Writes.** Before enabling writes for the new model, capture its write
+   commands and confirm them as for the W75 (spec 7.3); the simulator and the
+   write tests are W75-specific.
+6. **Tests.** Add capture-based assertions for the new model (device info,
    key count, a known trigger value) like the W75 ones, and update
    `PROTOCOL.md` with anything that differs, with confidence labels.

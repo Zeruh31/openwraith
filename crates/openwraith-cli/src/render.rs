@@ -799,17 +799,42 @@ pub fn backup_summary(backup: &Backup, path: &Path) -> String {
             backup.device.firmware.clone().unwrap_or_else(|| "?".into())
         ),
     );
-    f.add(
-        "Profile",
-        match backup.active_profile {
-            Some(p) => format!("{p} (only the active onboard profile is included)"),
-            None => "unknown".into(),
-        },
-    );
-    let reports: usize = backup.entries.iter().map(|e| e.raw.reports().len()).sum();
+    let active = backup
+        .active_profile
+        .map_or_else(|| "unknown".to_string(), |p| p.to_string());
+    if backup.is_all_profiles() {
+        let held: Vec<String> = backup
+            .profile_numbers()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        f.add(
+            "Profiles",
+            format!(
+                "{} (profile {active} was active and is summarised below; the keyboard is back \
+                 on it)",
+                held.join(", ")
+            ),
+        );
+    } else {
+        f.add(
+            "Profile",
+            match backup.active_profile {
+                Some(p) => format!("{p} (only the active onboard profile is included)"),
+                None => "unknown".into(),
+            },
+        );
+    }
+    let snapshots = backup.snapshots();
+    let replies: usize = snapshots.iter().map(|s| s.entries().len()).sum();
+    let reports: usize = snapshots
+        .iter()
+        .flat_map(|s| s.entries())
+        .map(|e| e.raw.reports().len())
+        .sum();
     f.add(
         "Contents",
-        format!("{} replies, {reports} raw reports", backup.entries.len()),
+        format!("{replies} replies, {reports} raw reports"),
     );
     let triggers = backup.key_triggers();
     let rt = triggers.iter().filter(|t| t.rapid_trigger()).count();

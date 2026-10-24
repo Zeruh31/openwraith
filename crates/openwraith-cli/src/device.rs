@@ -1,6 +1,15 @@
 //! Finding and opening the keyboard.
+//!
+//! The read-only commands open a [`HidTransport`], which cannot send a write.
+//! Only the commands that write (through the guarded write path of
+//! `openwraith-hid`) open a [`WritableHidTransport`], through a
+//! [`Connector`] so that their logic can be tested against the device
+//! simulator.
 
-use openwraith_hid::{DeviceDescriptor, HidBackend, HidTransport, Session};
+use openwraith_hid::{
+    DeviceDescriptor, HidBackend, HidTransport, Session, Transport, WritableHidTransport,
+    WriteTransport,
+};
 
 /// Problems choosing a device.
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +54,21 @@ pub fn describe(device: &DeviceDescriptor) -> String {
 /// the only one connected.
 pub fn open_session(path: Option<&str>) -> anyhow::Result<Session<HidTransport>> {
     let backend = HidBackend::new()?;
+    let device = choose(&backend, path)?;
+    Ok(Session::new(backend.open(&device)?))
+}
+
+/// Opens a session that can write (Phase 2) with the chosen keyboard. Only
+/// the commands that write use it; writing still needs consent and passes
+/// the "other program" gate of `Session::writer`.
+pub fn open_writable_session(path: Option<&str>) -> anyhow::Result<Session<WritableHidTransport>> {
+    let backend = HidBackend::new()?;
+    let device = choose(&backend, path)?;
+    Ok(Session::new(backend.open_writable(&device)?))
+}
+
+/// The keyboard at `path`, or the only one connected.
+fn choose(backend: &HidBackend, path: Option<&str>) -> anyhow::Result<DeviceDescriptor> {
     let devices = backend.devices();
     let device = match path {
         Some(path) => devices
@@ -63,5 +87,49 @@ pub fn open_session(path: Option<&str>) -> anyhow::Result<Session<HidTransport>>
             }
         },
     };
-    Ok(Session::new(backend.open(device)?))
+    Ok(device.clone())
+}
+
+/// Opens sessions with the keyboard for the commands that may write.
+///
+/// [`HidConnector`] opens real HID devices. The CLI's unit tests use a
+/// connector over the device simulator instead; the binary has no such
+/// mechanism.
+pub trait Connector {
+    /// Transport of read-only sessions (cannot send a write).
+    type Read: Transport;
+    /// Transport of sessions that may write.
+    type Write: WriteTransport;
+
+    /// Opens a read-only session.
+    fn open_read(&mut self) -> anyhow::Result<Session<Self::Read>>;
+
+    /// Opens a session that may write.
+    fn open_write(&mut self) -> anyhow::Result<Session<Self::Write>>;
+}
+
+/// [`Connector`] for real keyboards (`--device` or the only one connected).
+#[derive(Debug, Clone, Default)]
+pub struct HidConnector {
+    device: Option<String>,
+}
+
+impl HidConnector {
+    /// A connector for the keyboard at `device`, or the only one connected.
+    pub fn new(device: Option<String>) -> Self {
+        HidConnector { device }
+    }
+}
+
+impl Connector for HidConnector {
+    type Read = HidTransport;
+    type Write = WritableHidTransport;
+
+    fn open_read(&mut self) -> anyhow::Result<Session<HidTransport>> {
+        open_session(self.device.as_deref())
+    }
+
+    fn open_write(&mut self) -> anyhow::Result<Session<WritableHidTransport>> {
+        open_writable_session(self.device.as_deref())
+    }
 }

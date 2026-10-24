@@ -6,8 +6,13 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use openwraith_hid::protocol::capture::{Capture, CaptureEvent};
-use openwraith_hid::protocol::{REPORT_LEN, ReadRequest, Report, is_keyboard_reset};
-use openwraith_hid::{BackupOptions, MockTransport, ToolInfo};
+use openwraith_hid::protocol::{
+    KeyPos, ProfileId, REPORT_LEN, ReadRequest, Report, is_keyboard_reset,
+};
+use openwraith_hid::{
+    Backup, BackupOptions, ConsentOrigin, DeviceSim, MockTransport, ProfilesOptions, ScopeConfig,
+    Session, SimPacket, ToolInfo, WriteConsent, read_all_with,
+};
 
 pub const C06: &str = "capture_06_powercycle_W_persisted";
 pub const C07: &str = "capture_07_fn_space_reset";
@@ -109,4 +114,161 @@ pub fn unknown_model_mock() -> MockTransport {
 /// A unique scratch file path under the system temp directory.
 pub fn temp_file(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("openwraith-hid-test-{}-{name}", std::process::id()))
+}
+
+pub const C08: &str = "capture_08_profile_switch";
+pub const C10: &str = "capture_10_triggers_Q_W_profile_reset";
+
+/// Profile ids by number.
+pub fn profile(n: u8) -> ProfileId {
+    ProfileId::new(n).expect("profile 1-4")
+}
+
+/// A key position.
+pub fn pos(row: u8, col: u8) -> KeyPos {
+    KeyPos::new(row, col).expect("matrix position")
+}
+
+/// Consent as given by a command-line flag.
+pub fn consent() -> WriteConsent {
+    WriteConsent::new(ConsentOrigin::CommandLineFlag)
+}
+
+/// The c06 backup (profile 1: W 1.00 mm RT 0.30, Custom red light, 81 red
+/// colour slots, empty macros, zero keymaps).
+pub fn c06_backup() -> Backup {
+    let mut session = Session::new(mock(C06));
+    read_all_with(&mut session, &fixed_options(), |_| {}).expect("backup of c06")
+}
+
+/// Options for all-profile reads with a fixed time.
+pub fn profiles_options() -> ProfilesOptions {
+    ProfilesOptions {
+        backup: fixed_options(),
+        ..ProfilesOptions::default()
+    }
+}
+
+/// A simulator seeded from c06 in which profiles 2-4 have factory triggers
+/// and the factory light of c08 (profile 1 keeps c06), so that the profiles
+/// differ like on the real keyboard.
+pub fn sim_with_profiles(scope: ScopeConfig) -> DeviceSim {
+    let mut sim = DeviceSim::from_backup_with(&c06_backup(), scope);
+    let factory = DeviceSim::from_backup_with(&c06_backup(), scope);
+    let mut factory = factory;
+    factory.factory_reset_all();
+    for n in 2..=4 {
+        let p = profile(n);
+        for key in openwraith_hid::protocol::W75.positions() {
+            let record = factory.trigger(p, key).expect("factory trigger");
+            sim.set_trigger(p, key, record);
+        }
+        sim.set_table(
+            p,
+            openwraith_hid::SimTable::MainLight,
+            openwraith_hid::sim::FACTORY_LIGHT.to_vec(),
+        );
+    }
+    sim
+}
+
+/// The write packets a simulator received, as byte arrays.
+pub fn write_bytes(sim: &DeviceSim) -> Vec<[u8; REPORT_LEN]> {
+    sim.write_packets().map(|p| *p.as_bytes()).collect()
+}
+
+/// Profile selects (`21 00 00 00 00 12 PP`) the simulator received, in order.
+pub fn selects(sim: &DeviceSim) -> Vec<u8> {
+    sim.written()
+        .iter()
+        .filter(|p| p.is_write())
+        .map(SimPacket::as_bytes)
+        .filter(|b| b[..6] == [0x21, 0, 0, 0, 0, 0x12])
+        .map(|b| b[6])
+        .collect()
+}
+
+/// A scratch directory for safety backups.
+pub fn temp_dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("temporary directory")
+}
+
+/// Rewrites a report the host reads (bytes, profile selects sent so far).
+pub type Rewrite<'a> = Box<dyn FnMut(&mut [u8; REPORT_LEN], usize) + 'a>;
+
+/// A transport over a simulator that tampers with what the host reads:
+/// reports can be rewritten (knowing how many profile selects were sent),
+/// and one read can be interrupted by a "signal" (EINTR) once the host sent
+/// a number of write packets.
+pub struct Tamper<'a> {
+    /// The simulated keyboard.
+    pub sim: &'a mut DeviceSim,
+    /// Rewrites each report read (bytes, profile selects sent so far).
+    pub rewrite: Rewrite<'a>,
+    /// The first read after this many write packets fails once with
+    /// `TransportError::Interrupted`.
+    pub interrupt_after_writes: Option<usize>,
+    writes: usize,
+    selects: usize,
+    interrupted: bool,
+}
+
+impl<'a> Tamper<'a> {
+    /// No tampering yet.
+    pub fn new(sim: &'a mut DeviceSim) -> Self {
+        Tamper {
+            sim,
+            rewrite: Box::new(|_, _| {}),
+            interrupt_after_writes: None,
+            writes: 0,
+            selects: 0,
+            interrupted: false,
+        }
+    }
+}
+
+impl openwraith_hid::Transport for Tamper<'_> {
+    fn write(
+        &mut self,
+        packet: &openwraith_hid::protocol::OutPacket,
+    ) -> Result<(), openwraith_hid::TransportError> {
+        openwraith_hid::Transport::write(&mut *self.sim, packet)
+    }
+
+    fn read(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<Report>, openwraith_hid::TransportError> {
+        if !self.interrupted && self.interrupt_after_writes == Some(self.writes) {
+            self.interrupted = true;
+            return Err(openwraith_hid::TransportError::Interrupted);
+        }
+        let report = openwraith_hid::Transport::read(&mut *self.sim, timeout)?;
+        Ok(report.map(|r| {
+            let mut bytes = *r.as_bytes();
+            (self.rewrite)(&mut bytes, self.selects);
+            Report::new(bytes)
+        }))
+    }
+
+    fn usb_info(&self) -> Option<openwraith_hid::UsbInfo> {
+        openwraith_hid::Transport::usb_info(&*self.sim)
+    }
+
+    fn now(&self) -> std::time::Instant {
+        openwraith_hid::Transport::now(&*self.sim)
+    }
+}
+
+impl openwraith_hid::WriteTransport for Tamper<'_> {
+    fn write_command(
+        &mut self,
+        packet: &openwraith_hid::protocol::WritePacket,
+    ) -> Result<(), openwraith_hid::TransportError> {
+        self.writes += 1;
+        if packet.as_bytes()[..6] == [0x21, 0, 0, 0, 0, 0x12] {
+            self.selects += 1;
+        }
+        openwraith_hid::WriteTransport::write_command(&mut *self.sim, packet)
+    }
 }

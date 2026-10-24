@@ -1,6 +1,6 @@
 [package]
 name = "openwraith-cli"
-description = "Read-only command line tool for the Wraith W75 keyboard: device info, readable settings tables and lossless backups."
+description = "Command line tool for the Wraith W75 keyboard: device info, readable settings tables, lossless backups, and guarded restore and edits."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,10 +18,13 @@ openwraith-hid = { workspace = true }
 openwraith-protocol = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+ctrlc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Backups replayed from the USB captures, so tests never need a keyboard.
+# Backups replayed from the USB captures and the device simulator, so tests
+# never need a keyboard.
 openwraith-hid = { workspace = true, features = ["mock"] }
+tempfile = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "openwraith-hid"
-description = "HID transport, read-only session and lossless backup for the Wraith W75 keyboard."
+description = "HID transport, session, lossless backup and the guarded write path (restore, edits) for the Wraith W75 keyboard."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

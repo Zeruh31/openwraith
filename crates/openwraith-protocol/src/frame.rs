@@ -201,7 +201,7 @@ impl<'de> serde::Deserialize<'de> for Report {
 }
 
 /// The bytes up to the last non-zero byte, but at least the 5-byte header.
-fn trimmed(bytes: &[u8]) -> &[u8] {
+pub(crate) fn trimmed(bytes: &[u8]) -> &[u8] {
     let end = bytes
         .iter()
         .rposition(|b| *b != 0)
