@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/openwraith-protocol", "crates/openwraith-hid", "crates/openwraith-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zeruh31/openwraith"
+rust-version = "1.85"
+
+[workspace.dependencies]
+openwraith-protocol = { path = "crates/openwraith-protocol" }
+openwraith-hid = { path = "crates/openwraith-hid" }
+
+# Third-party crates, pinned to a minor version.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+hidapi = "2.6"
+clap = { version = "4.6", features = ["derive"] }
+anyhow = "1.0"
+tempfile = "3.27"

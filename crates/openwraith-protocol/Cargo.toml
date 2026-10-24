@@ -1,0 +1,28 @@
+[package]
+name = "openwraith-protocol"
+description = "Pure (no I/O) implementation of the Wraith W75 HID configuration protocol: framing, read requests, response matching and decoders."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["keyboard", "hid", "wraith", "hall-effect"]
+categories = ["hardware-support", "parser-implementations"]
+
+[features]
+default = ["serde"]
+# Serialize/Deserialize for every request, report and decoded model.
+serde = ["dep:serde"]
+# Parser for the JSON USB capture files in `captures/` and the read-exchange
+# pairing used by tests and by the mock transport in `openwraith-hid`.
+capture = ["serde", "dep:serde_json"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Enables the `capture` feature for this crate's own integration tests.
+openwraith-protocol = { path = ".", features = ["capture"] }
+serde_json = { workspace = true }

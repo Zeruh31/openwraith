@@ -1,0 +1,32 @@
+[package]
+name = "openwraith-hid"
+description = "HID transport, read-only session and lossless backup for the Wraith W75 keyboard."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["keyboard", "hid", "wraith", "hall-effect", "backup"]
+categories = ["hardware-support"]
+
+[features]
+# `MockTransport`: replays the USB captures in `captures/` instead of talking
+# to a keyboard. Used by tests, examples and the CLI's tests.
+mock = ["openwraith-protocol/capture"]
+
+[dependencies]
+openwraith-protocol = { workspace = true }
+hidapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Unique temporary file + atomic no-clobber rename for `Backup::save`.
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Enables the `mock` feature for this crate's own tests.
+openwraith-hid = { path = ".", features = ["mock"] }
+
+[[example]]
+name = "mock_backup"
+required-features = ["mock"]
