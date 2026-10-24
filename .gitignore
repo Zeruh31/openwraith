@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / Tauri frontend (later)
+node_modules/
+dist/
+
+# Local, unrelated files in the working folder
+process_whitelist.json
+
+# Device backups made with the CLI (personal data)
+*.owbackup.json
+# Temporary files of an interrupted `openwraith backup`
+.openwraith-*.partial
+
+# Never commit the vendor site's code or layout files
+/vendor-site/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
