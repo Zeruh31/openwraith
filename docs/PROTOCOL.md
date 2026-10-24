@@ -310,34 +310,34 @@ Every command the site builds (`agreement.js`, plus `0x0D` from `wmIndex.js`; `w
 | 13 | `0E` | `00` | R | Fn-layer locked keys | 22-B key mask; W75: index 121 | CONFIRMED (bytes); meaning CODE-ONLY; "121 = Fn" GUESS | | [§4.3](#43-fn-layer-locked-keys-0x0e) |
 | 14 | `14` | `00`, byte 5 = `00` | W | Win-Lock options and N-key/6-key | [4]=1, [12] Win, [13] Shift+Tab, [14] Alt+F4, [15] Alt+Tab, [18] 6-key | CODE-ONLY | C (byte 5 must be 0) | §4.6.2 |
 | 15 | `14` | `00`, byte 5 = `01` | W | **Reset current profile** | `14 00 00 00 01 01` | CODE-ONLY | **D** | §4.6.3 |
-| 16 | `14` | IN, byte 5 = `01` | IN | Device reset notification (site then sends a reset) | any byte 1 | CODE-ONLY | **D** (receive-side hazard) | §4.6.3 |
+| 16 | `14` | IN, byte 5 = `01` | IN | Device reset notification (site then sends a reset) | `14 00 00 00 01 01`, sent when Fn+Space is held 3-5 s (c07) | CONFIRMED | **D** (receive-side hazard) | §4.6.3 |
 | 17 | `14` | `01` | W | Set sleep timers (PIDs `C370`/`C371` only, not W75) | [8..9] light sleep s BE16, [10..11] keyboard sleep s BE16 | CODE-ONLY | | §4.6.5 |
 | 18 | `14` | `02` | R | Get sleep timers (not W75) | reply [1]=2, same fields | CODE-ONLY | | §4.6.5 |
 | 19 | `14` | `03` | W | **Gamepad mode** | `14 03 00 00 01 MM`, MM 0 off / 1 Xbox 360 / 2 Classical; device restarts | CODE-ONLY | **D** | §4.6.4 |
 | 20 | `17` | `00`, `00 00` | W | Music rhythm leave | `17 00 00 00 02 00 00`; ack `17 00 00 00 00`; sent before every main-mode change | CONFIRMED | | [§4.7](#47-lighting) |
 | 21 | `17` | `00`, `01 01` | W | Music rhythm enter | `17 00 00 00 02 01 01`; not offered on W75 | CODE-ONLY | | [§4.7](#47-lighting) |
-| 22 | `18` | `80` / `82` | R | Read keymap base / Fn layer | 10 chunks, 528 B = 132 x 4 B | CONFIRMED (framing, all-zero content); entry format CODE-ONLY | | [§4.8](#48-keymap-0x18) |
-| 23 | `18` | `00` / `02` | W | Write keymap base / Fn layer | 10 chunks of 56 B (last 24) | CODE-ONLY | C | [§4.8](#48-keymap-0x18) |
-| 24 | `19` | `80`-`89` | R | Read macro slot 0-9 | 5 chunks, 256 B per slot | CONFIRMED (framing, all-FF content); slot format CODE-ONLY | | [§4.9](#49-macros-0x19) |
-| 25 | `19` | `00`-`09` | W | Write macro slot 0-9 | 5 chunks of 58 B (last 24); waits for `0x19` ack per chunk | CODE-ONLY | C | [§4.9](#49-macros-0x19) |
+| 22 | `18` | `80` / `82` | R | Read keymap base / Fn layer | 10 chunks, 528 B = 132 x 4 B | CONFIRMED (framing; after c09 the base table reads back the site's knob defaults at 16-21 and `01 00 00 00` at 121); entry kinds other than plain key `00 HH 00 00` and macro `10 39 SS 00` CODE-ONLY | | [§4.8](#48-keymap-0x18) |
+| 23 | `18` | `00` / `02` | W | Write keymap base / Fn layer | 10 chunks of 56 B (last 24), each acked `18 00 00 00 00`. Plain remap W -> A = entry 46 `00 04 00 00` (typing test passed); default = `00 00 00 00` | CONFIRMED (c09, c13; base layer with real content, Fn layer zero content only) | C | [§4.8](#48-keymap-0x18) |
+| 24 | `19` | `80`-`89` | R | Read macro slot 0-9 | 5 chunks, 256 B per slot | CONFIRMED (framing, all-FF content); slot format CODE-ONLY on the read side | | [§4.9](#49-macros-0x19) |
+| 25 | `19` | `00`-`09` | W | Write macro slot 0-9 | 5 chunks of 58 B (last 24), each acked `19 00 00 00 00` (sub always `00`). Keyboard-step slot layout of §4.9.3 matches c13 byte for byte (typing test passed) | CONFIRMED (keyboard steps, play once); mouse steps and other play modes CODE-ONLY | C | [§4.9](#49-macros-0x19) |
 | 26 | `21` | byte 5 = `00` / `0C` | W | Trigger write (actuation, Rapid Trigger) for a key set | [4]=`18`, [5] mode, [6..27] key mask, [28..35] travel/sensitivity lo/hi | CONFIRMED | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
-| 27 | `21` | byte 5 = `0D` | W | Trigger write, RT with separate press/release | same layout | CODE-ONLY | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
+| 27 | `21` | byte 5 = `0D` | W | Trigger write, RT with separate press/release | same layout; byte 30 = press, byte 31 = release (W press 0.30 `0f`, release 0.50 `19`) | CONFIRMED (c10) | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
 | 28 | `21` | IN byte 5 = `00` | IN | Trigger write ack | `21 00 00 00 01 00` | OBSERVED | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
 | 29 | `21` | IN byte 5 = `01` | IN | Live travel stream (travel test) | depth = [9]<<8 \| [8] | CODE-ONLY | | §4.11.7 |
 | 30 | `21` | byte 5 = `02` | W | Open travel test | [6..27] mask of all layout keys | CODE-ONLY | | §4.11.7 |
 | 31 | `21` | byte 5 = `03` | W | Close travel test | `21 00 00 00 18 03` | CODE-ONLY | | §4.11.7 |
 | 32 | `21` | byte 5 = `04` | R | Global trigger parameters | reply `04 aa 02 02 00 05`: max 3.40 mm, unit 0.02 mm, min 0.10 mm | CONFIRMED | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
 | 33 | `21` | byte 5 = `05` | R | Per-key trigger read | request row/col; 12-B reply echoing row/col | CONFIRMED | | [§4.11](#411-actuation-and-rapid-trigger-0x21) |
-| 34 | `21` | byte 5 = `06` | W | **Reset all key triggers** | `21 00 00 00 18 06` | CODE-ONLY | **D** | §4.11.6 |
+| 34 | `21` | byte 5 = `06` | W | **Reset all key triggers** (active profile) | `21 00 00 00 18 06`; ack `21 00 00 00 01`, then about 1 s later the device pushes `21 00 00 00 02 11 PP`; all 82 keys read `00 55 55 01 01` afterwards | CONFIRMED (c11) | **D** | §4.11.6 |
 | 35 | `21` | byte 5 = `07` | W | **Single-key calibration** (dead code in the site) | `21 00 00 00 18 07 row col` | CODE-ONLY | **D** | §4.11.8 |
 | 36 | `21` | byte 5 = `08` | W / IN | **All-key calibration** start (`08 00`) / stop (`08 01`) and status (devices without the any-key flag; not the W75 path) | status [6]: 0 done, 1 progress + mask, 2/4 fail | CODE-ONLY | **D** | §4.11.8 |
 | 37 | `21` | byte 5 = `0F` / `10` | W / IN | **Any-key calibration** start (`0F 00`) / stop (`10 00`) and status `0F` (W75 path) | as above | CODE-ONLY | **D** | §4.11.8 |
 | 38 | `21` | byte 5 = `09` | R | Read polling rate | `21 00 00 00 01 09` -> `.. 02 09 RR`; W75 RR = `08` (8 kHz) | CONFIRMED | | §4.6.1 |
 | 39 | `21` | byte 5 = `09`, byte 6 = `01` | W | Set polling rate | `21 00 00 00 00 09 01 RR`; device restarts per UI | CODE-ONLY | C | §4.6.1 |
 | 40 | `21` | byte 5 = `11` | R | Read active onboard profile | `21 00 00 00 00 11` -> `.. 03 11 PP XX`; observed `11 01 01` | CONFIRMED | | [§4.5](#45-onboard-profiles) |
-| 41 | `21` | byte 5 = `12` | W | Select onboard profile | `21 00 00 00 00 12 PP` (PP 1-4) | CODE-ONLY | | [§4.5](#45-onboard-profiles) |
+| 41 | `21` | byte 5 = `12` | W | Select onboard profile | `21 00 00 00 00 12 PP` (PP 1-4); ack `21 00 00 00 02 12 01` within 4 ms, immediately followed by the push `21 00 00 00 03 11 PP 00`. The site then re-reads everything and writes nothing | CONFIRMED (c08, c10) | | [§4.5](#45-onboard-profiles) |
 | 42 | `22` | `80` | R | Read 40 advanced-key slots | 40 chunks x 40 B, chunk index = slot | CONFIRMED (framing, all-zero content) | | [§4.14](#414-advanced-keys-0x22) |
-| 43 | `22` | `00`-`27` | W | Write one advanced-key slot | `22 NN 00 00 32 TT ...` | CODE-ONLY | C | [§4.14](#414-advanced-keys-0x22) |
+| 43 | `22` | `00`-`27` | W | Write one advanced-key slot | `22 NN 00 00 32 TT ...`, each acked `22 00 00 00 00` | CONFIRMED (framing and acks with all-zero content, c09/c13); non-empty slot format CODE-ONLY | C | [§4.14](#414-advanced-keys-0x22) |
 | 44 | `24` | `01` | R | Read SOCD pairs | 2 chunks x 40 B = 10 x 4-B entries each | CONFIRMED (framing, all-zero content) | | [§4.15](#415-socd-0x24) |
 | 45 | `24` | `02` | R | Read SOCD power and hotkey | reply `00 00 00 00 fa e5` (off; Fn + R-Shift) | CONFIRMED | | [§4.15](#415-socd-0x24) |
 | 46 | `24` | `00` | W | Write SOCD pairs | 2 packets, [4]=40, 10 x [1, model, key1, key2] | CODE-ONLY | C | [§4.15](#415-socd-0x24) |
@@ -345,10 +345,10 @@ Every command the site builds (`agreement.js`, plus `0x0D` from `wmIndex.js`; `w
 | 48 | `25` | `00` | R | Supported switch types | `00 01 01` = 1 type, ID 1 (HM1) | CONFIRMED | | [§4.13](#413-switch-types-0x25) |
 | 49 | `25` | `02` | R | Per-key switch type table | 3 chunks, 132 B; W75 all `01` | CONFIRMED (framing, uniform content); per-key mapping CODE-ONLY | | [§4.13](#413-switch-types-0x25) |
 | 50 | `25` | `01` | W | Write per-key switch type table | 3 chunks (58, 58, 16) | CODE-ONLY | C | [§4.13](#413-switch-types-0x25) |
-| 51 | `26` | `00` | R | Read dead band (the site's "reset dead band" sends the same bytes) | 5 chunks, 264 B = 132 x (top, bottom) | CONFIRMED (framing, all-zero content); top/bottom order CODE-ONLY | | [§4.12](#412-dead-band-0x26) |
-| 52 | `26` | `01` | W | Write dead band | 5 chunks of 58 B (last 32) | CODE-ONLY | C | [§4.12](#412-dead-band-0x26) |
+| 51 | `26` | `00` | R | Read dead band (the site's "reset dead band" sends the same bytes) | 5 chunks, 264 B = 132 x (top, bottom) | CONFIRMED (framing, all-zero content) | | [§4.12](#412-dead-band-0x26) |
+| 52 | `26` | `01` | W | Write dead band | 5 chunks of 58 B (last 32), acked `26 01`. Byte 2 x index = top, 2 x index + 1 = bottom, 0.02 mm units (W top 0.10 mm = offset 92 `05`, bottom 0.20 mm = offset 93 `0a`) | CONFIRMED (c12) | C | [§4.12](#412-dead-band-0x26) |
 
-**Counts:** 52 rows. CONFIRMED 25 (of which rows 5, 7, 13, 22, 24, 42, 44, 49 and 51 are confirmed for framing/bytes only while the meaning or content format is CODE-ONLY or GUESS), OBSERVED 1, CODE-ONLY 26, GUESS 0. DANGEROUS 7 rows (15, 16, 19, 34, 35, 36, 37).
+**Counts (updated 2026-10-24 evening, capture session 2):** 52 rows. CONFIRMED 33 (of which rows 5, 7, 13, 22, 24, 25, 42, 43, 44 and 49 are confirmed only for framing/bytes or for part of the content format), OBSERVED 1, CODE-ONLY 18, GUESS 0. DANGEROUS 7 rows (15, 16, 19, 34, 35, 36, 37). See section 7.3 for what session 2 established.
 
 ---
 
@@ -1450,6 +1450,18 @@ Instructions for the maintainer. Use the existing capture hook with logging on, 
 | C23 | **Reset current profile (DESTRUCTIVE, last).** Only after a full backup capture of every profile: switch to a profile you can afford to lose, click Reset and confirm. Then switch to the other profiles and check they are untouched. | `14 00 00 00 01 01` reply bytes; whether `21 .. 18 06`, `26 00`, `24 03 .. 00` follow; which tables changed | Q4, Q21 | **high** |
 
 ---
+
+### 7.3 Capture session 2 (2026-10-24 evening) – results
+
+Captures `c08`-`c13` (`captures/capture_08_profile_switch.json` … `capture_13_macro_ab_on_caps.json`). Plan items done: C3, C7, C8 (a, b; the Select-All part was skipped), C13, C14 (create, bind to Caps, typing test, unbind), C19. All confirmations are already reflected in the master table (section 3).
+
+- **Profiles (C3):** `21/12` select is acked and followed by an unsolicited `11 PP` push; the site re-reads everything and writes nothing. **Main light and per-key triggers are per onboard profile** (profile 2 kept factory triggers and its own light while profile 1 had Q 1.50 mm and W RT 0D; the user saw the light change). Q3 is answered for these two; keymap, macros, dead band, SOCD and switch types are still unverified for scope.
+- **Key mask orientation (C8, Q9): CONFIRMED** byte = 6 + column, bit = 1 << row (Q at row 2, col 1 -> byte 7 = `0x04`).
+- **Separate press/release (C8, Q16): CONFIRMED** mode `0D`, byte 30 press, byte 31 release.
+- **Reset Trigger (C19): CONFIRMED**, see row 34; only the active profile was affected as far as the captures show (profile 2 was already at factory values, so this is not proof).
+- **Keymap / macros / advanced keys (C7, C14):** every Apply rewrites 10 macro slots (5 chunks each), both keymap layers (10 chunks each) and 40 advanced-key slots: 110 packets, every packet acked with a zero-length report of the same cmd. The site also forces its knob defaults into the base keymap (slots 16-21: `07 12`, `07 11`, `07 10`, `02 02`, `03 01`, `03 00`) and `01 00 00 00` at Fn (121) although the device had all zeros before; these now read back from the device. **The lossy whole-table rewrite (section 6.1 row c) is CONFIRMED.**
+- **Dead band (C13): CONFIRMED** layout and units; the site rewrites the whole 264-byte table on every slider step (37 full writes in about 20 s).
+- **Implications for our writer:** read the table from the device first, change only the target entries, write it back once (debounced), and verify by reading it back; never synthesise defaults for entries we did not change.
 
 ## Appendix A. Corrections to the earlier draft
 
