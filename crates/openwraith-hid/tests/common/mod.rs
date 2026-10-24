@@ -188,6 +188,19 @@ pub fn selects(sim: &DeviceSim) -> Vec<u8> {
         .collect()
 }
 
+/// The index (into `DeviceSim::written`) and virtual time of the last
+/// trigger write (`21 00 00 00 18 ..`) the simulator received.
+pub fn last_trigger_write(sim: &DeviceSim) -> (usize, Duration) {
+    sim.written()
+        .iter()
+        .zip(sim.sent_times())
+        .enumerate()
+        .filter(|(_, (p, _))| p.is_write() && p.as_bytes()[..5] == [0x21, 0, 0, 0, 0x18])
+        .map(|(i, (_, t))| (i, *t))
+        .next_back()
+        .expect("a trigger write")
+}
+
 /// A scratch directory for safety backups.
 pub fn temp_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("temporary directory")

@@ -310,6 +310,25 @@ pub struct Session<T: Transport> {
     /// Where the "other program" gate starts looking (see
     /// [`Session::rearm_gate`]).
     gate: GateMark,
+    /// The last write packet that changes a setting; see
+    /// [`Session::last_write_at`].
+    last_write: Option<LastWrite>,
+    /// When [`fatal`](Self::fatal) was first set (on the transport clock).
+    fatal_at: Option<Instant>,
+}
+
+/// The last write packet of a session that changes a setting (see
+/// [`Session::last_write_at`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LastWrite {
+    /// When it was sent, on the transport clock.
+    pub(crate) at: Instant,
+    /// The profile it went to, as the writer had last confirmed it.
+    pub(crate) profile: Option<u8>,
+    /// The keyboard switched to another profile before the commit settle
+    /// had passed: it reloaded the profile and probably discarded the write
+    /// (spec 4.5.3, "Delayed commit"). Nothing is pending any more.
+    pub(crate) discarded: bool,
 }
 
 /// The point from which the "other program" gate looks at the session.
@@ -343,7 +362,60 @@ impl<T: Transport> Session<T> {
                 activity: ForeignActivity::default(),
                 events: 0,
             },
+            last_write: None,
+            fatal_at: None,
         }
+    }
+
+    /// When this session last sent a write packet that changes a setting
+    /// (anything but a profile select), on the transport's clock
+    /// ([`Transport::now`]); `None` if it never did.
+    ///
+    /// The keyboard saves such a write about 1 s later; a profile switch or a
+    /// power loss before that loses it (spec 4.5.3, "Delayed commit"). A
+    /// [`Writer`](crate::Writer) therefore waits its
+    /// [`commit_settle`](crate::WriteOptions::commit_settle) after this time
+    /// before it selects another profile. The time is kept by the session,
+    /// so it also covers later writers of a long-lived session.
+    pub fn last_write_at(&self) -> Option<Instant> {
+        self.last_write.map(|w| w.at)
+    }
+
+    /// The profile the last write that changes a setting went to (see
+    /// [`last_write_at`](Self::last_write_at)), as the writer had last
+    /// confirmed it; `None` if this session never wrote one or the profile
+    /// was not known.
+    pub fn last_write_profile(&self) -> Option<u8> {
+        self.last_write.and_then(|w| w.profile)
+    }
+
+    /// The last write that changes a setting, if any.
+    pub(crate) fn last_write(&self) -> Option<LastWrite> {
+        self.last_write
+    }
+
+    /// Records that the keyboard switched profiles before it had saved the
+    /// last write (see [`LastWrite::discarded`]): nothing is pending any
+    /// more.
+    pub(crate) fn discard_pending_write(&mut self) {
+        if let Some(last) = &mut self.last_write {
+            last.discarded = true;
+        }
+    }
+
+    /// When the session first became unusable (reset notification or lost
+    /// connection), on the transport clock.
+    pub(crate) fn fatal_at(&self) -> Option<Instant> {
+        self.fatal_at
+    }
+
+    /// Marks the session as unusable; the time of the first such event is
+    /// kept.
+    fn set_fatal(&mut self, fatal: Fatal) {
+        if self.fatal.is_none() {
+            self.fatal_at = Some(self.now());
+        }
+        self.fatal = Some(fatal);
     }
 
     /// The current time on the transport's clock ([`Transport::now`]).
@@ -464,6 +536,17 @@ impl<T: Transport> Session<T> {
     /// Stops with [`ListenError::KeyboardReset`] on the keyboard's reset
     /// notification (which is never answered).
     pub fn listen(&mut self, duration: Duration) -> Result<ListenSummary, ListenError> {
+        self.listen_until(duration, false)
+    }
+
+    /// [`listen`](Self::listen); with `stop_at_profile_report`, it returns
+    /// right after the first profile report we did not cause (a profile
+    /// change must be acted on at once, not when the listen is over).
+    pub(crate) fn listen_until(
+        &mut self,
+        duration: Duration,
+        stop_at_profile_report: bool,
+    ) -> Result<ListenSummary, ListenError> {
         let before = self.foreign_activity();
         let deadline = self.now() + duration;
         let mut reports = 0u64;
@@ -482,10 +565,14 @@ impl<T: Transport> Session<T> {
                 break;
             };
             reports += 1;
-            if self.classify_unrelated(&report) == Unrelated::Reset {
-                return Err(ListenError::KeyboardReset {
-                    report: report.summary(),
-                });
+            match self.classify_unrelated(&report) {
+                Unrelated::Reset => {
+                    return Err(ListenError::KeyboardReset {
+                        report: report.summary(),
+                    });
+                }
+                Unrelated::ProfileReport { .. } if stop_at_profile_report => break,
+                _ => {}
             }
         }
         Ok(ListenSummary {
@@ -588,7 +675,7 @@ impl<T: Transport> Session<T> {
                 Err(e) => return Err(e.into()),
             };
             if is_keyboard_reset(&report) {
-                self.fatal = Some(Fatal::Reset(report.summary()));
+                self.set_fatal(Fatal::Reset(report.summary()));
                 return Err(reset_error(request, &report));
             }
             match collector.offer(&report) {
@@ -625,7 +712,7 @@ impl<T: Transport> Session<T> {
     /// written after it.
     pub(crate) fn classify_unrelated(&mut self, report: &Report) -> Unrelated {
         if is_keyboard_reset(report) {
-            self.fatal = Some(Fatal::Reset(report.summary()));
+            self.set_fatal(Fatal::Reset(report.summary()));
             return Unrelated::Reset;
         }
         let now = self.now();
@@ -727,7 +814,7 @@ impl<T: Transport> Session<T> {
                     continue;
                 }
                 Ok(_) | Err(TransportError::Malformed(_)) => {}
-                Err(e) => self.fatal = Some(Fatal::Disconnected(e.to_string())),
+                Err(e) => self.set_fatal(Fatal::Disconnected(e.to_string())),
             }
             return result;
         }
@@ -737,20 +824,44 @@ impl<T: Transport> Session<T> {
     fn transport_write(&mut self, packet: &OutPacket) -> Result<(), TransportError> {
         let result = self.transport.write(packet);
         if let Err(e) = &result {
-            self.fatal = Some(Fatal::Disconnected(e.to_string()));
+            self.set_fatal(Fatal::Disconnected(e.to_string()));
         }
         result
     }
 }
 
 impl<T: WriteTransport> Session<T> {
-    /// Sends one write packet (used by [`Writer`](crate::Writer) only); a
-    /// failure marks the connection as lost.
-    pub(crate) fn send_write(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
+    /// Sends one write packet of a table write to `profile` (the active
+    /// profile as the writer last confirmed it; used by
+    /// [`Writer`](crate::Writer) only) and records it for the commit settle
+    /// ([`last_write_at`](Self::last_write_at)); a failure marks the
+    /// connection as lost. The write is recorded even then: the packet may
+    /// have reached the keyboard.
+    pub(crate) fn send_write(
+        &mut self,
+        packet: &WritePacket,
+        profile: Option<u8>,
+    ) -> Result<(), TransportError> {
+        self.last_write = Some(LastWrite {
+            at: self.now(),
+            profile,
+            discarded: false,
+        });
+        self.send(packet)
+    }
+
+    /// Sends a profile select (used by [`Writer`](crate::Writer) only): it
+    /// changes no setting, so it does not restart the commit settle.
+    pub(crate) fn send_select(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
+        self.send(packet)
+    }
+
+    /// Sends one write packet; a failure marks the connection as lost.
+    fn send(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
         let result = self.transport.write_command(packet);
         match &result {
             Ok(()) => self.stats.writes += 1,
-            Err(e) => self.fatal = Some(Fatal::Disconnected(e.to_string())),
+            Err(e) => self.set_fatal(Fatal::Disconnected(e.to_string())),
         }
         result
     }

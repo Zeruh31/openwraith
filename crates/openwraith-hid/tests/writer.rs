@@ -20,8 +20,8 @@ use openwraith_hid::protocol::{
     TriggerLimits, TriggerSetting, TriggerWrite, TriggerWriteMode, W75, WriteRequest,
 };
 use openwraith_hid::{
-    DeviceSim, ErrorKind, GuardedWrite, SavedBackup, ScopeConfig, Session, SimTable, WriteError,
-    WriteOutcome, WriteWarning, Writer, read_all_with,
+    CommitSettle, CommitWait, DeviceSim, ErrorKind, GuardedWrite, SavedBackup, ScopeConfig,
+    Session, SimTable, WriteError, WriteOptions, WriteOutcome, WriteWarning, Writer, read_all_with,
 };
 
 fn sim() -> DeviceSim {
@@ -832,18 +832,325 @@ fn a_profile_change_on_the_keyboard_aborts() {
     let mut writer = session.writer(consent()).expect("writer");
     let request = colours_with(&mut writer, Rgb::new(4, 4, 4));
     let err = writer.write_guarded(&saved, &request).unwrap_err();
+    // Right after a write to profile 1: the keyboard reloaded profile 3 and
+    // dropped what was sent so far, and the error says so.
     assert!(
         matches!(
             err,
-            WriteError::ProfileChanged {
-                expected: Some(1),
+            WriteError::ProfileChangedBeforeSave {
+                profile: Some(1),
                 reported: 3
             }
         ),
         "{err}"
     );
+    assert!(err.to_string().contains("may not have been saved"), "{err}");
     assert_eq!(err.kind(), ErrorKind::ProfileChanged);
+    assert!(writer.commit_interrupted());
+    assert_eq!(writer.known_profile(), Some(profile(3)));
+    // Nothing is left to wait for.
+    assert_eq!(writer.commit_pending(), Duration::ZERO);
     drop(writer);
     drop(session);
+    assert_eq!(sim.discarded_edits(), 1);
+    sim.assert_clean();
+}
+
+// ----- commit settle (PROTOCOL.md 4.5.3, "Delayed commit") -----
+
+/// Whether a packet is a profile select (`21 .. 00 12 PP`).
+fn is_select(bytes: &[u8; 63]) -> bool {
+    bytes[..6] == [0x21, 0, 0, 0, 0, 0x12]
+}
+
+/// Indices (into `DeviceSim::written`) of the trigger writes and of the
+/// selects.
+fn trigger_and_select_indices(sim: &DeviceSim) -> (Vec<usize>, Vec<usize>) {
+    let mut triggers = Vec::new();
+    let mut selects = Vec::new();
+    for (i, packet) in sim.written().iter().enumerate() {
+        let bytes = packet.as_bytes();
+        if !packet.is_write() {
+            continue;
+        }
+        if is_select(bytes) {
+            selects.push(i);
+        } else if bytes[..5] == [0x21, 0, 0, 0, 0x18] {
+            triggers.push(i);
+        }
+    }
+    (triggers, selects)
+}
+
+#[test]
+fn a_select_after_a_write_waits_for_the_keyboard_to_save() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    assert_eq!(writer.commit_pending(), Duration::ZERO);
+    assert_eq!(writer.options().commit_settle, CommitSettle::DEFAULT);
+    let request = q_trigger(&mut writer, 100);
+    written(writer.write_guarded(&saved, &request));
+    // The read-back matched, but the keyboard has not saved the write yet.
+    assert_eq!(writer.commit_pending(), Duration::from_secs(2));
+    assert!(writer.session().transport().has_unsaved_edits());
+
+    let mut waits: Vec<CommitWait> = Vec::new();
+    let outcome = writer
+        .select_profile_observed(profile(2), &mut |w| waits.push(w))
+        .expect("selects");
+    assert!(outcome.switched);
+    assert_eq!(
+        waits,
+        [CommitWait {
+            profile: Some(1),
+            wait_ms: 2000,
+            settle_ms: 2000
+        }]
+    );
+    assert_eq!(
+        outcome.warnings,
+        [WriteWarning::WaitedForCommit { waited_ms: 2000 }]
+    );
+    assert_eq!(writer.commit_pending(), Duration::ZERO);
+    // Nothing was written since: switching back does not wait again.
+    let back = writer
+        .select_profile_observed(profile(1), &mut |w| waits.push(w))
+        .expect("back");
+    assert!(back.switched);
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(waits.len(), 1);
+    drop(writer);
+    assert!(session.foreign_activity().is_quiet());
+    drop(session);
+
+    // On the virtual clock the select went out the settle after the write,
+    // so the keyboard kept it.
+    let (triggers, selects) = trigger_and_select_indices(&sim);
+    let times = sim.sent_times();
+    assert!(times[selects[0]] - times[triggers[0]] >= Duration::from_secs(2));
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(
+        sim.persisted_trigger(profile(1), pos(2, 1)).map(|r| r[1]),
+        Some(100)
+    );
+    sim.assert_clean();
+}
+
+#[test]
+fn a_select_without_a_write_does_not_wait() {
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let before = writer.session().transport().elapsed();
+    let mut waits = 0;
+    let outcome = writer
+        .select_profile_observed(profile(3), &mut |_| waits += 1)
+        .expect("selects");
+    assert!(outcome.switched);
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(waits, 0);
+    // The select and its confirmation took no virtual time at all.
+    assert_eq!(writer.session().transport().elapsed(), before);
+    assert_eq!(writer.wait_for_commit().expect("nothing pending"), None);
+    drop(writer);
+    assert_eq!(session.last_write_at(), None);
+    drop(session);
+    sim.assert_clean();
+}
+
+#[test]
+fn the_settle_spans_the_writers_of_one_session() {
+    // A long-lived session (a GUI): one writer writes, a later one selects.
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    {
+        let mut writer = session.writer(consent()).expect("writer");
+        let request = q_trigger(&mut writer, 100);
+        written(writer.write_guarded(&saved, &request));
+    }
+    assert!(session.last_write_at().is_some());
+    let mut writer = session.writer(consent()).expect("second writer");
+    let outcome = writer.select_profile(profile(2)).expect("selects");
+    assert_eq!(
+        outcome.warnings,
+        [WriteWarning::WaitedForCommit { waited_ms: 2000 }]
+    );
+    drop(writer);
+    drop(session);
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(
+        sim.persisted_trigger(profile(1), pos(2, 1)).map(|r| r[1]),
+        Some(100)
+    );
+    sim.assert_clean();
+}
+
+#[test]
+fn without_the_settle_the_simulator_loses_the_write_like_the_keyboard() {
+    // The behaviour before the fix, possible only with the test option:
+    // select right after the write, as the restore of hardware test H7 did.
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let options = WriteOptions {
+        commit_settle: CommitSettle::disabled_for_tests(),
+        ..WriteOptions::default()
+    };
+    let mut writer = session.writer_with(consent(), options).expect("writer");
+    let request = q_trigger(&mut writer, 100);
+    written(writer.write_guarded(&saved, &request));
+    let outcome = writer.select_profile(profile(2)).expect("selects");
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    writer.select_profile(profile(1)).expect("back");
+    // Read after the switch: the old value (c06 Q: 1.70 mm = 0x55 units).
+    let raw = writer.read(ReadRequest::KeyTrigger(pos(2, 1))).expect("Q");
+    assert_eq!(raw.payload()[2], 0x55);
+    drop(writer);
+    drop(session);
+    assert_eq!(sim.discarded_edits(), 1);
+    sim.assert_clean();
+}
+
+#[test]
+fn a_reset_during_the_settle_wait_poisons_the_writer() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    // The reset notification arrives 3 s in: after the 2 s gate and the
+    // write, while the select waits for the keyboard to save.
+    sim.push_input_at(Duration::from_secs(3), captured_reset_report());
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let request = q_trigger(&mut writer, 100);
+    written(writer.write_guarded(&saved, &request));
+    let err = writer.select_profile(profile(2)).unwrap_err();
+    assert!(matches!(err, WriteError::KeyboardReset { .. }), "{err}");
+    assert!(writer.is_poisoned());
+    // Nothing more is sent, and nothing waits any more.
+    assert!(writer.select_profile(profile(1)).is_err());
+    assert!(writer.wait_for_commit().is_err());
+    drop(writer);
+    assert!(session.keyboard_reset_seen());
+    drop(session);
+    assert!(sim.reset_delivered());
+    assert!(common::selects(&sim).is_empty());
+    // assert_clean: no packet after the notification.
+    sim.assert_clean();
+}
+
+/// What a writer did in [`switch_during_wait`].
+struct WaitRun {
+    /// The result of the wait (or of the select).
+    result: Result<(), WriteError>,
+    interrupted: bool,
+    pending: Duration,
+    known: Option<openwraith_hid::protocol::ProfileId>,
+}
+
+/// Writes Q, then waits for the keyboard to save, either directly (a GUI
+/// before it says "done") or through a select.
+fn switch_during_wait(sim: &mut DeviceSim, saved: &SavedBackup, select: bool) -> WaitRun {
+    let mut session = Session::new(sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let request = q_trigger(&mut writer, 100);
+    written(writer.write_guarded(saved, &request));
+    let result = if select {
+        writer.select_profile(profile(4)).map(|_| ())
+    } else {
+        writer.wait_for_commit().map(|_| ())
+    };
+    WaitRun {
+        result,
+        interrupted: writer.commit_interrupted(),
+        pending: writer.commit_pending(),
+        known: writer.known_profile(),
+    }
+}
+
+#[test]
+fn a_silent_switch_on_the_keyboard_during_the_wait_is_found_when_it_ends() {
+    // The keyboard need not report a switch made on it (spec Q2): the user
+    // presses Fn + 2 300 ms after the write and nothing arrives. The wait
+    // ends by reading the active profile, finds profile 2 and says that the
+    // write may not have been saved; a select does not go out.
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    for select in [false, true] {
+        let mut copy = sim();
+        let normal = switch_during_wait(&mut copy, &saved, select);
+        assert!(normal.result.is_ok(), "{:?}", normal.result);
+        assert!(!normal.interrupted);
+        let (_, write_at) = common::last_trigger_write(&copy);
+
+        let mut sim = sim();
+        let before = sim.persisted_trigger(profile(1), pos(2, 1));
+        sim.switch_profile_at(write_at + Duration::from_millis(300), profile(2), false);
+        let run = switch_during_wait(&mut sim, &saved, select);
+        let err = run.result.expect_err("the switch is found");
+        assert!(
+            matches!(
+                err,
+                WriteError::ProfileChangedBeforeSave {
+                    profile: Some(1),
+                    reported: 2
+                }
+            ),
+            "{err}"
+        );
+        assert_eq!(err.kind(), ErrorKind::ProfileChanged);
+        assert!(run.interrupted);
+        assert_eq!(run.pending, Duration::ZERO);
+        assert_eq!(run.known, Some(profile(2)));
+        // Found when the wait was over, by a 21/11 read; no select was sent.
+        assert_eq!(sim.elapsed() - write_at, Duration::from_secs(2));
+        assert_eq!(
+            sim.written().last().map(|p| p.as_bytes()[..6].to_vec()),
+            Some(vec![0x21, 0, 0, 0, 0x00, 0x11])
+        );
+        assert!(common::selects(&sim).is_empty());
+        // The keyboard dropped the write (without the switch it kept it).
+        assert_eq!(sim.discarded_edits(), 1);
+        assert_eq!(sim.persisted_trigger(profile(1), pos(2, 1)), before);
+        assert_eq!(
+            copy.persisted_trigger(profile(1), pos(2, 1)).map(|r| r[1]),
+            Some(100)
+        );
+        sim.assert_clean();
+    }
+}
+
+#[test]
+fn another_programs_query_during_the_wait_does_not_cut_it_short() {
+    // The vendor site's 21/11 query reply for the same profile, 300 ms after
+    // the write: another program, not a switch. The wait still lasts the
+    // whole settle (the keyboard has to save), then fails.
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut copy = sim();
+    assert!(switch_during_wait(&mut copy, &saved, false).result.is_ok());
+    let (_, write_at) = common::last_trigger_write(&copy);
+
+    let mut sim = sim();
+    sim.push_input_at(
+        write_at + Duration::from_millis(300),
+        report(&[0x21, 0, 0, 0, 0x03, 0x11, 0x01, 0x01]),
+    );
+    let run = switch_during_wait(&mut sim, &saved, false);
+    let err = run.result.expect_err("another program");
+    assert!(
+        matches!(err, WriteError::OtherProgramActive { .. }),
+        "{err}"
+    );
+    assert!(!run.interrupted);
+    assert_eq!(run.known, Some(profile(1)));
+    assert_eq!(sim.elapsed() - write_at, Duration::from_secs(2));
+    assert_eq!(sim.discarded_edits(), 0);
+    assert!(!sim.has_unsaved_edits());
     sim.assert_clean();
 }

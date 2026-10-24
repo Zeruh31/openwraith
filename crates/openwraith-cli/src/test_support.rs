@@ -173,7 +173,13 @@ pub struct TestUi {
     pub interactive: bool,
     /// Simulated Ctrl+C at the `n`-th progress line containing the text.
     pub cancel_at: Option<(String, usize)>,
+    /// Simulated Ctrl+C pressed while the command stands still after a note
+    /// containing the text (such as a wait for the keyboard to save): the
+    /// flag is not set yet when the note is shown, and is seen at the next
+    /// progress line.
+    pub cancel_after_note: Option<String>,
     pub cancel_enabled: bool,
+    cancel_armed: bool,
     cancelled: bool,
 }
 
@@ -202,10 +208,20 @@ impl crate::ui::Ui for TestUi {
     fn note(&mut self, text: &str) {
         self.err.push_str(text);
         self.err.push('\n');
+        if self
+            .cancel_after_note
+            .as_deref()
+            .is_some_and(|needle| text.contains(needle))
+        {
+            self.cancel_armed = true;
+        }
     }
 
     fn progress(&mut self, text: &str) {
         self.progress.push(text.to_string());
+        if self.cancel_armed {
+            self.cancelled = true;
+        }
         if let Some((needle, n)) = &mut self.cancel_at {
             if text.contains(needle.as_str()) {
                 *n = n.saturating_sub(1);

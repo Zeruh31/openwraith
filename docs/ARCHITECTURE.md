@@ -39,17 +39,17 @@ A future Tauri app will sit next to the CLI and use the same two libraries.
 |---|---|
 | `transport` | `Transport` trait: `write(&OutPacket)`, `read(timeout) -> Option<Report>`, `usb_info()`, `now()` (the clock every timeout is measured on: the system clock, or the simulator's virtual clock). `WriteTransport: Transport` adds `write_command(&WritePacket)`. |
 | `hid` | `HidBackend` (hidapi; enumerates and filters supported interfaces, nothing is opened), `HidTransport` (read-only) and `WritableHidTransport` (opened with `HidBackend::open_writable`). |
-| `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). |
+| `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). `last_write_at()` / `last_write_profile()`: when and to which profile the last write that changes a setting was sent (for the commit settle; kept per session, so it spans writers). |
 | `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` and `openwraith profile`, with the model check shared with `read_all`. |
 | `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable`, save/load, typed accessors. |
-| `writer` | `WriteConsent`, `WriteOptions`, the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`), stop-and-wait writes with read-back verification, profile selection, poisoning after a reset or a lost connection. |
+| `writer` | `WriteConsent`, `WriteOptions` (with `CommitSettle`), the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`), stop-and-wait writes with read-back verification, profile selection behind the commit settle (`select_profile[_observed]`, `commit_pending`, `wait_for_commit[_observed]`, `CommitWait`), detection of a profile change or lost connection before the keyboard saved (`commit_interrupted`, `WriteError::ProfileChangedBeforeSave`), poisoning after a reset or a lost connection. |
 | `profiles` | `read_profiles` / `read_all_profiles`: the all-profile backup (switches profiles and back). |
 | `safety` | `default_dir`, `Backup::save_safety` and `SavedBackup` (the proof that a verified safety backup exists). |
-| `restore` | `plan_restore` (pure), `dry_run_restore` (read-only), `prepare_restore`, `execute_restore`, and the serialisable plan, progress and report types. |
+| `restore` | `plan_restore` (pure), `dry_run_restore` (read-only), `prepare_restore`, `execute_restore` (with the persistence check), and the serialisable plan, progress and report types (`Persistence`, `PersistenceCheck`, `ItemResult::Lost`, `ItemResult::MaybeLost`). |
 | `edit` | `plan_trigger_edit` / `apply_trigger_edit` and `plan_light_edit` / `apply_light_edit`. |
 | `error` | Error types and `ErrorKind` (serialisable, for a GUI). |
 | `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. Read-only. |
-| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the nine write forms, configurable table scopes, fault injection and a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time). |
+| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the nine write forms, configurable table scopes, fault injection, a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time; `sent_times()` gives the time of every packet) and the keyboard's **delayed commit** (writes go to a working copy of the active profile, saved 1 s of virtual time after the last write; a select or `power_cycle()` before that discards them, counted by `discarded_edits()`; `persisted_table` / `persisted_trigger` show the saved state; on by default), and profile switches made on the keyboard at a virtual time, with or without a profile report (`switch_profile_at`; the profile is reloaded as of that time). |
 
 ### `openwraith-cli`
 
@@ -207,14 +207,108 @@ Restores and edits use the same steps 3-8 through a crate-private guarded
 write that additionally refuses a table whose bytes changed since the plan.
 
 `Writer::select_profile` sends nothing when the profile is already active;
-otherwise it sends W1, waits for the acknowledgement and the push (reading
-the push before any `21/11` query), confirms with `21/11` and retries once.
+otherwise it waits for the commit settle (below), sends W1, waits for the
+acknowledgement and the push (reading the push before any `21/11` query),
+confirms with `21/11` and retries once.
 
 During an operation an unexpected profile report or a reset notification
 aborts; a foreign acknowledgement or heartbeat stops the operation after the
 current table. After a reset notification or a transport failure the writer
 is *poisoned*: every later call fails without sending anything, not even a
 switch back to the original profile.
+
+### Commit settle and persistence
+
+The keyboard keeps edits in a working copy of the active profile and saves
+them about 1 s after the last write. A profile switch before that reloads the
+profile from what it saved, and the edits are lost; a read-back cannot tell,
+because it reads the working copy. This was found on hardware: a restore of
+profile 2 reported "written and verified" and switched back to profile 1
+within milliseconds, and the write was gone (CONFIRMED, measured threshold
+between 0.8 s and 1.0 s; [PROTOCOL.md](PROTOCOL.md) section 4.5.3, "Delayed
+commit"). A power loss in that second very likely loses the write too
+(untested). Four rules follow, all in `openwraith-hid`:
+
+1. **No switch before the save.** `Session` records when the last write
+   packet that changes a setting was sent (`last_write_at`, on the
+   transport clock; profile selects do not count). `Writer::select_profile`
+   does not send `21/12` before `WriteOptions::commit_settle` (2 s, twice
+   the measured threshold) has passed since then: it listens for the rest,
+   so foreign reports, profile reports and reset notifications are still
+   classified (a reset poisons the writer as always), and it reports the
+   wait (`CommitWait` to `select_profile_observed`'s callback,
+   `WriteWarning::WaitedForCommit` in the outcome,
+   `WriteProgress::WaitingForCommit` / `ProfilesProgress::WaitingForCommit`
+   to the operations' progress). Every profile switch of the crate goes
+   through it: restore (including its return to the original profile and its
+   checks), the all-profile backup and its return after a failure, edits,
+   and the CLI's `profile select`. The time is kept by the session, so a
+   long-lived session (a GUI) is covered across writers; a session that
+   wrote nothing never waits.
+2. **Nothing returns before the save.** `execute_restore`,
+   `apply_trigger_edit` and `apply_light_edit` call
+   `Writer::wait_for_commit` before they return (also after a failure or a
+   cancellation, unless the writer is poisoned), so a finished operation
+   means the keyboard had time to save. `write_guarded` returns right after
+   the verification (several writes may follow); its callers must call
+   `wait_for_commit` before reporting a change as done.
+3. **A restore proves it.** After every planned write was made, the
+   persistence check selects every profile with written tables again after
+   switching away from it (reads after a switch come from what the keyboard
+   saved) and reads the written tables again: the written profiles other
+   than the original one first (ascending, the one that is active last),
+   the original one last, since the restore ends there. When the profile to
+   check is the active one, it first switches to the original profile (or,
+   for the original itself, to the lowest other profile). Each item is
+   reported `written` with `persistence: persisted`, or `lost`
+   (`ItemResult::Lost`, with the difference read after the switch); a lost
+   write fails the restore with `ErrorKind::NotPersisted` and the message
+   says to run the restore again or undo it. A table whose profile scope is
+   unknown that holds what this restore wrote to it in another profile is
+   left `not_checked` (the final check compares it with the backup;
+   `PersistenceCheck::not_checked` counts them).
+4. **A switch before the save is never reported as done.** The keyboard
+   can be switched on its own keys (or by another program) during the
+   settle, and whether it reports such a switch is open (PROTOCOL.md Q2).
+   So: a profile report during a wait ends the wait at once
+   (`Session::listen_until` stops at it); every wait ends with a `21/11`
+   read, and another profile than the one the last write went to
+   (`Session::last_write_profile`) fails it; a `21/11` read
+   (`Writer::active_profile`, so every table's profile check) that finds
+   another profile while the settle has not passed fails too. These fail
+   with `WriteError::ProfileChangedBeforeSave` (kind `profile_changed`; the
+   message says that the write may not have been saved), mark the pending
+   write as discarded (nothing waits for it any more; the switch back to
+   the original profile goes out at once) and set
+   `Writer::commit_interrupted`, which is also true when the connection was
+   lost before the settle had passed (an unplug very likely loses unsaved
+   edits). Restores and edits then report the written, unconfirmed tables of
+   that profile as `ItemResult::MaybeLost` ("written and verified, but may
+   not have been saved"), not `written`, and the known active profile is
+   the one the keyboard reported. A switch found at the end of a wait counts
+   as made before the save, because its time is unknown. A reset
+   notification is not counted: it reports a reset of the settings.
+
+Edits (`set trigger`, `set light`) do not switch away and back: that would
+change the lighting for every small edit. They rely on rules 2 and 4: they
+check the active profile after the last write and at the end of the wait,
+and report the wait (`EditReport::waited_for_commit_ms`); their items stay
+`not_checked` (or become `maybe_lost`). A cancelled or failed restore skips
+the persistence check too (its writes were still followed by the wait).
+
+Cancellation and the wait: before a restore selects the next profile it
+first waits for the settle (`Writer::wait_for_commit_observed`), then checks
+for a cancellation at that profile's first table boundary, and only then
+selects it. A Ctrl+C pressed while the CLI shows "Waiting for the keyboard
+to save profile N" therefore stops the restore before the next profile is
+selected or written. The wait itself is never cut short: the switch back to
+the original profile needs it too.
+
+`CommitSettle` cannot be turned off by accident: its public constructor
+`CommitSettle::at_least` never gives less than 1.5 s, and the zero settle
+(`CommitSettle::disabled_for_tests`) exists only with the `mock` feature,
+which no build that talks to a keyboard enables. Tests use it to reproduce
+the hardware failure on the simulator.
 
 ### Safety backups
 
@@ -255,7 +349,12 @@ openwraith restore FILE [--profile N]...
     writer (gate); refused -> report the profile the keyboard reported, or
     "unknown" after a reset or a lost connection
     for each profile with writes (the original one first, then ascending):
-      select_profile
+      wait for the commit settle              2 s since the previous
+                                              profile's last write; ends
+                                              with 21/11 (still that
+                                              profile?)
+      cancelled (Ctrl+C, also during the wait)? stop here
+      select_profile                          nothing left to wait for
       for each table, in order: triggers (one key per packet), dead band,
       keymap group (macros bound by a keymap before the keymaps, 18 00,
       18 02, the other macros, advanced-key clears), custom colours 1,
@@ -268,14 +367,21 @@ openwraith restore FILE [--profile N]...
         neither planned nor ours?  -> changed_since_plan, stop
         else write (stop-and-wait, verify, one whole-table retry)
       confirm 21/11
-    select the original profile again (unless poisoned)
+    everything written? -> persistence check (not cancellable): every
+      written profile selected again after switching away (settle first),
+      its written tables read again: persisted, or lost (-> failed)
+    select the original profile again (unless poisoned; settle first)
     a table of unknown scope written and two or more profiles compared?
       -> final check (not cancellable): read every profile again, compare
          every written table and every unknown-scope table the plan left
          unchanged (a shared table written in another profile changes it)
-  print the report: what was written and verified, what failed (with the
-  read-back difference), what was not attempted, the active profile now,
-  the safety backup and the undo command
+    wait for the commit settle (usually nothing is left to wait)
+    profile changed or connection lost before the save? -> the last
+      profile's written, unconfirmed tables become maybe_lost
+  print the report: what was written and verified (and persisted), what was
+  lost or may be lost, what failed (with the read-back difference), what
+  was not attempted, the active profile now, the safety backup and the undo
+  command
 ```
 
 `plan_restore` classifies each table of each profile as `unchanged`,
@@ -317,7 +423,9 @@ Triggers are written one key per packet (the only captured form; multi-key
 masks are CODE-ONLY, hardware test H10 in
 [HARDWARE_TESTS.md](HARDWARE_TESTS.md)). A light edit sends W2 only when the
 mode changes and then sets the direction to the mode's default. The write
-itself goes through the same guarded steps as `Writer::write_guarded`.
+itself goes through the same guarded steps as `Writer::write_guarded`. An
+edit returns only after the commit settle (see "Commit settle and
+persistence"); it does not switch profiles to prove the save.
 
 ### The CLI around it
 
@@ -330,18 +438,30 @@ simulator mode.
 
 - Commands that write print the close-the-vendor-site note first. With stdin
   not a terminal and no `--yes` they refuse before the keyboard is opened.
+- A wait for the keyboard to save is printed as a note that stays ("Waiting
+  for the keyboard to save profile 2 (2 s)..."), not as a transient progress
+  line, so the pause never looks like a hang. Restore reports print
+  "written and verified (N packets), persisted" per item and a
+  "Persistence check: ..." line; a lost write is printed as LOST with the
+  bytes that differ. Edit reports say how long they waited. A write whose
+  save was interrupted (profile change or lost connection, rule 4) is
+  printed as "written and verified (N packets), but MAY BE LOST" under a
+  headline that says the keyboard may not have saved it, with exit code 1.
 - Before the safety backup and the question, a session that already saw
   another program is refused (the writer's gate would refuse later anyway).
 - Ctrl+C sets a flag that the progress callbacks turn into a cancellation at
-  the next table boundary; the original profile is selected again. A second
+  the next table boundary; the original profile is selected again. A Ctrl+C
+  during a wait for the keyboard to save is seen right after the wait,
+  before the next profile is selected. A second
   Ctrl+C exits at once with a warning. The final check of a restore is not
   cancellable. On Linux the signal interrupts the blocking HID read (`poll`
   is never restarted); the transport reports `TransportError::Interrupted`
   and the session reads again, so the first Ctrl+C never looks like a lost
   connection.
-- Exit codes: 0 when everything planned was written and verified (skipped
-  tables allowed and printed) or there was nothing to do, 1 on a failure or
-  when the change was not confirmed, 2 for usage errors.
+- Exit codes: 0 when everything planned was written and verified (for a
+  restore: and persisted; skipped tables allowed and printed) or there was
+  nothing to do, 1 on a failure (a lost write included) or when the change
+  was not confirmed, 2 for usage errors.
 
 ## Data flow
 
@@ -368,7 +488,9 @@ openwraith backup
 session: the same plan for the active profile P, the gate, then for each
 other profile `21/12` select, a complete read with `21/11` checked at the
 start and the end, and finally `21/12` back to P (also after a failure,
-unless the writer is poisoned).
+unless the writer is poisoned). It writes no setting, so in a fresh session
+no switch waits for a commit settle; a long-lived session that wrote a
+setting before waits once, before the first switch.
 
 `openwraith info` uses `read_summary` instead: device info (with the same
 model check), status, active profile, global trigger parameters and the
@@ -498,6 +620,24 @@ keep backups usable across versions:
   reads, keyboard-side profile changes, foreign heartbeats and acks, the 2 s
   gate observation and the expectation windows on the virtual clock,
   cancellation, the `RepeatedWrite` guard, writes without a safety backup).
+  The simulator's delayed commit is on in every test, so a write followed
+  by a select within 1 s of virtual time is lost exactly as on the
+  keyboard. Regression tests for the hardware failure: the exact scenario
+  (`restore --profile 2` from profile 1) persists and is reported
+  `persisted` with the default settle, and is reported `lost`
+  (`NotPersisted`) with the test-only zero settle; a select waits at least
+  the settle after a write (packet times on the virtual clock) and not at
+  all without one; the settle spans the writers of a session; an
+  all-profile backup without writes takes exactly the gate's 2 s; one after
+  a write waits once; an edit returns only after the settle (and a
+  `power_cycle()` right after it keeps the change, while the zero settle
+  loses it); a reset notification during the wait poisons the writer and
+  nothing more is sent. A profile switch on the keyboard 300 ms after the
+  write (`switch_profile_at`), with and without a profile report, fails an
+  edit, a restore (`restore --profile 2`) and a GUI-style
+  `write_guarded` + `wait_for_commit` with `ProfileChangedBeforeSave` and
+  reports the write `maybe_lost` (the simulator confirms it dropped it); so
+  do a switch right after the last packet and an unplug right after it.
   `tests/planner.rs` pins every skip reason, block cause and plan warning of
   `plan_restore`. Every simulator test ends with `assert_clean`: the
   simulator refuses and records any packet outside the allowed read and write
@@ -506,8 +646,15 @@ keep backups usable across versions:
   parsed from the command line against `DeviceSim`: dry runs (reads only,
   read-only session), restores with `--yes`, a "y" and an "n" answer, the
   undo command, all-profile backups, `set trigger` / `set light`, `profile
-  select`, Ctrl+C at a table boundary, another program, a failed
-  verification, the refusal without a terminal or `--yes`.
+  select`, Ctrl+C at a table boundary and during the wait between two
+  profiles (stops before the next profile), a profile switch on the
+  keyboard during an edit's wait ("MAY BE LOST", exit code 1), another
+  program, a failed
+  verification, the refusal without a terminal or `--yes`, and the
+  hardware test H7 sequence with its "Waiting for the keyboard to save" and
+  "persisted" lines (`cargo test -p openwraith-cli
+  all_profile_backup_then_restore_of_one_profile -- --nocapture` prints
+  the output).
 - `crates/openwraith-cli/tests/cli.rs` runs the real binary on backup files
   replayed from the captures or made with the simulator (`--from`,
   `restore --dry-run --against`), including crafted files with edited headers

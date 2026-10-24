@@ -16,7 +16,9 @@
 //! On any failure it selects P again (best effort) unless the keyboard reset
 //! or the connection was lost; the error carries the profile that is active
 //! now ([`ProfilesError::active_profile_now`]). Profile switches change the
-//! lighting briefly; they write nothing else.
+//! lighting briefly; they write nothing else. A session that wrote a setting
+//! before waits for the keyboard to save it before the first switch
+//! ([`Writer::select_profile`]); a session without writes never waits.
 
 use std::ops::ControlFlow;
 use std::time::SystemTime;
@@ -141,6 +143,14 @@ pub enum ProfilesProgress {
     Returning {
         /// The original profile.
         profile: u8,
+    },
+    /// Waiting for the keyboard to save an earlier write of the same
+    /// session before the next profile switch (see
+    /// [`CommitSettle`](crate::CommitSettle)). Never happens in a session
+    /// that wrote nothing; the return value is ignored.
+    WaitingForCommit {
+        /// How long the wait lasts, in milliseconds.
+        wait_ms: u64,
     },
 }
 
@@ -270,7 +280,11 @@ fn read_each_profile<T: WriteTransport>(
         if let Some(evidence) = writer.foreign_activity_seen() {
             return Err(WriteError::OtherProgramActive { evidence }.into());
         }
-        writer.select_profile(profile)?;
+        writer.select_profile_observed(profile, &mut |wait| {
+            let _ = progress(ProfilesProgress::WaitingForCommit {
+                wait_ms: wait.wait_ms,
+            });
+        })?;
         let snapshot = writer
             .read_snapshot(profile, &mut |p: Progress| {
                 progress(ProfilesProgress::Reading {

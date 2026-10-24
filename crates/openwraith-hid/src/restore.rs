@@ -19,7 +19,15 @@
 //!    profile), aborts with `changed_since_plan` when the bytes are neither
 //!    the planned state nor something this restore wrote, and otherwise
 //!    writes it through the [`Writer`] (stop-and-wait, read-back
-//!    verification, one more attempt with the whole table). Finally it
+//!    verification, one more attempt with the whole table). Before each
+//!    profile switch it waits for the keyboard to save
+//!    ([`CommitSettle`](crate::CommitSettle)); a cancellation asked for
+//!    during that wait stops it before the next profile is selected. When
+//!    everything was written, the persistence check selects every written
+//!    profile again after switching away and reads the written tables again
+//!    ([`PersistenceCheck`]). A profile change or a lost connection before
+//!    the keyboard saved turns the last profile's writes into
+//!    [`ItemResult::MaybeLost`]. Finally it
 //!    selects the original profile again and, when a table whose profile
 //!    scope is unknown was written and the plan covers several profiles,
 //!    reads every profile again to check that each still holds the backup's
@@ -70,7 +78,7 @@ use crate::safety::SavedBackup;
 use crate::session::{ForeignActivity, Session};
 use crate::summary::identify;
 use crate::transport::{Transport, WriteTransport};
-use crate::writer::{PacketProgress, WriteConsent, WriteOptions, WriteWarning, Writer};
+use crate::writer::{CommitWait, PacketProgress, WriteConsent, WriteOptions, WriteWarning, Writer};
 
 /// The active profile after [`Session::writer`] failed: unknown after a
 /// reset or a lost connection; the profile another program or the keyboard
@@ -83,7 +91,8 @@ pub(crate) fn profile_after_gate_failure<T: Transport>(
 ) -> Option<u8> {
     match error {
         WriteError::KeyboardReset { .. } | WriteError::Disconnected { .. } => None,
-        WriteError::ProfileChanged { reported, .. } => Some(*reported),
+        WriteError::ProfileChanged { reported, .. }
+        | WriteError::ProfileChangedBeforeSave { reported, .. } => Some(*reported),
         _ => session.last_foreign_profile_report().or(fallback),
     }
 }
@@ -148,6 +157,39 @@ pub enum WriteProgress {
         /// The original profile.
         profile: u8,
     },
+    /// Waiting for the keyboard to save the last write before switching
+    /// profiles or finishing (it saves about 1 s after the last write; see
+    /// [`CommitSettle`](crate::CommitSettle)). The wait itself cannot be
+    /// cancelled (the keyboard must have saved before any switch, also the
+    /// one back to the original profile). A restore waits before it selects
+    /// the next profile, and checks for a cancellation right after the wait:
+    /// a cancellation asked for here or during the wait stops it before that
+    /// profile is selected.
+    WaitingForCommit {
+        /// The profile whose edits are being saved (the profile the last
+        /// write went to).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile: Option<u8>,
+        /// How long the wait lasts, in milliseconds.
+        wait_ms: u64,
+    },
+    /// The persistence check of a restore: selecting `profile` again after
+    /// switching away, and reading back what was written to it. Not a
+    /// cancellation point.
+    CheckingPersistence {
+        /// The profile.
+        profile: u8,
+    },
+}
+
+impl WriteProgress {
+    /// The progress event of a [`CommitWait`].
+    pub(crate) fn waiting(wait: CommitWait) -> Self {
+        WriteProgress::WaitingForCommit {
+            profile: wait.profile,
+            wait_ms: wait.wait_ms,
+        }
+    }
 }
 
 /// A restore plan: what would be written, per profile and table. For
@@ -589,6 +631,25 @@ pub enum Outcome {
     Failed,
 }
 
+/// Whether a written table was seen to survive a profile switch.
+///
+/// A read-back right after a write reads the keyboard's working copy, which
+/// it saves about 1 s later (spec 4.5.3, "Delayed commit"); only a read after
+/// switching profiles away and back shows what the keyboard saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Persistence {
+    /// Not read again after a profile switch. Edits of the active profile
+    /// are not (switching would change the lighting); the operation waited
+    /// for the [`CommitSettle`](crate::CommitSettle) instead. A restore that
+    /// was cancelled or failed does not check either. A write whose save was
+    /// interrupted is reported as [`ItemResult::MaybeLost`] instead.
+    NotChecked,
+    /// Read again after switching profiles away and back: it still held what
+    /// was written, so the keyboard saved it.
+    Persisted,
+}
+
 /// What happened to one planned write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -600,6 +661,36 @@ pub enum ItemResult {
         /// Packets sent.
         packets: usize,
         /// Everything noteworthy.
+        warnings: Vec<WriteWarning>,
+        /// Whether it was read again after a profile switch.
+        persistence: Persistence,
+    },
+    /// Written and verified by reading it back, but read again after a
+    /// profile switch it no longer held what was written: the keyboard did
+    /// not keep it (spec 4.5.3, "Delayed commit"); `mismatch` shows what it
+    /// holds instead. The restore failed.
+    Lost {
+        /// How often the whole table was sent (1 or 2).
+        sends: u32,
+        /// Packets sent.
+        packets: usize,
+        /// Everything noteworthy about the write.
+        warnings: Vec<WriteWarning>,
+        /// What was read after the profile switch.
+        mismatch: Mismatch,
+    },
+    /// Written and verified by reading it back, but before the keyboard had
+    /// had the commit settle to save it, the active profile changed (on the
+    /// keyboard or by another program) or the connection was lost
+    /// ([`Writer::commit_interrupted`]): the keyboard may have discarded it
+    /// (spec 4.5.3, "Delayed commit"). It was not read again; the operation
+    /// failed.
+    MaybeLost {
+        /// How often the whole table was sent (1 or 2).
+        sends: u32,
+        /// Packets sent.
+        packets: usize,
+        /// Everything noteworthy about the write.
         warnings: Vec<WriteWarning>,
     },
     /// The keyboard already held the target bytes when the table was about
@@ -664,6 +755,25 @@ pub struct FinalCheck {
     pub mismatches: Vec<FinalMismatch>,
 }
 
+/// The persistence check after a restore: every profile with written tables
+/// was selected again after switching away from it (so that the keyboard
+/// reloaded what it had saved), and its written tables were read again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PersistenceCheck {
+    /// The profiles read again, in order.
+    pub profiles: Vec<u8>,
+    /// Written tables that still held what was written
+    /// ([`Persistence::Persisted`]).
+    pub persisted: usize,
+    /// Written tables that did not ([`ItemResult::Lost`]).
+    pub lost: usize,
+    /// Written tables that could not be checked: a table that may be shared
+    /// by all profiles and holds what this restore wrote to it in another
+    /// profile ([`Persistence::NotChecked`]; the final check compares it
+    /// with the backup).
+    pub not_checked: usize,
+}
+
 /// What [`execute_restore`] did. Serializable for a GUI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RestoreReport {
@@ -680,6 +790,10 @@ pub struct RestoreReport {
     pub active_profile_now: Option<u8>,
     /// Per profile, in the order they were written.
     pub profiles: Vec<ProfileReport>,
+    /// The persistence check, if one was made (after every planned write
+    /// was made).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistence: Option<PersistenceCheck>,
     /// The final check, if one was made.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_check: Option<FinalCheck>,
@@ -708,16 +822,66 @@ impl RestoreReport {
             .flat_map(|p| p.items.iter().map(move |i| (p.profile, i)))
     }
 
-    /// Number of tables written.
+    /// Number of tables written and verified, not counting the ones the
+    /// keyboard did not keep or may not have saved ([`lost`](Self::lost),
+    /// [`maybe_lost`](Self::maybe_lost)).
     pub fn written(&self) -> usize {
         self.items()
             .filter(|(_, i)| matches!(i.result, ItemResult::Written { .. }))
             .count()
     }
 
-    /// Whether anything was written (profile switches aside).
+    /// Whether any table was written (profile switches aside), also when
+    /// the keyboard did not keep it or may not have saved it: the keyboard
+    /// received write packets, so its settings may differ from before.
     pub fn anything_written(&self) -> bool {
-        self.written() > 0
+        self.items().any(|(_, i)| i.result.was_sent())
+    }
+
+    /// Number of tables that were written and verified but, read again
+    /// after a profile switch, no longer held what was written
+    /// ([`ItemResult::Lost`]).
+    pub fn lost(&self) -> usize {
+        self.items()
+            .filter(|(_, i)| matches!(i.result, ItemResult::Lost { .. }))
+            .count()
+    }
+
+    /// Number of tables that were written and verified but may not have
+    /// been saved ([`ItemResult::MaybeLost`]).
+    pub fn maybe_lost(&self) -> usize {
+        self.items()
+            .filter(|(_, i)| matches!(i.result, ItemResult::MaybeLost { .. }))
+            .count()
+    }
+}
+
+impl ItemResult {
+    /// Whether the table was written (sent and verified by reading it
+    /// back), whatever became of it afterwards.
+    pub fn was_sent(&self) -> bool {
+        matches!(
+            self,
+            ItemResult::Written { .. } | ItemResult::Lost { .. } | ItemResult::MaybeLost { .. }
+        )
+    }
+
+    /// A written item whose save is unconfirmed ([`Persistence::NotChecked`])
+    /// as [`ItemResult::MaybeLost`]; any other result unchanged.
+    pub(crate) fn into_maybe_lost(self) -> ItemResult {
+        match self {
+            ItemResult::Written {
+                sends,
+                packets,
+                warnings,
+                persistence: Persistence::NotChecked,
+            } => ItemResult::MaybeLost {
+                sends,
+                packets,
+                warnings,
+            },
+            other => other,
+        }
     }
 }
 
@@ -760,6 +924,7 @@ pub fn execute_restore<T: WriteTransport>(
                     .collect(),
             })
             .collect(),
+        persistence: None,
         final_check: None,
         safety_backup: saved.path().to_path_buf(),
         undo_command: saved.undo_command(),
@@ -801,13 +966,26 @@ pub fn execute_restore<T: WriteTransport>(
         Err(Stop::Failed(error)) => report.fail(error),
     }
 
-    // Back to the original profile, unless nothing may be sent any more.
+    // Prove that the keyboard saved what was written: a read-back right
+    // after a write reads its working copy (spec 4.5.3).
+    if report.outcome == Outcome::Completed && !writer.is_poisoned() {
+        if let Err(error) = run.persistence_check(&mut writer, original, &mut report) {
+            report.fail(error);
+        }
+    }
+
+    // Back to the original profile, unless nothing may be sent any more
+    // (after the commit settle: select_profile waits for it).
     report.active_profile_now = writer.known_profile().map(ProfileId::get);
     if !writer.is_poisoned() {
         let _ = (run.progress)(WriteProgress::Returning {
             profile: original.get(),
         });
-        match writer.select_profile(original) {
+        let progress = &mut *run.progress;
+        let returned = writer.select_profile_observed(original, &mut |wait| {
+            let _ = progress(WriteProgress::waiting(wait));
+        });
+        match returned {
             Ok(selected) => report.active_profile_now = Some(selected.profile.get()),
             Err(e) => {
                 report.active_profile_now = writer.known_profile().map(ProfileId::get);
@@ -824,6 +1002,26 @@ pub fn execute_restore<T: WriteTransport>(
         }
         report.active_profile_now = writer.known_profile().map(ProfileId::get);
     }
+
+    // Finished only when the keyboard had time to save the last write
+    // (usually the switches above already waited).
+    if !writer.is_poisoned() {
+        let progress = &mut *run.progress;
+        let waited = writer.wait_for_commit_observed(&mut |wait| {
+            let _ = progress(WriteProgress::waiting(wait));
+        });
+        if let Err(e) = waited {
+            report.fail(ErrorInfo::new(e.kind(), &e));
+        }
+    }
+    // The last profile's writes were verified in the keyboard's working copy
+    // only: after a profile change or a lost connection before the save they
+    // may be gone.
+    if writer.commit_interrupted() {
+        if let Some(profile) = writer.session().last_write_profile() {
+            report.mark_maybe_lost(profile);
+        }
+    }
     report.foreign_activity = writer.foreign_activity_seen();
     report
 }
@@ -834,6 +1032,22 @@ impl RestoreReport {
         self.outcome = Outcome::Failed;
         if self.error.is_none() {
             self.error = Some(error);
+        }
+    }
+
+    /// Marks the written, unconfirmed items of `profile` as
+    /// [`ItemResult::MaybeLost`] (see [`Writer::commit_interrupted`]). Only
+    /// the profile the last write went to can hold unsaved writes: every
+    /// switch waits for the commit settle first.
+    fn mark_maybe_lost(&mut self, profile: u8) {
+        for item in self
+            .profiles
+            .iter_mut()
+            .filter(|p| p.profile == profile)
+            .flat_map(|p| p.items.iter_mut())
+        {
+            let result = std::mem::replace(&mut item.result, ItemResult::NotAttempted);
+            item.result = result.into_maybe_lost();
         }
     }
 
@@ -897,11 +1111,29 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
             return Ok(());
         }
         for (index, (table, key, write)) in writes.into_iter().enumerate() {
+            if index == 0 {
+                // The keyboard must save the previous profile's writes before
+                // this profile is selected. Wait for that first, so that a
+                // cancellation asked for during the wait (seen at the table
+                // boundary right below) stops before the switch.
+                let progress = &mut *self.progress;
+                let cancel = &mut self.cancel;
+                writer.wait_for_commit_observed(&mut |wait| {
+                    if progress(WriteProgress::waiting(wait)).is_break() {
+                        *cancel = true;
+                    }
+                })?;
+            }
             if self.cancel || self.should_stop(profile, table, key, write) {
                 return Err(Stop::Cancelled);
             }
             if index == 0 {
-                writer.select_profile(profile)?;
+                // Nothing is left to wait for (unless the session wrote in
+                // between, which it does not).
+                let progress = &mut *self.progress;
+                writer.select_profile_observed(profile, &mut |wait| {
+                    let _ = progress(WriteProgress::waiting(wait));
+                })?;
             }
             let result = self.one_table(writer, profile, table, key, write);
             let (item_result, stop) = match result {
@@ -1009,6 +1241,211 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
                 .push(expected_state(request));
         }
         Ok(result)
+    }
+
+    /// The persistence check (spec 4.5.3, "Delayed commit"): a read-back
+    /// right after a write reads the keyboard's working copy, which it saves
+    /// about 1 s later, and a profile switch before that drops it. Every
+    /// profile with written tables is therefore selected again after
+    /// switching away from it, so that the keyboard reloads what it saved,
+    /// and its written tables are read again: the other profiles first, the
+    /// original one last (the restore ends there). When the profile to check
+    /// is the active one, the check switches to another profile first (the
+    /// original one, or for the original itself the lowest other profile).
+    /// Every switch waits for the commit settle first.
+    ///
+    /// A table that no longer holds what was written becomes
+    /// [`ItemResult::Lost`] and fails the restore; a table that may be shared
+    /// by all profiles and holds what this restore wrote in another profile
+    /// stays [`Persistence::NotChecked`] (the final check compares it).
+    /// Lost writes are reported; an `Err` is a failed read or switch. Not
+    /// cancellable: it only reads and switches profiles.
+    fn persistence_check<T: WriteTransport>(
+        &mut self,
+        writer: &mut Writer<'_, T>,
+        original: ProfileId,
+        report: &mut RestoreReport,
+    ) -> Result<(), ErrorInfo> {
+        let written: Vec<ProfileId> = report
+            .profiles
+            .iter()
+            .filter(|p| {
+                p.items
+                    .iter()
+                    .any(|i| matches!(i.result, ItemResult::Written { .. }))
+            })
+            .filter_map(|p| ProfileId::new(p.profile))
+            .collect();
+        if written.is_empty() {
+            return Ok(());
+        }
+        let order = persistence_order(&written, original, writer.known_profile());
+        let mut check = PersistenceCheck {
+            profiles: Vec::new(),
+            persisted: 0,
+            lost: 0,
+            not_checked: 0,
+        };
+        let mut lost_in: Vec<String> = Vec::new();
+        let visited =
+            self.visit_for_persistence(writer, original, &order, report, &mut check, &mut lost_in);
+        // Kept even when a switch or a read failed: what was checked so far
+        // (nothing to report when no profile was read again).
+        report.persistence = (!check.profiles.is_empty()).then_some(check);
+        visited?;
+        if !lost_in.is_empty() {
+            return Err(ErrorInfo {
+                kind: ErrorKind::NotPersisted,
+                message: format!(
+                    "{} written and verified, but read again after a profile switch they no \
+                     longer held what was written: the keyboard did not keep them (it saves \
+                     about 1 s after the last write). Run the same restore again to write them \
+                     once more, or undo with the command below",
+                    lost_in.join(", ")
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// The visits of the persistence check, in `order`; records the results
+    /// in `report` and `check`, and the profiles with lost tables in
+    /// `lost_in`.
+    fn visit_for_persistence<T: WriteTransport>(
+        &mut self,
+        writer: &mut Writer<'_, T>,
+        original: ProfileId,
+        order: &[ProfileId],
+        report: &mut RestoreReport,
+        check: &mut PersistenceCheck,
+        lost_in: &mut Vec<String>,
+    ) -> Result<(), ErrorInfo> {
+        let failure = |e: WriteError| ErrorInfo::new(e.kind(), &e);
+        for &profile in order {
+            let _ = (self.progress)(WriteProgress::CheckingPersistence {
+                profile: profile.get(),
+            });
+            let progress = &mut *self.progress;
+            let mut on_wait = |wait| {
+                let _ = progress(WriteProgress::waiting(wait));
+            };
+            let mut selected = writer
+                .select_profile_observed(profile, &mut on_wait)
+                .map_err(failure)?;
+            if !selected.switched {
+                // It is the active profile: leave it, so that selecting it
+                // again reloads what the keyboard saved.
+                let away = if profile == original {
+                    ProfileId::ALL
+                        .into_iter()
+                        .find(|p| *p != profile)
+                        .unwrap_or(original)
+                } else {
+                    original
+                };
+                writer
+                    .select_profile_observed(away, &mut on_wait)
+                    .map_err(failure)?;
+                selected = writer
+                    .select_profile_observed(profile, &mut on_wait)
+                    .map_err(failure)?;
+            }
+            if !selected.switched {
+                // Only a switch reloads the profile; never report a read of
+                // the working copy as persisted.
+                return Err(failure(WriteError::ProfileChanged {
+                    expected: Some(profile.get()),
+                    reported: selected.profile.get(),
+                }));
+            }
+            check.profiles.push(profile.get());
+            let lost_before = check.lost;
+            self.check_profile_persisted(writer, profile, report, check)
+                .map_err(failure)?;
+            if check.lost > lost_before {
+                lost_in.push(format!(
+                    "profile {profile}: {} table(s)",
+                    check.lost - lost_before
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads back the written tables of `profile` (just selected again after
+    /// a switch) and marks each persisted or lost.
+    fn check_profile_persisted<T: WriteTransport>(
+        &self,
+        writer: &mut Writer<'_, T>,
+        profile: ProfileId,
+        report: &mut RestoreReport,
+        check: &mut PersistenceCheck,
+    ) -> Result<(), WriteError> {
+        let writes: Vec<&PlannedWrite> = self
+            .prepared
+            .plan
+            .writes()
+            .filter(|(p, _, _)| *p == profile)
+            .map(|(_, _, w)| w)
+            .collect();
+        for (index, write) in writes.into_iter().enumerate() {
+            let Some(item) = report.item_mut(profile, index) else {
+                continue;
+            };
+            let ItemResult::Written {
+                sends,
+                packets,
+                warnings,
+                ..
+            } = &item.result
+            else {
+                continue;
+            };
+            let (sends, packets, warnings) = (*sends, *packets, warnings.clone());
+            let request = &write.request;
+            let mut replies = Vec::new();
+            for read in request.verify_reads() {
+                replies.push(writer.read(read)?);
+            }
+            // A table that may be shared by all profiles can hold what this
+            // restore wrote to it in another profile; the final check
+            // compares it with the backup.
+            let written_elsewhere = possibly_global(item.table)
+                && self
+                    .written
+                    .get(&(item.table, item.key))
+                    .is_some_and(|states| states.contains(&state_of(request, &replies)));
+            item.result = match request.check(&replies) {
+                Ok(()) => {
+                    check.persisted += 1;
+                    ItemResult::Written {
+                        sends,
+                        packets,
+                        warnings,
+                        persistence: Persistence::Persisted,
+                    }
+                }
+                Err(_) if written_elsewhere => {
+                    check.not_checked += 1;
+                    ItemResult::Written {
+                        sends,
+                        packets,
+                        warnings,
+                        persistence: Persistence::NotChecked,
+                    }
+                }
+                Err(mismatch) => {
+                    check.lost += 1;
+                    ItemResult::Lost {
+                        sends,
+                        packets,
+                        warnings,
+                        mismatch,
+                    }
+                }
+            };
+        }
+        Ok(())
     }
 
     /// Reads every profile in scope again and compares with the backup every
@@ -1166,11 +1603,9 @@ pub(crate) fn confirm_profile<T: WriteTransport>(
 ) -> Result<(), Stop> {
     let active = writer.active_profile()?;
     if active != profile {
-        return Err(WriteError::ProfileChanged {
-            expected: Some(profile.get()),
-            reported: active.get(),
-        }
-        .into());
+        return Err(writer
+            .profile_changed(Some(profile.get()), active.get())
+            .into());
     }
     Ok(())
 }
@@ -1226,6 +1661,7 @@ pub(crate) fn write_checked<T: WriteTransport>(
         sends: outcome.sends,
         packets: outcome.packets,
         warnings: outcome.warnings,
+        persistence: Persistence::NotChecked,
     })
 }
 
@@ -1237,6 +1673,28 @@ fn execution_order(plan: &RestorePlan, original: ProfileId) -> Vec<ProfileId> {
         order.push(original);
     }
     order.extend(with_writes.into_iter().filter(|p| *p != original));
+    order
+}
+
+/// The order of the persistence check: the written profiles other than the
+/// original one, ascending, with the active one (`current`) last among them
+/// (checking it needs a switch away first), then the original one if it was
+/// written (the restore ends on it).
+fn persistence_order(
+    written: &[ProfileId],
+    original: ProfileId,
+    current: Option<ProfileId>,
+) -> Vec<ProfileId> {
+    let others: BTreeSet<ProfileId> = written.iter().copied().filter(|p| *p != original).collect();
+    let mut order: Vec<ProfileId> = others
+        .iter()
+        .copied()
+        .filter(|p| Some(*p) != current)
+        .collect();
+    order.extend(others.iter().copied().filter(|p| Some(*p) == current));
+    if written.contains(&original) {
+        order.push(original);
+    }
     order
 }
 

@@ -62,6 +62,14 @@ verified safety backup first (see --safety-dir), show what will change and ask \
 for confirmation (unless --yes); every write is checked by reading it back. \
 profile select and backup --all-profiles only switch profiles and do not ask.
 
+The keyboard saves a change about 1 s after it is written; a profile switch \
+or unplugging it before that loses the change. Commands that write therefore \
+wait 2 s after the last write before they switch profiles or finish, and \
+restore reads every written profile again after switching away and back \
+(\"persisted\", or \"LOST\" and exit code 1). A profile change on the keyboard \
+or a lost connection before the keyboard has saved is reported as \"MAY BE \
+LOST\" (exit code 1).
+
 Close the vendor web configurator first, the whole browser tab (a tab in the \
 background may not be detected): it receives OpenWraith's replies too and \
 reacts to them.
@@ -640,6 +648,13 @@ fn write_hint(err: &WriteError) -> Option<&'static str> {
         WriteError::VerifyFailed { .. } | WriteError::RepeatedWrite { .. } => Some(
             "the keyboard did not keep the written values; restore the safety backup and please \
              report this together with the output of the same command with --verbose",
+        ),
+        WriteError::ProfileChangedBeforeSave { .. } => Some(
+            "the keyboard switched profiles before it had saved the last write, so it may have \
+             discarded it: select the written profile with `openwraith profile select N` and \
+             check it with `openwraith show`, then run the command again or undo it with the \
+             printed command. Do not switch profiles while OpenWraith writes or waits for the \
+             keyboard to save",
         ),
         WriteError::ProfileNotSelected { .. }
         | WriteError::ProfileChanged { .. }

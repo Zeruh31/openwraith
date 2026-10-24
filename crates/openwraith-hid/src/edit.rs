@@ -19,6 +19,21 @@
 //!
 //! Edits never switch profiles. A GUI commits on release (one edit per
 //! gesture), never a stream of writes.
+//!
+//! The keyboard saves a write about 1 s after it (spec 4.5.3, "Delayed
+//! commit"): a profile switch or a power loss before that loses it, and the
+//! read-back cannot tell. An edit therefore waits for the writer's
+//! [`CommitSettle`](crate::CommitSettle) (2 s) after its last write before
+//! it returns ([`EditReport::waited_for_commit_ms`]). Unlike a restore, it
+//! does not prove the save by switching profiles away and back: that would
+//! change the lighting for every small edit, so its items stay
+//! [`Persistence::NotChecked`](crate::Persistence::NotChecked) and the wait
+//! is relied on (any later profile switch of the same session waits too).
+//! The active profile is read again after the last write and at the end of
+//! the wait; when another profile became active (a switch on the keyboard
+//! need not be reported) or the connection was lost before the save, the
+//! edit fails and its writes are reported as
+//! [`ItemResult::MaybeLost`].
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -187,7 +202,8 @@ pub struct EditReport {
     pub consent: WriteConsent,
     /// The profile that was edited.
     pub profile: u8,
-    /// The profile that is active now, as far as known.
+    /// The profile that is active now, as far as known (as last read, or as
+    /// a profile report of a switch named it).
     pub active_profile_now: Option<u8>,
     /// One entry per planned write.
     pub items: Vec<ItemReport>,
@@ -198,6 +214,11 @@ pub struct EditReport {
     /// Reports of another program seen while writing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_activity: Option<ForeignActivity>,
+    /// How long the edit waited at the end for the keyboard to save its last
+    /// write, in milliseconds; `None` when nothing was pending (or the
+    /// writer could not wait after a reset or a lost connection).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waited_for_commit_ms: Option<u64>,
 }
 
 impl EditReport {
@@ -206,7 +227,8 @@ impl EditReport {
         matches!(self.outcome, Outcome::Completed | Outcome::NothingToDo)
     }
 
-    /// Number of writes made.
+    /// Number of writes made and verified, not counting the ones the
+    /// keyboard may not have saved ([`maybe_lost`](Self::maybe_lost)).
     pub fn written(&self) -> usize {
         self.items
             .iter()
@@ -214,9 +236,20 @@ impl EditReport {
             .count()
     }
 
-    /// Whether anything was written.
+    /// Number of writes made and verified that the keyboard may not have
+    /// saved ([`ItemResult::MaybeLost`]: the active profile changed or the
+    /// connection was lost before the save).
+    pub fn maybe_lost(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| matches!(i.result, ItemResult::MaybeLost { .. }))
+            .count()
+    }
+
+    /// Whether anything was written, also when the keyboard may not have
+    /// saved it.
     pub fn anything_written(&self) -> bool {
-        self.written() > 0
+        self.items.iter().any(|i| i.result.was_sent())
     }
 
     fn fail(&mut self, error: ErrorInfo) {
@@ -486,6 +519,7 @@ fn apply<T: WriteTransport>(
         safety_backup: saved.path().to_path_buf(),
         undo_command: saved.undo_command(),
         foreign_activity: None,
+        waited_for_commit_ms: None,
     };
     if !saved.covers(profile) || saved.product() != product {
         let error = RestoreError::SafetyBackupMismatch {
@@ -566,6 +600,29 @@ fn apply<T: WriteTransport>(
             report.fail(failure.error);
         }
     }
+    // Done only when the keyboard had time to save the last write (also
+    // after a failure or a cancellation: something may have been written).
+    // The wait ends by reading the active profile again: a switch made on
+    // the keyboard during it (reported or not) may have discarded the
+    // writes. After a switch already seen, nothing is left to wait for.
+    if !writer.is_poisoned() {
+        let waited = writer.wait_for_commit_observed(&mut |wait| {
+            let _ = progress(WriteProgress::waiting(wait));
+        });
+        match waited {
+            Ok(wait) => report.waited_for_commit_ms = wait.map(|w| w.wait_ms),
+            Err(e) => report.fail(ErrorInfo::new(e.kind(), &e)),
+        }
+    }
+    // Verified in the keyboard's working copy only: after a profile change
+    // or a lost connection before the save they may be gone.
+    if writer.commit_interrupted() && writer.session().last_write_profile() == Some(profile.get()) {
+        for item in &mut report.items {
+            let result = std::mem::replace(&mut item.result, ItemResult::NotAttempted);
+            item.result = result.into_maybe_lost();
+        }
+    }
+    // As last read or reported (a profile report of a switch included).
     report.active_profile_now = writer.known_profile().map(ProfileId::get);
     report.foreign_activity = writer.foreign_activity_seen();
     report

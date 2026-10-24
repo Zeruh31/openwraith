@@ -14,10 +14,11 @@ use openwraith_hid::protocol::{
 };
 use openwraith_hid::sim::FACTORY_TRIGGER;
 use openwraith_hid::{
-    Backup, BackupEntry, BlockCause, DeviceSim, ErrorKind, ItemResult, Outcome, PlanAction,
-    PreparedRestore, ProfileSet, RestoreError, RestoreOptions, RestoreReport, SavedBackup, Scope,
-    ScopeConfig, Session, SimTable, SkipReason, WriteProgress, dry_run_restore, execute_restore,
-    plan_restore, prepare_restore, read_all, read_all_profiles,
+    Backup, BackupEntry, BlockCause, CommitSettle, DeviceSim, ErrorKind, ItemResult, Outcome,
+    Persistence, PersistenceCheck, PlanAction, PreparedRestore, ProfileSet, RestoreError,
+    RestoreOptions, RestoreReport, SavedBackup, Scope, ScopeConfig, Session, SimTable, SkipReason,
+    WriteOptions, WriteProgress, dry_run_restore, execute_restore, plan_restore, prepare_restore,
+    read_all, read_all_profiles,
 };
 
 /// c13 macro slot 0: "A down 100 ms, A up 100 ms, B down 100 ms, B up".
@@ -287,9 +288,290 @@ fn restoring_one_profile_from_another_one() {
         profile2_light
     );
     assert_eq!(sim.active_profile(), 2);
-    // Safety backup: 1 then back to 2; restore: 1 then back to 2.
-    assert_eq!(selects(&sim)[selects_before..], [1, 2, 1, 2]);
+    // Safety backup: 1 then back to 2; restore: 1; persistence check: away
+    // to 2 and 1 again (read back); then back to 2.
+    assert_eq!(selects(&sim)[selects_before..], [1, 2, 1, 2, 1, 2]);
     sim.assert_clean();
+}
+
+/// Q at 2.00 mm, Rapid Trigger off.
+const Q_2_00: [u8; 9] = [0x00, 100, 100, 0x01, 0x01, 0, 0, 0, 0];
+
+/// The scenario of hardware test H7 that failed on the real keyboard
+/// (2026-10-24, PROTOCOL.md 4.5.3 "Delayed commit"): on profile 1,
+/// `restore all.owbackup.json --profile 2` wrote Q in profile 2, verified it
+/// by reading it back, and selected profile 1 again within milliseconds. The
+/// keyboard had not saved the write yet and dropped it.
+#[test]
+fn restoring_another_profile_survives_the_switch_back() {
+    let q = pos(2, 1);
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let target = snapshot(&mut sim);
+    // Later, Q of profile 2 was changed (and saved long ago).
+    sim.set_trigger(profile(2), q, Q_2_00);
+    assert_eq!(sim.active_profile(), 1);
+    let options = RestoreOptions {
+        profiles: Some(ProfileSet::only(profile(2))),
+        ..options()
+    };
+    let first_restore_packet = sim.written().len();
+    let selects_before = selects(&sim).len();
+    let report = restore(&mut sim, &target, &options);
+    assert!(report.is_success(), "{:#?}", report.error);
+    assert_eq!(report.active_profile_now, Some(1));
+    assert_eq!(sim.active_profile(), 1);
+    // The keyboard kept the write: no unsaved edit was dropped, and profile
+    // 2 holds the backup's Q after the switch back.
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(sim.persisted_trigger(profile(2), q), Some(FACTORY_TRIGGER));
+
+    // The report says so: written and verified, then read again after a
+    // profile switch.
+    let (_, item) = report.items().next().expect("Q");
+    assert_eq!(item.key, Some(q));
+    assert!(
+        matches!(
+            item.result,
+            ItemResult::Written {
+                persistence: Persistence::Persisted,
+                ..
+            }
+        ),
+        "{:?}",
+        item.result
+    );
+    assert_eq!(
+        report.persistence,
+        Some(PersistenceCheck {
+            profiles: vec![2],
+            persisted: 1,
+            lost: 0,
+            not_checked: 0
+        })
+    );
+    // Safety backup 2, 1; restore 2; persistence check: away to 1 (after
+    // the settle) and back to 2; return to 1.
+    assert_eq!(selects(&sim)[selects_before..], [2, 1, 2, 1, 2, 1]);
+    // No select left the written profile before the settle had passed.
+    let packets = &sim.written()[first_restore_packet..];
+    let times = &sim.sent_times()[first_restore_packet..];
+    let write = packets
+        .iter()
+        .position(|p| p.is_write() && p.as_bytes()[..5] == [0x21, 0, 0, 0, 0x18])
+        .expect("the trigger write");
+    let select = write
+        + packets[write..]
+            .iter()
+            .position(|p| p.is_write() && p.as_bytes()[..6] == [0x21, 0, 0, 0, 0, 0x12])
+            .expect("a select after the write");
+    assert!(times[select] - times[write] >= std::time::Duration::from_secs(2));
+    sim.assert_clean();
+}
+
+#[test]
+fn without_the_settle_the_persistence_check_reports_the_lost_write() {
+    // Exactly the hardware failure, reproduced with the test-only option
+    // that turns the commit settle off.
+    let q = pos(2, 1);
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let target = snapshot(&mut sim);
+    sim.set_trigger(profile(2), q, Q_2_00);
+    let options = RestoreOptions {
+        profiles: Some(ProfileSet::only(profile(2))),
+        write: WriteOptions {
+            commit_settle: CommitSettle::disabled_for_tests(),
+            ..WriteOptions::default()
+        },
+        ..options()
+    };
+    let report = restore(&mut sim, &target, &options);
+    // Written and verified (the read-back reads the working copy), but gone
+    // after the switch away and back.
+    assert_eq!(report.outcome, Outcome::Failed);
+    let error = report.error.as_ref().expect("error");
+    assert_eq!(error.kind, ErrorKind::NotPersisted);
+    assert!(error.message.contains("profile 2: 1 table(s)"), "{error:?}");
+    assert!(
+        error.message.contains("Run the same restore again"),
+        "{error:?}"
+    );
+    let (_, item) = report.items().next().expect("Q");
+    match &item.result {
+        ItemResult::Lost {
+            sends, mismatch, ..
+        } => {
+            assert_eq!(*sends, 1);
+            assert_eq!(mismatch.table, TableId::Triggers);
+        }
+        other => panic!("not lost: {other:?}"),
+    }
+    assert_eq!(report.lost(), 1);
+    assert_eq!(report.written(), 0);
+    assert_eq!(
+        report.persistence,
+        Some(PersistenceCheck {
+            profiles: vec![2],
+            persisted: 0,
+            lost: 1,
+            not_checked: 0
+        })
+    );
+    assert!(sim.discarded_edits() >= 1);
+    assert_eq!(sim.persisted_trigger(profile(2), q), Some(Q_2_00));
+    // Still back on the original profile.
+    assert_eq!(report.active_profile_now, Some(1));
+    assert_eq!(sim.active_profile(), 1);
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["profiles"][0]["items"][0]["result"]["result"], "lost");
+    assert_eq!(json["persistence"]["lost"], 1);
+    sim.assert_clean();
+}
+
+#[test]
+fn every_written_profile_is_proven_persisted_the_original_last() {
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    customise(&mut sim);
+    let target = snapshot(&mut sim);
+    // One trigger differs in each of profiles 1, 2 and 3.
+    sim.set_trigger(profile(2), pos(2, 1), Q_2_00);
+    sim.set_trigger(profile(3), pos(2, 1), Q_2_00);
+    sim.set_trigger(profile(1), pos(2, 2), FACTORY_TRIGGER);
+    let report = restore(&mut sim, &target, &options());
+    assert!(report.is_success(), "{:#?}", report.error);
+    // Written 1, 2, 3; checked 2 (left when 3 was selected), then 3 (after
+    // switching away from it), then the original 1.
+    let check = report.persistence.as_ref().expect("persistence check");
+    assert_eq!(check.profiles, [2, 3, 1]);
+    assert_eq!((check.persisted, check.lost), (3, 0));
+    assert!(report.items().all(|(_, i)| matches!(
+        i.result,
+        ItemResult::Written {
+            persistence: Persistence::Persisted,
+            ..
+        }
+    )));
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(sim.active_profile(), 1);
+    sim.assert_clean();
+}
+
+#[test]
+fn a_reset_during_the_settle_wait_of_a_restore_sends_nothing_more() {
+    let q = pos(2, 1);
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let target = snapshot(&mut sim);
+    sim.set_trigger(profile(2), q, Q_2_00);
+    let options = RestoreOptions {
+        profiles: Some(ProfileSet::only(profile(2))),
+        ..options()
+    };
+    let prepared = prepare(&mut sim, &target, &options);
+    let dir = temp_dir();
+    let saved = prepared
+        .safety()
+        .save_safety(dir.path(), "restore")
+        .expect("safety");
+    // Find when the trigger write goes out (on a copy: the run is
+    // deterministic), and let the keyboard reset 500 ms after it, during
+    // the wait for the keyboard to save.
+    let write_at = {
+        let mut copy = sim.clone();
+        let start = copy.written().len();
+        execute(&mut copy, &prepared, &saved);
+        copy.written()[start..]
+            .iter()
+            .zip(&copy.sent_times()[start..])
+            .find(|(p, _)| p.is_write() && p.as_bytes()[..5] == [0x21, 0, 0, 0, 0x18])
+            .map(|(_, t)| *t)
+            .expect("trigger write")
+    };
+    let after = write_at + std::time::Duration::from_millis(500) - sim.elapsed();
+    sim.push_input_at(after, common::captured_reset_report());
+    let selects_before = selects(&sim).len();
+    let report = execute(&mut sim, &prepared, &saved);
+    assert_eq!(report.outcome, Outcome::Failed);
+    assert_eq!(
+        report.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::KeyboardReset)
+    );
+    assert!(sim.reset_delivered());
+    // Only the select to profile 2 before the write; no switch after the
+    // notification, not even back to profile 1.
+    assert_eq!(selects(&sim)[selects_before..], [2]);
+    assert_eq!(report.active_profile_now, Some(2));
+    assert!(report.persistence.is_none());
+    sim.assert_clean();
+}
+
+/// The scenario of hardware test H7 with a profile switch on the keyboard
+/// 300 ms after the write in profile 2, while the restore waits for the
+/// keyboard to save before its persistence check: with a profile report the
+/// wait ends at once, without one the switch is found when the wait is
+/// over. The keyboard dropped the write; the restore must not call it done.
+#[test]
+fn a_switch_on_the_keyboard_during_a_restore_wait_is_not_reported_as_done() {
+    let q = pos(2, 1);
+    for push in [true, false] {
+        let mut sim = sim_with_profiles(ScopeConfig::default());
+        let target = snapshot(&mut sim);
+        sim.set_trigger(profile(2), q, Q_2_00);
+        let options = RestoreOptions {
+            profiles: Some(ProfileSet::only(profile(2))),
+            ..options()
+        };
+        let prepared = prepare(&mut sim, &target, &options);
+        let dir = temp_dir();
+        let saved = prepared
+            .safety()
+            .save_safety(dir.path(), "restore")
+            .expect("safety");
+        let write_at = {
+            let mut copy = sim.clone();
+            assert!(execute(&mut copy, &prepared, &saved).is_success());
+            common::last_trigger_write(&copy).1
+        };
+        let after = write_at + std::time::Duration::from_millis(300) - sim.elapsed();
+        sim.switch_profile_at(after, profile(3), push);
+        let selects_before = selects(&sim).len();
+        let report = execute(&mut sim, &prepared, &saved);
+
+        assert_eq!(report.outcome, Outcome::Failed, "push: {push}");
+        let error = report.error.as_ref().expect("error");
+        assert_eq!(error.kind, ErrorKind::ProfileChanged);
+        assert!(
+            error
+                .message
+                .contains("changed to 3 before the keyboard had saved the last write to profile 2"),
+            "{error:?}"
+        );
+        let (_, item) = report.items().next().expect("Q");
+        assert!(
+            matches!(item.result, ItemResult::MaybeLost { sends: 1, .. }),
+            "{:?}",
+            item.result
+        );
+        assert_eq!(
+            (report.written(), report.maybe_lost(), report.lost()),
+            (0, 1, 0)
+        );
+        assert!(report.anything_written());
+        // The persistence check never got to read it again.
+        assert_eq!(report.persistence, None);
+        // Profile 2 for the write, then straight back to profile 1 (nothing
+        // left to wait for).
+        assert_eq!(selects(&sim)[selects_before..], [2, 1]);
+        assert_eq!(report.active_profile_now, Some(1));
+        assert_eq!(sim.active_profile(), 1);
+        // What the keyboard did: dropped the write.
+        assert_eq!(sim.discarded_edits(), 1);
+        assert_eq!(sim.persisted_trigger(profile(2), q), Some(Q_2_00));
+        let json = serde_json::to_value(&report).expect("serializes");
+        assert_eq!(
+            json["profiles"][0]["items"][0]["result"]["result"],
+            "maybe_lost"
+        );
+        sim.assert_clean();
+    }
 }
 
 #[test]
@@ -646,11 +928,18 @@ fn advanced_keys_are_only_cleared_and_after_the_keymaps() {
             },
         ]
     );
+    // The last table write clears the slot; then the persistence check
+    // switches away and back (2, then 1).
     let writes = write_bytes(&sim);
+    let tables: Vec<_> = writes
+        .iter()
+        .filter(|b| b[..6] != [0x21, 0, 0, 0, 0, 0x12])
+        .collect();
     assert_eq!(
-        writes.last().map(|b| b[..5].to_vec()),
+        tables.last().map(|b| b[..5].to_vec()),
         Some(vec![0x22, 5, 0, 0, 0x32])
     );
+    assert_eq!(selects(&sim), [2, 1]);
     assert_eq!(
         sim.table(profile(1), SimTable::AdvancedKeys),
         Some(&[0u8; 1600][..])

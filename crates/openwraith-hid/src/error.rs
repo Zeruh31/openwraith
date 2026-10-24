@@ -36,6 +36,9 @@ pub enum ErrorKind {
     ChangedSincePlan,
     /// A write could not be verified by reading it back.
     VerifyFailed,
+    /// A write was verified, but read again after a profile switch it was
+    /// gone: the keyboard did not save it (spec 4.5.3, "Delayed commit").
+    NotPersisted,
     /// The keyboard is another model than expected.
     ModelMismatch,
     /// The keyboard runs other firmware than the backup was made with.
@@ -407,6 +410,26 @@ pub enum WriteError {
         /// The profile the keyboard reported.
         reported: u8,
     },
+    /// The active onboard profile changed (on the keyboard or by another
+    /// program) before the keyboard had had the commit settle
+    /// ([`CommitSettle`](crate::CommitSettle)) since the last write, which
+    /// went to another profile. The keyboard saves a write about 1 s after
+    /// it and a switch before that reloads the profile (spec 4.5.3, "Delayed
+    /// commit"), so that write, although verified, may not have been saved.
+    /// A switch made on the keyboard without a report is only noticed when
+    /// the wait ends; it then counts as made before the save.
+    #[error(
+        "the active onboard profile changed to {reported} before the keyboard had saved the \
+         last write to profile {} (it saves about 1 s after a write, and a profile switch \
+         before that discards it): that write may not have been saved",
+        profile.map_or_else(|| "unknown".to_string(), |p| p.to_string())
+    )]
+    ProfileChangedBeforeSave {
+        /// The profile the last write went to, if known.
+        profile: Option<u8>,
+        /// The profile the keyboard reported.
+        reported: u8,
+    },
     /// The keyboard reports an active profile outside 1..=4.
     #[error("the keyboard reports active profile {profile}; only profiles 1-4 are supported")]
     InvalidProfile {
@@ -455,6 +478,7 @@ impl WriteError {
             }
             WriteError::ProfileNotSelected { .. }
             | WriteError::ProfileChanged { .. }
+            | WriteError::ProfileChangedBeforeSave { .. }
             | WriteError::InvalidProfile { .. } => ErrorKind::ProfileChanged,
             WriteError::Build(_) => ErrorKind::InvalidRequest,
             WriteError::NotBackedUp { .. } => ErrorKind::InvalidBackup,

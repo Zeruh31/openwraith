@@ -238,6 +238,26 @@ fn restore_writes_verifies_and_can_be_undone() {
         out.contains("Done: 2 tables of 2 written and verified by reading them back."),
         "{out}"
     );
+    // Only the active profile was written: the persistence check switched
+    // away (after the keyboard had time to save) and back, and read both
+    // tables again.
+    assert!(
+        out.contains("written and verified (1 packet), persisted"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "Persistence check: profile 1 selected again after switching away; 2 written tables \
+             still hold what was written (the keyboard saved them)."
+        ),
+        "{out}"
+    );
+    assert!(
+        ui.err
+            .contains("Waiting for the keyboard to save profile 1 (2 s)..."),
+        "{}",
+        ui.err
+    );
     assert!(out.contains("Active profile: 1 (as before)."), "{out}");
     assert!(out.contains("To undo:       openwraith restore "), "{out}");
     assert!(ui.err.contains("Safety backup saved: "), "{}", ui.err);
@@ -260,13 +280,16 @@ fn restore_writes_verifies_and_can_be_undone() {
             sim.table(profile(1), SimTable::MainLight),
             Some(&c06_light[..])
         );
+        assert_eq!(sim.persisted_trigger(profile(1), w()), Some(W_C06));
+        assert_eq!(sim.discarded_edits(), 0);
         // Trigger first, then the music-rhythm leave right before the
-        // mode-changing light write.
+        // mode-changing light write; then the persistence check's switches.
         let sent = writes(&sim);
-        assert_eq!(sent.len(), 3, "{sent:?}");
+        assert_eq!(sent.len(), 5, "{sent:?}");
         assert!(sent[0].starts_with("21 00 00 00 18 0c"), "{sent:?}");
         assert_eq!(sent[1], "17 00 00 00 02");
         assert!(sent[2].starts_with("07 00 00 00 0e 0a"), "{sent:?}");
+        assert_eq!(sent[3..], ["21 00 00 00 00 12 02", "21 00 00 00 00 12 01"]);
         sim.assert_clean();
     }
 
@@ -517,9 +540,39 @@ fn all_profile_backup_then_restore_of_one_profile() {
         &mut ui,
     )
     .expect("restore profile 2");
+    // Shown with `cargo test -- --nocapture`: the restore that lost its
+    // write on the real keyboard (PROTOCOL.md 4.5.3), now with the commit
+    // settle and the persistence check.
+    println!(
+        "--- openwraith restore all.owbackup.json --profile 2 --yes ---\n{}",
+        ui.out
+    );
+    println!("--- stderr ---\n{}", ui.err);
     assert_eq!(exit, Exit::Success, "{}\n{}", ui.out, ui.err);
     assert!(ui.out.contains("Profile 2\n"), "{}", ui.out);
     assert!(ui.out.contains("trigger of Q (r2c1)"), "{}", ui.out);
+    // The keyboard got 2 s to save the write before the switch away, and the
+    // write was read again after switching back.
+    assert!(
+        ui.err
+            .contains("Waiting for the keyboard to save profile 2 (2 s)..."),
+        "{}",
+        ui.err
+    );
+    assert!(
+        ui.out
+            .contains("written and verified (1 packet), persisted"),
+        "{}",
+        ui.out
+    );
+    assert!(
+        ui.out.contains(
+            "Persistence check: profile 2 selected again after switching away; 1 written table \
+             still holds what was written (the keyboard saved it)."
+        ),
+        "{}",
+        ui.out
+    );
     assert!(
         ui.out.contains("Active profile: 1 (as before)."),
         "{}",
@@ -527,8 +580,11 @@ fn all_profile_backup_then_restore_of_one_profile() {
     );
     let sim = connector.sim.borrow();
     assert_eq!(sim.trigger(profile(2), q()), Some(FACTORY));
+    assert_eq!(sim.persisted_trigger(profile(2), q()), Some(FACTORY));
     assert_eq!(sim.trigger(profile(1), w()), Some(W_C06));
     assert_eq!(sim.active_profile(), 1);
+    // No unsaved edit was ever dropped, by any of the commands above.
+    assert_eq!(sim.discarded_edits(), 0);
     sim.assert_clean();
 }
 
@@ -571,6 +627,18 @@ fn set_trigger_writes_one_key_per_packet() {
         out.contains("Done: 2 tables of 2 written and verified"),
         "{out}"
     );
+    // The command ends only after the keyboard had time to save.
+    assert!(
+        ui.err
+            .contains("Waiting for the keyboard to save profile 1 (2 s)..."),
+        "{}",
+        ui.err
+    );
+    assert!(
+        out.contains("Waited 2 s after the last write so that the keyboard could save it"),
+        "{out}"
+    );
+    assert!(!connector.sim.borrow().has_unsaved_edits());
     assert_eq!(
         ui.questions,
         ["Write the new trigger settings of 2 key(s) to profile 1?"]
@@ -838,6 +906,162 @@ fn ctrl_c_stops_at_the_next_table_boundary() {
         Some(&static_blue_light()[..])
     );
     assert_eq!(sim.active_profile(), 1);
+    sim.assert_clean();
+}
+
+/// Q at 2.00 mm, Rapid Trigger off.
+const Q_2_00: [u8; 9] = [0x00, 100, 100, 0x01, 0x01, 0, 0, 0, 0];
+
+/// The virtual time of the last trigger write the simulator received.
+fn last_trigger_write_at(sim: &DeviceSim) -> std::time::Duration {
+    sim.written()
+        .iter()
+        .zip(sim.sent_times())
+        .filter(|(p, _)| p.is_write() && p.as_bytes()[..5] == [0x21, 0, 0, 0, 0x18])
+        .map(|(_, t)| *t)
+        .next_back()
+        .expect("a trigger write")
+}
+
+#[test]
+fn ctrl_c_during_the_wait_between_profiles_stops_before_the_next_profile() {
+    let fx = Fixture::new();
+    let safety = fx.safety_dir();
+    let all = fx.path("all.owbackup.json");
+    let mut connector = SimConnector::new(sim_with_profiles());
+    let mut ui = TestUi::answering(&[]);
+    let exit = run(
+        &["backup", "--all-profiles", "-o", text(&all)],
+        &mut connector,
+        &mut ui,
+    )
+    .expect("all-profile backup");
+    assert_eq!(exit, Exit::Success);
+    // Later Q was changed in profiles 2 and 3 (and saved long ago).
+    {
+        let mut sim = connector.sim.borrow_mut();
+        sim.set_trigger(profile(2), q(), Q_2_00);
+        sim.set_trigger(profile(3), q(), Q_2_00);
+    }
+    let writes_before = connector.sim.borrow().writes_sent();
+    let mut ui = TestUi::answering(&[]);
+    // Ctrl+C while the command stands still waiting for the keyboard to save
+    // profile 2, before it goes on to profile 3.
+    ui.cancel_after_note = Some("Waiting for the keyboard to save profile 2".to_string());
+    let exit = run(
+        &[
+            "restore",
+            text(&all),
+            "--yes",
+            "--safety-dir",
+            text(&safety),
+        ],
+        &mut connector,
+        &mut ui,
+    )
+    .expect("runs");
+    assert_eq!(exit, Exit::Failure, "{}\n{}", ui.out, ui.err);
+    assert!(
+        ui.out
+            .contains("Cancelled: 1 table written and verified before stopping"),
+        "{}",
+        ui.out
+    );
+    assert!(ui.out.contains("not attempted"), "{}", ui.out);
+    assert!(
+        ui.err
+            .contains("Waiting for the keyboard to save profile 2 (2 s)..."),
+        "{}",
+        ui.err
+    );
+    let sim = connector.sim.borrow();
+    let sent = writes(&sim);
+    let sent = &sent[writes_before..];
+    let trigger = sent
+        .iter()
+        .position(|w| w.starts_with("21 00 00 00 18"))
+        .expect("the write in profile 2");
+    // Profile 2 was selected for the write; after the wait the restore went
+    // straight back to profile 1: profile 3 was never selected or written.
+    assert_eq!(sent[trigger - 1], "21 00 00 00 00 12 02");
+    assert_eq!(sent[trigger + 1..], ["21 00 00 00 00 12 01"]);
+    assert_eq!(sim.trigger(profile(3), q()), Some(Q_2_00));
+    assert_eq!(sim.persisted_trigger(profile(2), q()), Some(FACTORY));
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(sim.active_profile(), 1);
+    sim.assert_clean();
+}
+
+#[test]
+fn a_switch_on_the_keyboard_during_an_edit_is_not_reported_as_done() {
+    let args = [
+        "set",
+        "trigger",
+        "q",
+        "--actuation",
+        "1.20",
+        "--yes",
+        "--safety-dir",
+    ];
+    // When the write goes out, from a run on a copy (deterministic).
+    let write_at = {
+        let fx = Fixture::new();
+        let mut connector = SimConnector::new(DeviceSim::from_backup(&c06_backup()));
+        let mut ui = TestUi::answering(&[]);
+        let mut all: Vec<&str> = args.to_vec();
+        let dir = fx.safety_dir();
+        all.push(text(&dir));
+        assert_eq!(
+            run(&all, &mut connector, &mut ui).expect("runs"),
+            Exit::Success
+        );
+        last_trigger_write_at(&connector.sim.borrow())
+    };
+    let fx = Fixture::new();
+    let mut sim = DeviceSim::from_backup(&c06_backup());
+    let before = sim.persisted_trigger(profile(1), q());
+    // The user presses Fn + 2 300 ms after the write; the keyboard does not
+    // report it.
+    sim.switch_profile_at(
+        write_at + std::time::Duration::from_millis(300),
+        profile(2),
+        false,
+    );
+    let mut connector = SimConnector::new(sim);
+    let mut ui = TestUi::answering(&[]);
+    let mut all: Vec<&str> = args.to_vec();
+    let dir = fx.safety_dir();
+    all.push(text(&dir));
+    let exit = run(&all, &mut connector, &mut ui).expect("runs");
+    println!(
+        "--- set trigger q --actuation 1.20 --yes (Fn + 2 during the wait) ---\n{}",
+        ui.out
+    );
+    println!("--- stderr ---\n{}", ui.err);
+    assert_eq!(exit, Exit::Failure);
+    for expected in [
+        "FAILED: the active onboard profile changed to 2 before the keyboard had saved the last \
+         write to profile 1",
+        "1 table written and verified, but the keyboard may not have saved it",
+        "written and verified (1 packet), but MAY BE LOST",
+        "Active profile: 2. It was 1 before; switch back with `openwraith profile select 1`.",
+        "To undo:",
+    ] {
+        assert!(ui.out.contains(expected), "{expected}\n---\n{}", ui.out);
+    }
+    assert!(!ui.out.contains("Something WAS written"), "{}", ui.out);
+    assert!(!ui.out.contains("Waited 2 s"), "{}", ui.out);
+    // The wait was for the profile that was written.
+    assert!(
+        ui.err
+            .contains("Waiting for the keyboard to save profile 1 (2 s)..."),
+        "{}",
+        ui.err
+    );
+    let sim = connector.sim.borrow();
+    assert_eq!(sim.persisted_trigger(profile(1), q()), before);
+    assert_eq!(sim.discarded_edits(), 1);
+    assert_eq!(sim.active_profile(), 2);
     sim.assert_clean();
 }
 

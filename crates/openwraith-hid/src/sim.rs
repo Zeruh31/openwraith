@@ -22,9 +22,11 @@
 //!
 //! Failures can be injected: a dropped or delayed acknowledgement, a write
 //! without effect, a reset notification, a disconnect, a keyboard-side
-//! profile change, foreign reports, a select that is acknowledged but does
-//! not switch, a missing profile push, and tables that never take writes
-//! (verification mismatch).
+//! profile change (right after a packet, or at a virtual time with or
+//! without a profile report: [`switch_profile_at`](DeviceSim::switch_profile_at)),
+//! foreign reports, a select that is acknowledged but does not switch, a
+//! missing profile push, and tables that never take writes (verification
+//! mismatch).
 //!
 //! # Virtual time
 //!
@@ -35,6 +37,30 @@
 //! [`delay_ack_by`](DeviceSim::delay_ack_by)) or by the whole timeout. So
 //! observation periods, acknowledgement timeouts and expectation windows
 //! behave as on a real keyboard, without any test sleeping.
+//!
+//! # Delayed commit
+//!
+//! The real keyboard keeps edits in a working copy of the active profile and
+//! saves them about 1 s after the last write; a profile switch before that
+//! reloads the profile and the edits are lost (CONFIRMED on hardware,
+//! spec 4.5.3 "Delayed commit"). The simulator models this by default:
+//!
+//! * every write that changes a setting goes to the **working copy** of the
+//!   active profile, and reads of the active profile return it (so a
+//!   read-back right after a write always matches);
+//! * the working copy is **saved** once [`commit_delay`](DeviceSim::commit_delay)
+//!   (default [`DEFAULT_COMMIT_DELAY`], 1 s of virtual time) has passed since
+//!   the last such write;
+//! * a profile select (ours or one made on the keyboard) or a
+//!   [`power_cycle`](DeviceSim::power_cycle) before that **discards** the
+//!   unsaved edits ([`discarded_edits`](DeviceSim::discarded_edits) counts
+//!   it).
+//!
+//! The model is a guess at the firmware's behaviour (GUESS): it treats the
+//! tables whose scope is unknown like the per-profile ones (a switch drops
+//! their unsaved edits too). [`set_commit_delay`](DeviceSim::set_commit_delay)
+//! with zero turns it off (every write is saved at once); only tests that
+//! need instant saves use it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -213,6 +239,11 @@ pub const FACTORY_TRIGGER: [u8; 9] = [0x00, 0x55, 0x55, 0x01, 0x01, 0, 0, 0, 0];
 /// The factory main light of profiles 2-4 in capture c08.
 pub const FACTORY_LIGHT: [u8; 12] = [0x02, 0x04, 0x03, 0xff, 0, 0, 0, 0, 0, 0, 0x01, 0];
 
+/// How long after the last write the simulated keyboard saves its working
+/// copy (1 s): the hardware probe lost writes when the next profile select
+/// followed within 800 ms and kept them from 1000 ms on (spec 4.5.3).
+pub const DEFAULT_COMMIT_DELAY: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone, Default)]
 struct Faults {
     drop_ack: HashSet<usize>,
@@ -223,6 +254,9 @@ struct Faults {
     reset_after: Option<usize>,
     disconnect_after: Option<usize>,
     switch_after: Vec<(usize, u8)>,
+    /// Profile switches on the keyboard at a virtual time: (due, profile,
+    /// whether the keyboard pushes a profile report).
+    switch_at: Vec<(Duration, u8, bool)>,
     inject_after: Vec<(usize, Report)>,
     ignore_selects: usize,
     omit_pushes: usize,
@@ -253,8 +287,20 @@ pub struct DeviceSim {
     scope: ScopeConfig,
     active: u8,
     replay: HashMap<(u8, ReadRequest), Vec<Report>>,
+    /// The saved tables, keyed by storage slot (0 = global).
     tables: HashMap<(u8, SimTable), Vec<u8>>,
+    /// The saved trigger records, keyed by (profile, key index).
     triggers: HashMap<(u8, u8), [u8; 9]>,
+    /// Unsaved edits of the active profile (the working copy), keyed like
+    /// `tables`; see "Delayed commit" in the module documentation.
+    unsaved_tables: HashMap<(u8, SimTable), Vec<u8>>,
+    /// Unsaved trigger edits of the active profile, keyed like `triggers`.
+    unsaved_triggers: HashMap<(u8, u8), [u8; 9]>,
+    /// Virtual time of the last write that changed a setting, while its
+    /// edits are unsaved.
+    last_edit: Option<Duration>,
+    commit_delay: Duration,
+    discarded: usize,
     queue: VecDeque<Report>,
     delayed: Vec<Report>,
     /// Reports that arrive at a virtual time (offset from `epoch`).
@@ -262,6 +308,8 @@ pub struct DeviceSim {
     epoch: Instant,
     clock: Duration,
     log: Vec<SimPacket>,
+    /// The virtual time of each packet in `log`.
+    log_times: Vec<Duration>,
     violations: Vec<Violation>,
     faults: Faults,
     writes: usize,
@@ -285,27 +333,8 @@ impl DeviceSim {
             .active_profile
             .filter(|p| ProfileId::new(*p).is_some())
             .unwrap_or(1);
-        let mut sim = DeviceSim {
-            model: backup.model().unwrap_or(&W75),
-            scope,
-            active,
-            replay: HashMap::new(),
-            tables: HashMap::new(),
-            triggers: HashMap::new(),
-            queue: VecDeque::new(),
-            delayed: Vec::new(),
-            scheduled: Vec::new(),
-            epoch: Instant::now(),
-            clock: Duration::ZERO,
-            log: Vec::new(),
-            violations: Vec::new(),
-            faults: Faults::default(),
-            writes: 0,
-            leave_pending: false,
-            reset_delivered: false,
-            disconnected: false,
-            usb: backup.device.usb.clone(),
-        };
+        let mut sim = DeviceSim::blank(backup.model().unwrap_or(&W75), scope, active);
+        sim.usb = backup.device.usb.clone();
         // Global tables from the primary snapshot first, then each profile.
         sim.seed(0, backup.primary());
         for profile in ProfileId::ALL {
@@ -313,6 +342,38 @@ impl DeviceSim {
             sim.seed(profile.get(), view);
         }
         sim
+    }
+
+    /// A simulator without any table, on profile `active`, with the delayed
+    /// commit on.
+    fn blank(model: &'static Model, scope: ScopeConfig, active: u8) -> Self {
+        DeviceSim {
+            model,
+            scope,
+            active,
+            replay: HashMap::new(),
+            tables: HashMap::new(),
+            triggers: HashMap::new(),
+            unsaved_tables: HashMap::new(),
+            unsaved_triggers: HashMap::new(),
+            last_edit: None,
+            commit_delay: DEFAULT_COMMIT_DELAY,
+            discarded: 0,
+            queue: VecDeque::new(),
+            delayed: Vec::new(),
+            scheduled: Vec::new(),
+            epoch: Instant::now(),
+            clock: Duration::ZERO,
+            log: Vec::new(),
+            log_times: Vec::new(),
+            violations: Vec::new(),
+            faults: Faults::default(),
+            writes: 0,
+            leave_pending: false,
+            reset_delivered: false,
+            disconnected: false,
+            usb: None,
+        }
     }
 
     /// Stores the replies of `view` as the state of `profile` (0 = the
@@ -401,38 +462,157 @@ impl DeviceSim {
         self.active
     }
 
-    /// Sets the active profile without any report (test setup).
+    /// Makes `profile` active at once, without any report, like a switch on
+    /// the keyboard: unsaved edits whose commit is not due yet are discarded
+    /// (meant for test setup; a switch at a later virtual time is
+    /// [`switch_profile_at`](Self::switch_profile_at)).
     pub fn set_active_profile(&mut self, profile: ProfileId) {
+        self.discard_unsaved();
         self.active = profile.get();
     }
 
-    /// The bytes of `table` as `profile` sees them.
+    /// The bytes of `table` as a read in `profile` would return them now:
+    /// for the active profile its working copy (including unsaved writes),
+    /// for another profile what it holds after switching to it (its saved
+    /// state; unsaved edits count only once their commit is due).
     pub fn table(&self, profile: ProfileId, table: SimTable) -> Option<&[u8]> {
-        let slot = self.slot(table.request(), profile.get());
-        self.tables.get(&(slot, table)).map(Vec::as_slice)
+        self.table_view(profile, table, profile.get() == self.active)
     }
 
-    /// Replaces the bytes of `table` as `profile` sees them (for a global
-    /// table: for every profile).
+    /// The saved bytes of `table` in `profile`: what survives a profile
+    /// switch or a power cycle made now (unsaved edits count only once their
+    /// commit is due).
+    pub fn persisted_table(&self, profile: ProfileId, table: SimTable) -> Option<&[u8]> {
+        self.table_view(profile, table, false)
+    }
+
+    fn table_view(&self, profile: ProfileId, table: SimTable, working: bool) -> Option<&[u8]> {
+        let key = (self.slot(table.request(), profile.get()), table);
+        let unsaved = (working || self.commit_due())
+            .then(|| self.unsaved_tables.get(&key))
+            .flatten();
+        unsaved.or_else(|| self.tables.get(&key)).map(Vec::as_slice)
+    }
+
+    /// Replaces the saved bytes of `table` in `profile` (for a global table:
+    /// in every profile), dropping an unsaved edit of it (test setup: as if
+    /// the change had been made and saved long ago).
     pub fn set_table(&mut self, profile: ProfileId, table: SimTable, bytes: Vec<u8>) {
-        let slot = self.slot(table.request(), profile.get());
-        self.tables.insert((slot, table), bytes);
+        let key = (self.slot(table.request(), profile.get()), table);
+        self.unsaved_tables.remove(&key);
+        self.tables.insert(key, bytes);
     }
 
-    /// The trigger record (`MM A A P R Ah Ah Ph Rh`) of a key in `profile`.
+    /// The trigger record (`MM A A P R Ah Ah Ph Rh`) of a key as a read in
+    /// `profile` would return it now (see [`table`](Self::table)).
     pub fn trigger(&self, profile: ProfileId, pos: KeyPos) -> Option<[u8; 9]> {
-        self.triggers.get(&(profile.get(), pos.index())).copied()
+        self.trigger_view(profile, pos, profile.get() == self.active)
     }
 
-    /// Replaces the trigger record of a key in `profile`.
+    /// The saved trigger record of a key in `profile` (see
+    /// [`persisted_table`](Self::persisted_table)).
+    pub fn persisted_trigger(&self, profile: ProfileId, pos: KeyPos) -> Option<[u8; 9]> {
+        self.trigger_view(profile, pos, false)
+    }
+
+    fn trigger_view(&self, profile: ProfileId, pos: KeyPos, working: bool) -> Option<[u8; 9]> {
+        let key = (profile.get(), pos.index());
+        let unsaved = (working || self.commit_due())
+            .then(|| self.unsaved_triggers.get(&key))
+            .flatten();
+        unsaved.or_else(|| self.triggers.get(&key)).copied()
+    }
+
+    /// Replaces the saved trigger record of a key in `profile`, dropping an
+    /// unsaved edit of it (test setup).
     pub fn set_trigger(&mut self, profile: ProfileId, pos: KeyPos, record: [u8; 9]) {
-        self.triggers.insert((profile.get(), pos.index()), record);
+        let key = (profile.get(), pos.index());
+        self.unsaved_triggers.remove(&key);
+        self.triggers.insert(key, record);
+    }
+
+    // ----- delayed commit -----
+
+    /// How long after the last write that changed a setting the keyboard
+    /// saves its working copy (see "Delayed commit" in the
+    /// [module documentation](self)).
+    pub fn commit_delay(&self) -> Duration {
+        self.commit_delay
+    }
+
+    /// Sets the commit delay. `Duration::ZERO` turns the delayed commit off
+    /// (every write is saved at once); only for tests that need instant
+    /// saves. The default is [`DEFAULT_COMMIT_DELAY`].
+    pub fn set_commit_delay(&mut self, delay: Duration) {
+        self.commit_delay = delay;
+        self.commit_if_due();
+    }
+
+    /// Whether the working copy holds writes that are not saved yet (their
+    /// commit is not due): a profile switch or a power cycle now would lose
+    /// them.
+    pub fn has_unsaved_edits(&self) -> bool {
+        self.has_unsaved() && !self.commit_due()
+    }
+
+    /// How often unsaved edits were discarded: by a profile switch before
+    /// their commit (ours or one made on the keyboard), or by a
+    /// [`power_cycle`](Self::power_cycle).
+    pub fn discarded_edits(&self) -> usize {
+        self.discarded
+    }
+
+    /// The keyboard is unplugged and plugged in again: edits whose commit is
+    /// not due yet are lost, nothing queued is delivered any more. The
+    /// active profile and every saved setting stay.
+    pub fn power_cycle(&mut self) {
+        self.discard_unsaved();
+        self.queue.clear();
+        self.delayed.clear();
+        self.scheduled.clear();
+        self.leave_pending = false;
+    }
+
+    fn has_unsaved(&self) -> bool {
+        !self.unsaved_tables.is_empty() || !self.unsaved_triggers.is_empty()
+    }
+
+    /// Whether the unsaved edits are due to be saved.
+    fn commit_due(&self) -> bool {
+        self.last_edit
+            .is_some_and(|at| self.clock >= at.saturating_add(self.commit_delay))
+    }
+
+    /// Saves the working copy if its commit is due.
+    fn commit_if_due(&mut self) {
+        if !self.commit_due() {
+            return;
+        }
+        self.tables.extend(self.unsaved_tables.drain());
+        self.triggers.extend(self.unsaved_triggers.drain());
+        self.last_edit = None;
+    }
+
+    /// A profile reload: saves the working copy if its commit is due, else
+    /// discards it.
+    fn discard_unsaved(&mut self) {
+        self.commit_if_due();
+        if self.has_unsaved() {
+            self.unsaved_tables.clear();
+            self.unsaved_triggers.clear();
+            self.discarded += 1;
+        }
+        self.last_edit = None;
     }
 
     /// Puts every profile (and every global table) into a factory-like
     /// state: factory triggers (except the knob's) and light, zero keymaps,
     /// empty (`FF`) macros, zero advanced keys, dead band and colour table 1.
+    /// Unsaved edits are dropped.
     pub fn factory_reset_all(&mut self) {
+        self.unsaved_tables.clear();
+        self.unsaved_triggers.clear();
+        self.last_edit = None;
         for profile in 0..=ProfileId::COUNT {
             for table in [
                 SimTable::CustomColors1,
@@ -529,6 +709,19 @@ impl DeviceSim {
         self.faults.switch_after.push((packet, profile.get()));
     }
 
+    /// The user switches to `profile` on the keyboard `after` the current
+    /// virtual time, for example while the host waits for the keyboard to
+    /// save. At that moment the profile is reloaded: edits whose commit is
+    /// not due by then are discarded (as of the switch time, even when a
+    /// read jumps the clock past it). With `push` the keyboard pushes the
+    /// new profile (`21 .. 03 11 PP 00`) at that time; without it the
+    /// switch is silent (whether the keyboard reports a switch made on it is
+    /// open question Q2 of the spec).
+    pub fn switch_profile_at(&mut self, after: Duration, profile: ProfileId, push: bool) {
+        let due = self.clock.saturating_add(after);
+        self.faults.switch_at.push((due, profile.get(), push));
+    }
+
     /// The next `n` profile selects are acknowledged but do not switch (and
     /// send no push).
     pub fn ignore_next_selects(&mut self, n: usize) {
@@ -550,6 +743,12 @@ impl DeviceSim {
     /// Every packet the host sent, in order.
     pub fn written(&self) -> &[SimPacket] {
         &self.log
+    }
+
+    /// The virtual time ([`elapsed`](Self::elapsed)) at which each packet of
+    /// [`written`](Self::written) was sent, in the same order.
+    pub fn sent_times(&self) -> &[Duration] {
+        &self.log_times
     }
 
     /// The write packets the host sent, in order.
@@ -612,8 +811,11 @@ impl DeviceSim {
                 "the simulated keyboard is disconnected".into(),
             ));
         }
+        self.apply_switches_until(self.clock);
+        self.commit_if_due();
         let bytes = *packet.as_bytes();
         self.log.push(packet);
+        self.log_times.push(self.clock);
         if self.reset_delivered {
             self.violation(
                 &bytes,
@@ -639,6 +841,8 @@ impl DeviceSim {
             .map(|(_, p)| *p)
             .collect();
         for profile in switches {
+            // A switch on the keyboard reloads the profile too.
+            self.discard_unsaved();
             self.active = profile;
             self.queue
                 .push_back(report(&[0x21, 0, 0, 0, 0x03, 0x11, profile, 0x00]));
@@ -663,13 +867,15 @@ impl DeviceSim {
     /// Queues the reply to a read request.
     fn answer(&mut self, request: ReadRequest) {
         let profile = self.active;
+        let active = ProfileId::new(profile).unwrap_or(ProfileId::ALL[0]);
         if request == ReadRequest::ActiveProfile {
             self.queue
                 .push_back(report(&[0x21, 0, 0, 0, 0x03, 0x11, profile, 0x01]));
             return;
         }
+        // Reads of the active profile return its working copy.
         if let ReadRequest::KeyTrigger(pos) = request {
-            if let Some(record) = self.triggers.get(&(profile, pos.index())).copied() {
+            if let Some(record) = self.trigger_view(active, pos, true) {
                 let mut bytes = vec![0x21, 0, 0, 0, 0x0c, 0x05];
                 bytes.extend_from_slice(&record);
                 bytes.extend_from_slice(&[pos.row(), pos.col()]);
@@ -679,7 +885,7 @@ impl DeviceSim {
         }
         let slot = self.slot(request, profile);
         if let Some(table) = SimTable::of_request(request) {
-            if let Some(bytes) = self.tables.get(&(slot, table)).cloned() {
+            if let Some(bytes) = self.table_view(active, table, true).map(<[u8]>::to_vec) {
                 self.queue.extend(frame(request, &bytes));
             }
             return;
@@ -793,17 +999,40 @@ impl DeviceSim {
         }
     }
 
+    /// The working copy of `table` in the active profile, for a write: an
+    /// unsaved edit starts from the saved bytes.
     fn table_mut(&mut self, table: SimTable) -> &mut Vec<u8> {
-        let slot = self.slot(table.request(), self.active);
-        self.tables
-            .entry((slot, table))
-            .or_insert_with(|| vec![0; table.len()])
+        let key = (self.slot(table.request(), self.active), table);
+        let saved = &self.tables;
+        self.unsaved_tables.entry(key).or_insert_with(|| {
+            saved
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| vec![0; table.len()])
+        })
     }
 
     /// Applies a write; returns the reports the keyboard sends.
     fn apply(&mut self, effect: Effect, write: usize) -> Vec<Report> {
+        let replies = self.apply_effect(effect, write);
+        // With the delayed commit off, every write is saved at once.
+        self.commit_if_due();
+        replies
+    }
+
+    fn apply_effect(&mut self, effect: Effect, write: usize) -> Vec<Report> {
         let no_effect = self.faults.drop_effect.contains(&write);
         let blocked = |sim: &Self, table: SimTable| no_effect || sim.faults.frozen.contains(&table);
+        if matches!(
+            effect,
+            Effect::Light(_)
+                | Effect::Chunk { .. }
+                | Effect::AdvancedClear(_)
+                | Effect::Trigger { .. }
+        ) {
+            // Every write that changes a setting restarts the commit delay.
+            self.last_edit = Some(self.clock);
+        }
         match effect {
             Effect::Select(profile) => {
                 if self.faults.ignore_selects > 0 {
@@ -811,6 +1040,8 @@ impl DeviceSim {
                     return vec![report(&[0x21, 0, 0, 0, 0x02, 0x12, 0x01])];
                 }
                 if !no_effect {
+                    // The profile is reloaded from its saved state.
+                    self.discard_unsaved();
                     self.active = profile;
                 }
                 let mut out = vec![report(&[0x21, 0, 0, 0, 0x02, 0x12, 0x01])];
@@ -869,7 +1100,8 @@ impl DeviceSim {
             Effect::Trigger { keys, record } => {
                 if !no_effect {
                     for pos in keys {
-                        self.triggers.insert((self.active, pos.index()), record);
+                        self.unsaved_triggers
+                            .insert((self.active, pos.index()), record);
                     }
                 }
                 vec![report(&[0x21, 0, 0, 0, 0x01, 0x00])]
@@ -968,25 +1200,38 @@ impl Transport for DeviceSim {
                 "the simulated keyboard is disconnected".into(),
             ));
         }
+        self.apply_switches_until(self.clock);
         self.release_scheduled(self.clock);
         let mut next = self.queue.pop_front();
         if next.is_none() {
             let deadline = self.clock.saturating_add(timeout);
-            let due = self
+            // The wait ends at the next report: a scheduled one, or the push
+            // of a switch on the keyboard.
+            let report_due = self
                 .scheduled
                 .iter()
                 .map(|(due, _)| *due)
                 .filter(|due| *due <= deadline)
                 .min();
-            match due {
-                Some(due) => {
-                    self.clock = self.clock.max(due);
-                    self.release_scheduled(self.clock);
-                    next = self.queue.pop_front();
-                }
-                None => self.clock = deadline,
-            }
+            let push_due = self
+                .faults
+                .switch_at
+                .iter()
+                .filter(|(due, _, push)| *push && *due <= deadline)
+                .map(|(due, _, _)| *due)
+                .min();
+            let until = match (report_due, push_due) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b).unwrap_or(deadline),
+            };
+            // Silent switches on the way happen at their own time.
+            self.apply_switches_until(until);
+            self.clock = self.clock.max(until);
+            self.release_scheduled(self.clock);
+            next = self.queue.pop_front();
         }
+        // Time passed: the working copy may be due to be saved.
+        self.commit_if_due();
         if next.as_ref().is_some_and(is_keyboard_reset) {
             self.reset_delivered = true;
         }
@@ -1004,6 +1249,34 @@ impl Transport for DeviceSim {
 }
 
 impl DeviceSim {
+    /// Makes the switches on the keyboard due at or before `time` happen, in
+    /// order, each at its own time (the clock is moved to it, never back):
+    /// the profile is reloaded (the working copy is saved if its commit was
+    /// due by then, else discarded), and a pushing switch queues its report.
+    fn apply_switches_until(&mut self, time: Duration) {
+        loop {
+            let next = self
+                .faults
+                .switch_at
+                .iter()
+                .enumerate()
+                .filter(|(_, (due, _, _))| *due <= time)
+                .min_by_key(|(_, (due, _, _))| *due)
+                .map(|(i, _)| i);
+            let Some(index) = next else {
+                break;
+            };
+            let (due, profile, push) = self.faults.switch_at.remove(index);
+            self.clock = self.clock.max(due);
+            self.discard_unsaved();
+            self.active = profile;
+            if push {
+                self.queue
+                    .push_back(report(&[0x21, 0, 0, 0, 0x03, 0x11, profile, 0x00]));
+            }
+        }
+    }
+
     /// Moves every scheduled report due at `time` into the queue, in due
     /// order.
     fn release_scheduled(&mut self, time: Duration) {
@@ -1085,27 +1358,7 @@ mod tests {
     };
 
     fn sim() -> DeviceSim {
-        DeviceSim {
-            model: &W75,
-            scope: ScopeConfig::default(),
-            active: 1,
-            replay: HashMap::new(),
-            tables: HashMap::new(),
-            triggers: HashMap::new(),
-            queue: VecDeque::new(),
-            delayed: Vec::new(),
-            scheduled: Vec::new(),
-            epoch: Instant::now(),
-            clock: Duration::ZERO,
-            log: Vec::new(),
-            violations: Vec::new(),
-            faults: Faults::default(),
-            writes: 0,
-            leave_pending: false,
-            reset_delivered: false,
-            disconnected: false,
-            usb: None,
-        }
+        DeviceSim::blank(&W75, ScopeConfig::default(), 1)
     }
 
     fn raw(request: ReadRequest, bytes: &[u8]) -> RawResponse {
@@ -1378,6 +1631,143 @@ mod tests {
         s.push_input(report(&[0x01]));
         assert!(s.read(Duration::from_secs(5)).expect("read").is_some());
         assert_eq!(s.elapsed(), Duration::from_millis(1500));
+    }
+
+    /// A single-key trigger write of Q (r2c1) at `actuation` units, RT off.
+    fn q_trigger_packet(actuation: u16) -> WritePacket {
+        let global = TriggerGlobal::from_response(&raw(
+            ReadRequest::TriggerGlobal,
+            &[0x04, 0xaa, 0x02, 0x02, 0x00, 0x05],
+        ))
+        .expect("21/04");
+        let setting = TriggerSetting {
+            mode: TriggerWriteMode::Off,
+            actuation: Distance(actuation),
+            rt_press: Distance(1),
+            rt_release: Distance(1),
+        };
+        let q = KeyPos::new(2, 1).expect("Q");
+        let write = TriggerWrite::new(
+            &W75,
+            KeyMask::from_positions([q]),
+            setting,
+            &TriggerLimits::new(&W75, &global),
+        )
+        .expect("valid");
+        WriteRequest::Trigger(write).steps().remove(0).packet
+    }
+
+    fn select_packet(profile: ProfileId) -> WritePacket {
+        WriteRequest::SelectProfile(profile)
+            .steps()
+            .remove(0)
+            .packet
+    }
+
+    #[test]
+    fn writes_are_saved_one_second_after_the_last_one() {
+        let q = KeyPos::new(2, 1).expect("Q");
+        let [p1, p2, ..] = ProfileId::ALL;
+        let mut s = sim();
+        s.set_trigger(p1, q, FACTORY_TRIGGER);
+        s.set_trigger(p2, q, FACTORY_TRIGGER);
+        assert_eq!(s.commit_delay(), DEFAULT_COMMIT_DELAY);
+        let actuation = |s: &DeviceSim| s.trigger(p1, q).map(|r| r[1]);
+
+        // A write is visible at once in the active profile (a read-back
+        // matches), but it is not saved yet.
+        s.write_command(&q_trigger_packet(100)).expect("sent");
+        assert_eq!(actuation(&s), Some(100));
+        assert_eq!(s.persisted_trigger(p1, q), Some(FACTORY_TRIGGER));
+        assert!(s.has_unsaved_edits());
+        s.queue.clear();
+        s.write(&ReadRequest::KeyTrigger(q).packet()).expect("sent");
+        assert_eq!(s.queue.pop_front().map(|r| r.as_bytes()[7]), Some(100));
+
+        // A switch 800 ms later reloads the profile: the write is lost.
+        assert!(s.read(Duration::from_millis(800)).expect("read").is_none());
+        s.write_command(&select_packet(p2)).expect("sent");
+        s.write_command(&select_packet(p1)).expect("sent");
+        assert_eq!(s.trigger(p1, q), Some(FACTORY_TRIGGER));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // Written again and left alone for 1 s: saved, it survives a switch.
+        s.write_command(&q_trigger_packet(100)).expect("sent");
+        s.queue.clear();
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        assert!(!s.has_unsaved_edits());
+        assert_eq!(s.persisted_trigger(p1, q).map(|r| r[1]), Some(100));
+        s.write_command(&select_packet(p2)).expect("sent");
+        s.write_command(&select_packet(p1)).expect("sent");
+        assert_eq!(actuation(&s), Some(100));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // Unplugging right after a write loses it too.
+        s.write_command(&q_trigger_packet(60)).expect("sent");
+        s.power_cycle();
+        assert_eq!(actuation(&s), Some(100));
+        assert_eq!(s.discarded_edits(), 2);
+
+        // Without the delayed commit every write is saved at once.
+        s.set_commit_delay(Duration::ZERO);
+        s.write_command(&q_trigger_packet(60)).expect("sent");
+        assert!(!s.has_unsaved_edits());
+        s.write_command(&select_packet(p2)).expect("sent");
+        s.write_command(&select_packet(p1)).expect("sent");
+        assert_eq!(actuation(&s), Some(60));
+        assert_eq!(s.discarded_edits(), 2);
+        // Every packet has its virtual time.
+        assert_eq!(s.sent_times().len(), s.written().len());
+        assert_eq!(s.sent_times()[1], Duration::ZERO);
+        assert_eq!(s.sent_times()[2], Duration::from_millis(800));
+        s.assert_clean();
+    }
+
+    #[test]
+    fn a_switch_on_the_keyboard_at_a_time_reloads_the_profile_then() {
+        let q = KeyPos::new(2, 1).expect("Q");
+        let [p1, p2, ..] = ProfileId::ALL;
+        let mut s = sim();
+        s.set_trigger(p1, q, FACTORY_TRIGGER);
+        s.set_trigger(p2, q, FACTORY_TRIGGER);
+
+        // A silent switch 300 ms after a write: a read that waits 2 s jumps
+        // past both the switch and the time the commit would have been due,
+        // but the switch came first and dropped the write.
+        s.write_command(&q_trigger_packet(100)).expect("sent");
+        s.queue.clear();
+        s.switch_profile_at(Duration::from_millis(300), p2, false);
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        assert_eq!(s.elapsed(), Duration::from_secs(2));
+        assert_eq!(s.active_profile(), 2);
+        assert_eq!(s.discarded_edits(), 1);
+        assert_eq!(s.persisted_trigger(p1, q), Some(FACTORY_TRIGGER));
+
+        // With a push, a read gets the profile report at the switch time.
+        s.switch_profile_at(Duration::from_millis(500), p1, true);
+        let got = s.read(Duration::from_secs(2)).expect("read");
+        assert_eq!(
+            got.map(|r| r.as_bytes()[..8].to_vec()),
+            Some(vec![0x21, 0, 0, 0, 0x03, 0x11, 0x01, 0x00])
+        );
+        assert_eq!(s.elapsed(), Duration::from_millis(2500));
+        assert_eq!(s.active_profile(), 1);
+
+        // A switch after the commit was due keeps the write.
+        s.write_command(&q_trigger_packet(60)).expect("sent");
+        s.queue.clear();
+        s.switch_profile_at(Duration::from_millis(1500), p2, false);
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        assert_eq!(s.active_profile(), 2);
+        assert_eq!(s.discarded_edits(), 1);
+        assert_eq!(s.persisted_trigger(p1, q).map(|r| r[1]), Some(60));
+
+        // set_active_profile is such a switch, made at once.
+        s.write_command(&q_trigger_packet(70)).expect("sent");
+        s.set_active_profile(p1);
+        assert_eq!(s.discarded_edits(), 2);
+        assert_eq!(s.persisted_trigger(p2, q), Some(FACTORY_TRIGGER));
+        s.assert_clean();
     }
 
     #[test]

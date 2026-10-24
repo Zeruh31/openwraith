@@ -171,11 +171,15 @@ fn profiles_progress_text(p: &ProfilesProgress) -> String {
         }
         ProfilesProgress::Selecting { profile } => format!("switching to profile {profile}"),
         ProfilesProgress::Returning { profile } => format!("switching back to profile {profile}"),
+        ProfilesProgress::WaitingForCommit { wait_ms } => report::commit_wait_text(None, *wait_ms),
     }
 }
 
 fn write_progress_text(p: &WriteProgress) -> String {
     match p {
+        WriteProgress::SafetyBackup {
+            progress: ProfilesProgress::WaitingForCommit { wait_ms },
+        } => report::commit_wait_text(None, *wait_ms),
         WriteProgress::SafetyBackup { progress } => {
             format!("safety backup: {}", profiles_progress_text(progress))
         }
@@ -198,6 +202,12 @@ fn write_progress_text(p: &WriteProgress) -> String {
         }
         WriteProgress::Verifying => "reading the written profiles again".to_string(),
         WriteProgress::Returning { profile } => format!("switching back to profile {profile}"),
+        WriteProgress::WaitingForCommit { profile, wait_ms } => {
+            report::commit_wait_text(*profile, *wait_ms)
+        }
+        WriteProgress::CheckingPersistence { profile } => {
+            format!("profile {profile}: reading it again after a profile switch")
+        }
     }
 }
 
@@ -209,6 +219,40 @@ fn step(ui: &mut impl Ui, text: &str) -> ControlFlow<()> {
     } else {
         ControlFlow::Continue(())
     }
+}
+
+/// Whether a progress event is a wait for the keyboard to save.
+fn is_commit_wait(p: &WriteProgress) -> bool {
+    matches!(
+        p,
+        WriteProgress::WaitingForCommit { .. }
+            | WriteProgress::SafetyBackup {
+                progress: ProfilesProgress::WaitingForCommit { .. }
+            }
+    )
+}
+
+/// The progress of an operation that writes: a wait for the keyboard to
+/// save (up to 2 s, when the output would otherwise stand still) is a note
+/// that stays, everything else a progress line.
+fn write_step(ui: &mut impl Ui, p: &WriteProgress) -> ControlFlow<()> {
+    if is_commit_wait(p) {
+        ui.note(&write_progress_text(p));
+        return if ui.cancelled() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        };
+    }
+    step(ui, &write_progress_text(p))
+}
+
+/// The progress of an all-profile backup (see [`write_step`]).
+fn profiles_step(ui: &mut impl Ui, p: &ProfilesProgress) -> ControlFlow<()> {
+    if matches!(p, ProfilesProgress::WaitingForCommit { .. }) {
+        return write_step(ui, &WriteProgress::SafetyBackup { progress: *p });
+    }
+    step(ui, &profiles_progress_text(p))
 }
 
 /// Reads the active profile (read-only) and saves it as a verified safety
@@ -360,9 +404,7 @@ fn backup_all_profiles_on<T: WriteTransport>(
         write: WriteOptions::default(),
     };
     let consent = WriteConsent::new(ConsentOrigin::CommandLineFlag);
-    let result = read_all_profiles(session, consent, &options, |p| {
-        step(ui, &profiles_progress_text(&p))
-    });
+    let result = read_all_profiles(session, consent, &options, |p| profiles_step(ui, &p));
     ui.clear_progress();
     let backup = match result {
         Ok(backup) => backup,
@@ -454,7 +496,7 @@ fn set_trigger_on<T: WriteTransport>(
         &saved,
         consent,
         &WriteOptions::default(),
-        |p| step(ui, &write_progress_text(&p)),
+        |p| write_step(ui, &p),
     );
     ui.clear_progress();
     ui.print(&report::edit_report(&report, Some(model)))?;
@@ -518,7 +560,7 @@ fn set_light_on<T: WriteTransport>(
         &saved,
         consent,
         &WriteOptions::default(),
-        |p| step(ui, &write_progress_text(&p)),
+        |p| write_step(ui, &p),
     );
     ui.clear_progress();
     ui.print(&report::edit_report(&report, model))?;
@@ -679,7 +721,7 @@ fn restore_on<T: WriteTransport>(
     ));
     let consent_for_switches = WriteConsent::new(ConsentOrigin::CommandLineFlag);
     let prepared = match prepare_restore(session, target, options, consent_for_switches, |p| {
-        step(ui, &write_progress_text(&p))
+        write_step(ui, &p)
     }) {
         Ok(prepared) => prepared,
         Err(e) => {
@@ -736,9 +778,7 @@ fn restore_on<T: WriteTransport>(
         }
         return Ok(Exit::Failure);
     };
-    let report = execute_restore(session, &prepared, &saved, consent, |p| {
-        step(ui, &write_progress_text(&p))
-    });
+    let report = execute_restore(session, &prepared, &saved, consent, |p| write_step(ui, &p));
     ui.clear_progress();
     if args.json {
         print_json(

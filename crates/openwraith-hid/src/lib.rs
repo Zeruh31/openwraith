@@ -26,7 +26,9 @@
 //! * [`Writer`] ([`Session::writer`]): consent, the "other program" gate,
 //!   profile selection, and [`Writer::write_guarded`], the only public table
 //!   write: it needs a [`SavedBackup`] of the active profile and writes
-//!   stop-and-wait with read-back verification.
+//!   stop-and-wait with read-back verification. The keyboard saves a write
+//!   about 1 s later, so the writer never switches profiles (and operations
+//!   never return) before the [`CommitSettle`] has passed.
 //! * [`read_profiles`]: an all-profile backup (schema 2).
 //! * [`safety`]: safety backups saved and verified before any write
 //!   ([`SavedBackup`]).
@@ -103,9 +105,9 @@ pub use profiles::{
 };
 pub use restore::{
     BlockCause, EntryChange, FinalCheck, FinalMismatch, ItemReport, ItemResult, Outcome,
-    PlanAction, PlanItem, PlanWarning, PlannedWrite, PreparedRestore, ProfilePlan, ProfileReport,
-    RestoreOptions, RestorePlan, RestoreReport, SkipReason, WriteProgress, dry_run_restore,
-    execute_restore, plan_restore, prepare_restore,
+    Persistence, PersistenceCheck, PlanAction, PlanItem, PlanWarning, PlannedWrite,
+    PreparedRestore, ProfilePlan, ProfileReport, RestoreOptions, RestorePlan, RestoreReport,
+    SkipReason, WriteProgress, dry_run_restore, execute_restore, plan_restore, prepare_restore,
 };
 pub use safety::SavedBackup;
 pub use session::{ForeignActivity, ListenSummary, Session, SessionOptions, SessionStats};
@@ -114,6 +116,6 @@ pub use sim::{DeviceSim, Scope, ScopeConfig, SimPacket, SimTable, Violation};
 pub use summary::{DeviceSummary, read_summary};
 pub use transport::{Transport, UsbInfo, WriteTransport};
 pub use writer::{
-    ConsentOrigin, GuardedWrite, PacketProgress, SelectOutcome, WriteConsent, WriteOptions,
-    WriteOutcome, WriteWarning, Writer,
+    CommitSettle, CommitWait, ConsentOrigin, GuardedWrite, PacketProgress, SelectOutcome,
+    WriteConsent, WriteOptions, WriteOutcome, WriteWarning, Writer,
 };

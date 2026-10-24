@@ -4,8 +4,9 @@
 use std::collections::BTreeMap;
 
 use openwraith_hid::{
-    EditReport, EntryChange, ItemReport, ItemResult, LightEditPlan, Outcome, PlanAction, PlanItem,
-    PlanWarning, PlannedWrite, RestorePlan, RestoreReport, TriggerEditPlan, WriteWarning,
+    EditReport, EntryChange, ItemReport, ItemResult, LightEditPlan, Outcome, Persistence,
+    PersistenceCheck, PlanAction, PlanItem, PlanWarning, PlannedWrite, RestorePlan, RestoreReport,
+    TriggerEditPlan, WriteWarning,
 };
 use openwraith_protocol::{
     Distance, LightMode, LightRecord, Model, ProfileId, ReadRequest, Rgb, TableId, TriggerSetting,
@@ -27,6 +28,26 @@ fn count(n: usize, what: &str) -> String {
     } else {
         format!("{n} {what}s")
     }
+}
+
+/// A duration in milliseconds as seconds for the user, rounded up to a
+/// tenth: `2 s`, `1.5 s`.
+pub fn seconds_text(ms: u64) -> String {
+    let tenths = ms.saturating_add(99) / 100;
+    if tenths % 10 == 0 {
+        format!("{} s", tenths / 10)
+    } else {
+        format!("{}.{} s", tenths / 10, tenths % 10)
+    }
+}
+
+/// The note shown while a write operation waits for the keyboard to save.
+pub fn commit_wait_text(profile: Option<u8>, wait_ms: u64) -> String {
+    let what = profile.map_or_else(String::new, |p| format!(" profile {p}"));
+    format!(
+        "Waiting for the keyboard to save{what} ({})...",
+        seconds_text(wait_ms)
+    )
 }
 
 /// `1, 2, 3` -> `"1, 2 and 3"`.
@@ -486,38 +507,126 @@ pub fn write_warning_text(warning: &WriteWarning) -> String {
         WriteWarning::WaitedForLateAck => {
             "waited for a late acknowledgement of the previous write before starting".into()
         }
+        WriteWarning::WaitedForCommit { waited_ms } => format!(
+            "waited {} for the keyboard to save the last write before switching profiles",
+            seconds_text(*waited_ms)
+        ),
     }
+}
+
+/// ` (read-back differs at byte offset(s) 1, 2)`, or nothing.
+fn offsets_text(mismatch: &openwraith_protocol::Mismatch) -> String {
+    let offsets = mismatch.differing_offsets();
+    if offsets.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<String> = offsets.iter().take(8).map(ToString::to_string).collect();
+    format!(
+        " (read-back differs at byte offset(s) {}{})",
+        shown.join(", "),
+        if offsets.len() > 8 { ", ..." } else { "" }
+    )
 }
 
 /// What happened to one item, in words.
 fn result_text(result: &ItemResult) -> String {
+    let written = |packets: usize, sends: u32| {
+        let mut text = format!("written and verified ({})", count(packets, "packet"));
+        if sends > 1 {
+            text.push_str(", after a second attempt");
+        }
+        text
+    };
     match result {
-        ItemResult::Written { sends, packets, .. } => {
-            let mut text = format!("written and verified ({})", count(*packets, "packet"));
-            if *sends > 1 {
-                text.push_str(", after a second attempt");
+        ItemResult::Written {
+            sends,
+            packets,
+            persistence,
+            ..
+        } => {
+            let mut text = written(*packets, *sends);
+            if *persistence == Persistence::Persisted {
+                text.push_str(", persisted");
             }
             text
         }
+        ItemResult::Lost {
+            sends,
+            packets,
+            mismatch,
+            ..
+        } => format!(
+            "{}, then LOST: gone after a profile switch, the keyboard did not keep it{}",
+            written(*packets, *sends),
+            offsets_text(mismatch)
+        ),
+        ItemResult::MaybeLost { sends, packets, .. } => format!(
+            "{}, but MAY BE LOST: the profile changed or the connection was lost before the \
+             keyboard had time to save it",
+            written(*packets, *sends)
+        ),
         ItemResult::AlreadyMatched => "already held the backup's values (not written)".into(),
         ItemResult::Failed { error, mismatch } => {
             let mut text = format!("FAILED: {}", error.message);
             if let Some(m) = mismatch {
-                let offsets = m.differing_offsets();
-                if !offsets.is_empty() {
-                    let shown: Vec<String> =
-                        offsets.iter().take(8).map(ToString::to_string).collect();
-                    text.push_str(&format!(
-                        " (read-back differs at byte offset(s) {}{})",
-                        shown.join(", "),
-                        if offsets.len() > 8 { ", ..." } else { "" }
-                    ));
-                }
+                text.push_str(&offsets_text(m));
             }
             text
         }
         ItemResult::NotAttempted => "not attempted".into(),
     }
+}
+
+/// The result of the persistence check of a restore, in words.
+fn persistence_text(check: &PersistenceCheck) -> String {
+    let profiles: Vec<String> = check.profiles.iter().map(ToString::to_string).collect();
+    let noun = if profiles.len() == 1 {
+        "profile"
+    } else {
+        "profiles"
+    };
+    let it = |n: usize| if n == 1 { "it" } else { "them" };
+    let mut parts: Vec<String> = Vec::new();
+    if check.persisted > 0 {
+        parts.push(format!(
+            "{} still {} what was written (the keyboard saved {})",
+            count(check.persisted, "written table"),
+            if check.persisted == 1 {
+                "holds"
+            } else {
+                "hold"
+            },
+            it(check.persisted)
+        ));
+    }
+    if check.lost > 0 {
+        parts.push(format!(
+            "{} LOST (the keyboard did not keep {})",
+            count(check.lost, "written table"),
+            it(check.lost)
+        ));
+    }
+    if check.not_checked > 0 {
+        parts.push(format!(
+            "{} could not be checked (a table that may be shared by all profiles and was \
+             written in another profile too; the final check compares {} with the backup)",
+            count(check.not_checked, "written table"),
+            it(check.not_checked)
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("no written table to read again".to_string());
+    }
+    let mut text = format!(
+        "Persistence check: {noun} {} selected again after switching away; {}.",
+        list(&profiles),
+        parts.join("; ")
+    );
+    if check.lost > 0 {
+        text.push_str(" Run the same restore again, or undo it with the command below.");
+    }
+    text.push('\n');
+    text
 }
 
 fn item_report_name(item: &ItemReport, model: Option<&Model>) -> String {
@@ -547,7 +656,10 @@ fn item_rows(items: &[(Option<u8>, &ItemReport)], model: Option<&Model>) -> Stri
         row.push(item_report_name(item, model));
         row.push(result_text(&item.result));
         table.row(row);
-        if let ItemResult::Written { warnings: w, .. } = &item.result {
+        if let ItemResult::Written { warnings: w, .. }
+        | ItemResult::Lost { warnings: w, .. }
+        | ItemResult::MaybeLost { warnings: w, .. } = &item.result
+        {
             for warning in w {
                 warnings.push(format!(
                     "{}: {}",
@@ -567,8 +679,29 @@ fn item_rows(items: &[(Option<u8>, &ItemReport)], model: Option<&Model>) -> Stri
     out
 }
 
+/// What became of the written tables of a report, for its headline.
+#[derive(Debug, Clone, Copy, Default)]
+struct Counts {
+    /// Written and verified (and, for a restore, persisted or not checked).
+    written: usize,
+    /// Written and verified, but gone after a profile switch.
+    lost: usize,
+    /// Written and verified, but the profile changed or the connection was
+    /// lost before the keyboard had time to save them.
+    maybe_lost: usize,
+    /// Planned writes.
+    total: usize,
+}
+
 /// The headline of a report.
-fn outcome_text(outcome: Outcome, written: usize, total: usize, error: Option<&str>) -> String {
+fn outcome_text(outcome: Outcome, counts: Counts, error: Option<&str>) -> String {
+    let Counts {
+        written,
+        lost,
+        maybe_lost,
+        total,
+    } = counts;
+    let them = |n: usize| if n == 1 { "it" } else { "them" };
     match outcome {
         Outcome::Completed => format!(
             "Done: {} of {total} written and verified by reading them back.",
@@ -579,18 +712,42 @@ fn outcome_text(outcome: Outcome, written: usize, total: usize, error: Option<&s
             "Cancelled: {} written and verified before stopping; the rest was not written.",
             count(written, "table")
         ),
-        Outcome::Failed => format!(
-            "FAILED: {}\n{}",
-            error.unwrap_or("unknown error"),
+        Outcome::Failed => {
+            let mut lines = Vec::new();
             if written > 0 {
-                format!(
+                lines.push(format!(
                     "Something WAS written: {} written and verified before the failure.",
                     count(written, "table")
-                )
-            } else {
-                "Nothing was written to the keyboard's settings.".to_string()
+                ));
             }
-        ),
+            if maybe_lost > 0 {
+                lines.push(format!(
+                    "{} written and verified, but the keyboard may not have saved {}: the active \
+                     profile changed or the connection was lost before it had time to save (it \
+                     saves about 1 s after a write). Check the values before relying on them; run \
+                     the command again, or undo it with the command below.",
+                    count(maybe_lost, "table"),
+                    them(maybe_lost)
+                ));
+            }
+            if lost > 0 {
+                lines.push(format!(
+                    "{} written and verified, but read again after a profile switch {} no \
+                     longer {} what was written (see the persistence check below).",
+                    count(lost, "table"),
+                    if lost == 1 { "it" } else { "they" },
+                    if lost == 1 { "holds" } else { "hold" }
+                ));
+            }
+            if lines.is_empty() {
+                lines.push("Nothing was written to the keyboard's settings.".to_string());
+            }
+            format!(
+                "FAILED: {}\n{}",
+                error.unwrap_or("unknown error"),
+                lines.join("\n")
+            )
+        }
     }
 }
 
@@ -602,13 +759,20 @@ pub fn restore_report(report: &RestoreReport, model: Option<&Model>) -> String {
         "\n{}\n",
         outcome_text(
             report.outcome,
-            report.written(),
-            items.len(),
+            Counts {
+                written: report.written(),
+                lost: report.lost(),
+                maybe_lost: report.maybe_lost(),
+                total: items.len(),
+            },
             report.error.as_ref().map(|e| e.message.as_str())
         )
     );
     if !items.is_empty() {
         out.push_str(&item_rows(&items, model));
+    }
+    if let Some(check) = &report.persistence {
+        out.push_str(&persistence_text(check));
     }
     if let Some(check) = &report.final_check {
         let profiles: Vec<String> = check.profiles.iter().map(ToString::to_string).collect();
@@ -713,13 +877,25 @@ pub fn edit_report(report: &EditReport, model: Option<&Model>) -> String {
         "\n{}\n",
         outcome_text(
             report.outcome,
-            report.written(),
-            items.len(),
+            Counts {
+                written: report.written(),
+                maybe_lost: report.maybe_lost(),
+                total: items.len(),
+                ..Counts::default()
+            },
             report.error.as_ref().map(|e| e.message.as_str())
         )
     );
     if !items.is_empty() {
         out.push_str(&item_rows(&items, model));
+    }
+    if let Some(ms) = report.waited_for_commit_ms {
+        out.push_str(&format!(
+            "Waited {} after the last write so that the keyboard could save it (it saves about \
+             1 s after a write). An edit does not switch profiles to read it again, so the \
+             lighting stays as it is.\n",
+            seconds_text(ms)
+        ));
     }
     if let Some(activity) = &report.foreign_activity {
         out.push_str(&format!(
@@ -830,6 +1006,165 @@ mod tests {
             }]),
             ["macro slot 2"]
         );
+    }
+
+    #[test]
+    fn seconds_are_rounded_up_to_a_tenth() {
+        assert_eq!(seconds_text(2000), "2 s");
+        assert_eq!(seconds_text(1999), "2 s");
+        assert_eq!(seconds_text(1450), "1.5 s");
+        assert_eq!(
+            commit_wait_text(Some(2), 2000),
+            "Waiting for the keyboard to save profile 2 (2 s)..."
+        );
+        assert_eq!(
+            commit_wait_text(None, 300),
+            "Waiting for the keyboard to save (0.3 s)..."
+        );
+    }
+
+    #[test]
+    fn a_lost_write_is_reported_with_the_undo_and_rerun_hints() {
+        use openwraith_hid::{
+            ConsentOrigin, ErrorInfo, ErrorKind, PersistenceCheck, ProfileReport, WriteConsent,
+        };
+        use openwraith_protocol::{HexBytes, KeyPos, Mismatch, MismatchKind};
+        let q = KeyPos::new(2, 1).expect("Q");
+        let lost = ItemResult::Lost {
+            sends: 1,
+            packets: 1,
+            warnings: Vec::new(),
+            mismatch: Mismatch {
+                table: TableId::Triggers,
+                read: ReadRequest::KeyTrigger(q),
+                kind: MismatchKind::Differs,
+                expected: HexBytes(vec![0, 0x55, 0x55, 1, 1, 0, 0, 0, 0]),
+                got: HexBytes(vec![0, 0x64, 0x64, 1, 1, 0, 0, 0, 0]),
+            },
+        };
+        let report = RestoreReport {
+            outcome: Outcome::Failed,
+            error: Some(ErrorInfo {
+                kind: ErrorKind::NotPersisted,
+                message: "profile 2: 1 table(s) written and verified, but gone".into(),
+            }),
+            consent: WriteConsent::new(ConsentOrigin::CommandLineFlag),
+            original_profile: 1,
+            active_profile_now: Some(1),
+            profiles: vec![ProfileReport {
+                profile: 2,
+                items: vec![ItemReport {
+                    table: TableId::Triggers,
+                    key: Some(q),
+                    summary: "trigger".into(),
+                    result: lost,
+                }],
+            }],
+            persistence: Some(PersistenceCheck {
+                profiles: vec![2],
+                persisted: 0,
+                lost: 1,
+                not_checked: 0,
+            }),
+            final_check: None,
+            safety_backup: "safety.owbackup.json".into(),
+            undo_command: "openwraith restore safety.owbackup.json".into(),
+            foreign_activity: None,
+        };
+        let text = restore_report(&report, Some(&W75));
+        for expected in [
+            "FAILED: profile 2: 1 table(s) written and verified, but gone",
+            "1 table written and verified, but read again after a profile switch it no longer \
+             holds what was written (see the persistence check below).",
+            "trigger of Q (r2c1)",
+            "written and verified (1 packet), then LOST: gone after a profile switch, the \
+             keyboard did not keep it (read-back differs at byte offset(s) 1, 2)",
+            "Persistence check: profile 2 selected again after switching away; 1 written table \
+             LOST (the keyboard did not keep it). Run the same restore again, or undo it with \
+             the command below.",
+            "To undo:       openwraith restore safety.owbackup.json",
+        ] {
+            assert!(text.contains(expected), "{expected}\n---\n{text}");
+        }
+        // Only what was observed: nothing claims the earlier values are back.
+        assert!(!text.contains("earlier values"), "{text}");
+        assert!(!text.contains("Nothing was written"), "{text}");
+        assert!(report.anything_written());
+    }
+
+    #[test]
+    fn the_persistence_check_counts_every_kind_of_table() {
+        let check = PersistenceCheck {
+            profiles: vec![2, 3],
+            persisted: 2,
+            lost: 0,
+            not_checked: 1,
+        };
+        assert_eq!(
+            persistence_text(&check),
+            "Persistence check: profiles 2 and 3 selected again after switching away; 2 written \
+             tables still hold what was written (the keyboard saved them); 1 written table could \
+             not be checked (a table that may be shared by all profiles and was written in \
+             another profile too; the final check compares it with the backup).\n"
+        );
+        let only_unchecked = PersistenceCheck {
+            profiles: vec![3],
+            persisted: 0,
+            lost: 0,
+            not_checked: 1,
+        };
+        let text = persistence_text(&only_unchecked);
+        assert!(!text.contains("saved"), "{text}");
+        assert!(
+            text.contains("1 written table could not be checked"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn writes_that_may_not_have_been_saved_are_reported_as_such() {
+        use openwraith_hid::{ConsentOrigin, EditReport, ErrorInfo, ErrorKind, WriteConsent};
+        use openwraith_protocol::KeyPos;
+        let q = KeyPos::new(2, 1).expect("Q");
+        let report = EditReport {
+            outcome: Outcome::Failed,
+            error: Some(ErrorInfo {
+                kind: ErrorKind::ProfileChanged,
+                message: "the active onboard profile changed to 2 before the keyboard had saved \
+                          the last write to profile 1"
+                    .into(),
+            }),
+            consent: WriteConsent::new(ConsentOrigin::CommandLineFlag),
+            profile: 1,
+            active_profile_now: Some(2),
+            items: vec![ItemReport {
+                table: TableId::Triggers,
+                key: Some(q),
+                summary: "trigger".into(),
+                result: ItemResult::MaybeLost {
+                    sends: 1,
+                    packets: 1,
+                    warnings: Vec::new(),
+                },
+            }],
+            safety_backup: "safety.owbackup.json".into(),
+            undo_command: "openwraith restore safety.owbackup.json".into(),
+            foreign_activity: None,
+            waited_for_commit_ms: None,
+        };
+        let text = edit_report(&report, Some(&W75));
+        for expected in [
+            "FAILED: the active onboard profile changed to 2 before the keyboard had saved",
+            "1 table written and verified, but the keyboard may not have saved it",
+            "written and verified (1 packet), but MAY BE LOST",
+            "Active profile: 2. It was 1 before",
+            "To undo:       openwraith restore safety.owbackup.json",
+        ] {
+            assert!(text.contains(expected), "{expected}\n---\n{text}");
+        }
+        assert!(!text.contains("Something WAS written"), "{text}");
+        assert!(report.anything_written());
+        assert_eq!((report.written(), report.maybe_lost()), (0, 1));
     }
 
     #[test]

@@ -86,8 +86,25 @@ spec allows, but unverified.
   not). If the keymaps, macros or advanced keys cannot be restored as a whole
   (for example because a non-empty advanced key would need an unconfirmed
   write format), that whole group is skipped and the plan says why.
+- **The keyboard saves a change about 1 second after it is written.** Until
+  then it keeps it only in memory: a profile switch (or unplugging the cable)
+  in that second loses it, and reading it back cannot tell (found on real
+  hardware, docs/PROTOCOL.md 4.5.3). OpenWraith therefore never switches
+  profiles within 2 seconds of a write, and every command that writes waits
+  those 2 seconds before it finishes ("Waiting for the keyboard to save
+  ..."). A restore then proves it: it switches away from every profile it
+  wrote and back, reads the written tables again and reports them as
+  "persisted"; a write the keyboard did not keep is reported as LOST and the
+  restore fails (run it again, or undo it). `set trigger` / `set light` only
+  wait, so that the lighting does not change for a small edit.
 - **Do not switch profiles on the keyboard while OpenWraith runs.** It checks
-  the active profile before every table and stops if it changed.
+  the active profile before every table and stops if it changed. Also do not
+  switch profiles or unplug the keyboard while a command is still waiting for
+  the keyboard to save: the wait ends by checking the active profile again,
+  and a profile change (or a lost connection) before the save is reported as
+  "MAY BE LOST" with exit code 1, never as done. Check the values, then run
+  the command again or undo it. Ctrl+C during that wait stops a restore
+  before it selects the next profile.
 - **Shared tables are checked at the end.** For custom colour table 1, the
   dead band, the Fn keymap and the advanced keys it is not known yet whether
   each profile has its own copy. When a restore writes one of them and covers
@@ -398,8 +415,27 @@ gelecek.
   gelişmiş tuşlar bir bütün olarak geri yüklenemiyorsa (örneğin boş olmayan
   bir gelişmiş tuş, doğrulanmamış bir yazma biçimi gerektirdiği için) bu grup
   tümüyle atlanır ve plan nedenini söyler.
+- **Klavye bir değişikliği yazıldıktan yaklaşık 1 saniye sonra kaydeder.**
+  O ana kadar değişiklik yalnızca bellektedir: bu bir saniye içinde profil
+  değiştirmek (ya da kabloyu çıkarmak) değişikliği kaybettirir ve geri okuma
+  bunu fark edemez (gerçek klavyede bulundu, docs/PROTOCOL.md 4.5.3). Bu
+  yüzden OpenWraith bir yazmadan sonraki 2 saniye içinde asla profil
+  değiştirmez ve yazan her komut bitmeden önce bu 2 saniyeyi bekler
+  ("Waiting for the keyboard to save ..."). Geri yükleme ayrıca bunu kanıtlar:
+  yazdığı her profilden başka bir profile geçip geri döner, yazılan tabloları
+  yeniden okur ve "persisted" (kalıcı) olarak bildirir; klavyenin tutmadığı
+  bir yazma LOST (kayboldu) olarak bildirilir ve geri yükleme başarısız olur
+  (yeniden çalıştırın ya da geri alın). `set trigger` / `set light` yalnızca
+  bekler; küçük bir değişiklik için ışıklar değişmesin diye profil
+  değiştirmez.
 - OpenWraith çalışırken klavyeden profil değiştirmeyin; her tablodan önce
-  aktif profili denetler ve değiştiyse durur.
+  aktif profili denetler ve değiştiyse durur. Bir komut klavyenin kaydetmesini
+  beklerken de profil değiştirmeyin ve kabloyu çıkarmayın: bekleme, aktif
+  profili yeniden denetleyerek biter; kayıttan önce bir profil değişikliği
+  (ya da kopan bağlantı) "MAY BE LOST" (kaybolmuş olabilir) olarak ve çıkış
+  kodu 1 ile bildirilir, asla tamamlandı denmez. Değerleri denetleyin, sonra
+  komutu yeniden çalıştırın ya da geri alın. Bu bekleme sırasında Ctrl+C,
+  geri yüklemeyi bir sonraki profil seçilmeden önce durdurur.
 - **Paylaşılan tablolar sonda denetlenir.** 1 numaralı özel renk tablosu,
   dead band, Fn tuş tablosu ve gelişmiş tuşlar için her profilin kendi kopyası
   olup olmadığı henüz bilinmiyor. Geri yükleme bunlardan birini yazar ve

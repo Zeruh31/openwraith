@@ -4,16 +4,21 @@
 mod common;
 
 use std::ops::ControlFlow;
+use std::time::Duration;
 
 use common::{
     C06, assert_only_reads, c06_backup, consent, mock, pos, profile, profiles_options, selects,
     sim_with_profiles,
 };
-use openwraith_hid::protocol::{LightMode, ReadRequest, TriggerMode};
+use openwraith_hid::protocol::{
+    Distance, FromResponse, KeyMask, LightMode, ReadRequest, TriggerGlobal, TriggerLimits,
+    TriggerMode, TriggerSetting, TriggerWrite, TriggerWriteMode, W75, WriteRequest,
+};
 use openwraith_hid::{
     BACKUP_SCHEMA_VERSION, BACKUP_SCHEMA_VERSION_PROFILES, BACKUP_SCOPE_PROFILES, Backup,
-    BackupError, DeviceSim, ErrorKind, ProfileSet, ProfilesFailure, ProfilesProgress, ScopeConfig,
-    Session, WriteError, read_all, read_all_profiles, read_profiles,
+    BackupError, CommitSettle, DeviceSim, ErrorKind, ProfileSet, ProfilesFailure, ProfilesOptions,
+    ProfilesProgress, ScopeConfig, Session, WriteError, WriteOptions, read_all, read_all_profiles,
+    read_profiles,
 };
 
 /// W (row 2, col 2).
@@ -377,5 +382,104 @@ fn an_active_profile_outside_1_to_4_is_refused_before_any_switch() {
     );
     assert_eq!(err.kind(), ErrorKind::UnexpectedReply);
     assert_eq!(sim.writes_sent(), 0);
+    sim.assert_clean();
+}
+
+#[test]
+fn an_all_profile_backup_without_writes_adds_no_delay() {
+    // The same backup with the default commit settle and without any: the
+    // same virtual time (only the 2 s gate), no wait reported.
+    let mut with_settle = sim_with_profiles(ScopeConfig::default());
+    let mut without = with_settle.clone();
+    let mut events = Vec::new();
+    {
+        let mut session = Session::new(&mut with_settle);
+        read_all_profiles(&mut session, consent(), &profiles_options(), |p| {
+            events.push(p);
+            ControlFlow::Continue(())
+        })
+        .expect("all-profile backup");
+    }
+    {
+        let options = ProfilesOptions {
+            write: WriteOptions {
+                commit_settle: CommitSettle::disabled_for_tests(),
+                ..WriteOptions::default()
+            },
+            ..profiles_options()
+        };
+        let mut session = Session::new(&mut without);
+        read_all_profiles(&mut session, consent(), &options, |_| {
+            ControlFlow::Continue(())
+        })
+        .expect("all-profile backup");
+    }
+    assert_eq!(with_settle.elapsed(), without.elapsed());
+    assert_eq!(with_settle.elapsed(), Duration::from_secs(2));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, ProfilesProgress::WaitingForCommit { .. })),
+        "{events:?}"
+    );
+    assert_eq!(selects(&with_settle), [2, 3, 4, 1]);
+    with_settle.assert_clean();
+}
+
+#[test]
+fn an_all_profile_backup_after_a_write_in_the_same_session_waits_first() {
+    // A long-lived session (a GUI) writes Q, then makes an all-profile
+    // backup: the first switch waits until the keyboard saved the write.
+    let q = pos(2, 1);
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let dir = common::temp_dir();
+    let saved = {
+        let mut copy = sim.clone();
+        let mut session = Session::new(&mut copy);
+        read_all(&mut session)
+            .expect("backup")
+            .save_safety(dir.path(), "test")
+            .expect("saved")
+    };
+    let mut events = Vec::new();
+    {
+        let mut session = Session::new(&mut sim);
+        {
+            let mut writer = session.writer(consent()).expect("writer");
+            let raw = writer.read(ReadRequest::TriggerGlobal).expect("21/04");
+            let limits =
+                TriggerLimits::new(&W75, &TriggerGlobal::from_response(&raw).expect("decodes"));
+            let setting = TriggerSetting {
+                mode: TriggerWriteMode::Off,
+                actuation: Distance(100),
+                rt_press: Distance(1),
+                rt_release: Distance(1),
+            };
+            let write = TriggerWrite::new(&W75, KeyMask::from_positions([q]), setting, &limits)
+                .expect("valid");
+            writer
+                .write_guarded(&saved, &WriteRequest::Trigger(write))
+                .expect("written");
+        }
+        read_all_profiles(&mut session, consent(), &profiles_options(), |p| {
+            events.push(p);
+            ControlFlow::Continue(())
+        })
+        .expect("all-profile backup");
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, ProfilesProgress::WaitingForCommit { .. }))
+            .collect::<Vec<_>>(),
+        [&ProfilesProgress::WaitingForCommit { wait_ms: 2000 }]
+    );
+    // The write survived the switches.
+    assert_eq!(sim.discarded_edits(), 0);
+    assert_eq!(
+        sim.persisted_trigger(profile(1), q).map(|r| r[1]),
+        Some(100)
+    );
+    assert_eq!(sim.active_profile(), 1);
     sim.assert_clean();
 }

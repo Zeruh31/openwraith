@@ -57,6 +57,24 @@
 //!   foreign acknowledgement or status report seen while writing lets the
 //!   current table finish and then refuses further writes (the caller
 //!   switches back to the original profile).
+//! * **Commit settle.** The keyboard keeps edits in a working copy of the
+//!   active profile and saves them about 1 s after the last write; a profile
+//!   switch (or a power loss) before that loses them, and a read-back cannot
+//!   tell, because it reads the working copy (CONFIRMED on hardware, spec
+//!   4.5.3 "Delayed commit"). The session records when the last write that
+//!   changes a setting was sent ([`Session::last_write_at`]), and
+//!   [`Writer::select_profile`] does not send a select before
+//!   [`WriteOptions::commit_settle`] (2 s) has passed since then: it listens
+//!   for the rest (still classifying every report) and reports the wait
+//!   ([`CommitWait`], [`WriteWarning::WaitedForCommit`]). Every profile
+//!   switch of this crate goes through it. Operations that write wait for
+//!   the settle before they return ([`Writer::wait_for_commit`]), so a
+//!   finished operation means the keyboard had time to save. At the end of
+//!   a wait the active profile is read again (a switch made on the keyboard
+//!   need not be reported), and a profile change seen before the settle had
+//!   passed fails with [`WriteError::ProfileChangedBeforeSave`]: the write
+//!   may not have been saved ([`Writer::commit_interrupted`]). The settle
+//!   cannot be turned off outside tests ([`CommitSettle`]).
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -138,6 +156,10 @@ pub struct WriteOptions {
     /// How long a late acknowledgement of one of our packets is still
     /// accepted as ours (2 s).
     pub late_ack_window: Duration,
+    /// How long the keyboard is left alone after the last write that
+    /// changed a setting before a profile select is sent or an operation
+    /// returns (default 2 s; see [`CommitSettle`]).
+    pub commit_settle: CommitSettle,
 }
 
 impl Default for WriteOptions {
@@ -151,8 +173,93 @@ impl Default for WriteOptions {
             retry_quiet: Duration::from_millis(200),
             gate_observation: Duration::from_secs(2),
             late_ack_window: Duration::from_secs(2),
+            commit_settle: CommitSettle::default(),
         }
     }
+}
+
+/// How long a [`Writer`] leaves the keyboard alone after the last write that
+/// changed a setting, before it selects another profile or reports an
+/// operation as done.
+///
+/// The keyboard keeps edits in a working copy of the active profile and
+/// saves them about 1 s after the last write. A profile switch before that
+/// reloads the profile, and the edits are lost; a read-back cannot tell,
+/// because it reads the working copy. Measured on hardware (spec 4.5.3,
+/// "Delayed commit"): a trigger write was lost when the next select followed
+/// it within 0, 150, 400 or 800 ms, and kept from 1000 ms on. A power loss in
+/// that window very likely loses it too (untested).
+///
+/// The default is 2 s, twice the measured threshold. A caller may choose a
+/// longer settle, or a shorter one down to [`CommitSettle::MINIMUM`]; there
+/// is no way to turn it off, except for tests against the simulator
+/// (`CommitSettle::disabled_for_tests`, feature `mock`).
+///
+/// ```
+/// use std::time::Duration;
+/// use openwraith_hid::CommitSettle;
+///
+/// assert_eq!(CommitSettle::default().duration(), Duration::from_secs(2));
+/// // Never shorter than the minimum.
+/// assert_eq!(CommitSettle::at_least(Duration::ZERO).duration(), CommitSettle::MINIMUM);
+/// assert_eq!(CommitSettle::at_least(Duration::from_secs(5)).duration(), Duration::from_secs(5));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommitSettle(Duration);
+
+impl CommitSettle {
+    /// The default settle: 2 s, twice the commit delay measured on the
+    /// keyboard (writes were lost up to 800 ms and kept from 1000 ms on).
+    pub const DEFAULT: CommitSettle = CommitSettle(Duration::from_secs(2));
+
+    /// The shortest settle [`at_least`](Self::at_least) gives: 1.5 s, the
+    /// measured commit delay (about 1 s) with a margin.
+    pub const MINIMUM: Duration = Duration::from_millis(1500);
+
+    /// A settle of `duration`, but never shorter than
+    /// [`MINIMUM`](Self::MINIMUM).
+    pub fn at_least(duration: Duration) -> Self {
+        CommitSettle(duration.max(Self::MINIMUM))
+    }
+
+    /// No settle at all: profile selects follow writes at once, exactly the
+    /// behaviour that lost writes on the keyboard. Only for tests that
+    /// reproduce that loss on the simulator; it exists only with the `mock`
+    /// feature, so no build that talks to a keyboard can use it.
+    #[cfg(any(test, feature = "mock"))]
+    pub fn disabled_for_tests() -> Self {
+        CommitSettle(Duration::ZERO)
+    }
+
+    /// The settle duration.
+    pub fn duration(self) -> Duration {
+        self.0
+    }
+}
+
+impl Default for CommitSettle {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A wait for the keyboard to save the last write (see [`CommitSettle`]),
+/// reported before it starts so that a user interface can show "waiting for
+/// the keyboard to save".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CommitWait {
+    /// The profile the last write went to (its edits are being saved), as
+    /// the writer had confirmed it.
+    pub profile: Option<u8>,
+    /// How long the wait lasts, in milliseconds.
+    pub wait_ms: u64,
+    /// The writer's commit settle, in milliseconds.
+    pub settle_ms: u64,
+}
+
+/// Whole milliseconds of `duration` (saturating).
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Something noteworthy that happened during a write that still succeeded.
@@ -199,6 +306,12 @@ pub enum WriteWarning {
     /// A late acknowledgement of an earlier write was still expected; the
     /// write waited for it (or for its window to end) before starting.
     WaitedForLateAck,
+    /// A profile select waited for the keyboard to save the last write
+    /// first ([`CommitSettle`]).
+    WaitedForCommit {
+        /// How long it waited, in milliseconds.
+        waited_ms: u64,
+    },
 }
 
 /// What a table write did.
@@ -400,7 +513,23 @@ impl<T: WriteTransport> Writer<'_, T> {
     }
 
     /// Reads the active profile (`21/11`).
+    ///
+    /// Fails with [`WriteError::ProfileChangedBeforeSave`] when another
+    /// profile than the one the last write went to is active while the
+    /// commit settle has not passed yet (the keyboard probably discarded
+    /// that write); [`known_profile`](Self::known_profile) is the reported
+    /// profile even then.
     pub fn active_profile(&mut self) -> Result<ProfileId, WriteError> {
+        let profile = self.read_active_profile()?;
+        let last = self.session.last_write_profile();
+        if !self.commit_pending().is_zero() && last.is_some_and(|p| p != profile.get()) {
+            return Err(self.profile_changed(last, profile.get()));
+        }
+        Ok(profile)
+    }
+
+    /// Reads the active profile (`21/11`) and records it as known.
+    fn read_active_profile(&mut self) -> Result<ProfileId, WriteError> {
         let raw = self.read(ReadRequest::ActiveProfile)?;
         let decoded = ActiveProfile::from_response(&raw).map_err(|source| {
             WriteError::Session(SessionError::Decode {
@@ -418,7 +547,8 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// Sends a read request (through the session) and returns its reply.
     /// Fails without sending when the writer is poisoned, and with
     /// [`WriteError::ProfileChanged`] when an unexpected profile report
-    /// arrived meanwhile.
+    /// arrived meanwhile ([`WriteError::ProfileChangedBeforeSave`] when the
+    /// keyboard had not saved the last write yet).
     pub fn read(&mut self, request: ReadRequest) -> Result<RawResponse, WriteError> {
         self.ensure_usable()?;
         let events = self.session.events().len();
@@ -434,11 +564,28 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// Selects onboard profile `profile` (`21/12`).
     ///
     /// Reads the active profile first and sends nothing if it is already
-    /// active. Otherwise sends the select, waits for its acknowledgement and
-    /// profile push, and confirms the switch with `21/11` (a missing push is
-    /// only a warning when `21/11` confirms). Retries once, then fails with
+    /// active. Otherwise waits until the keyboard had
+    /// [`WriteOptions::commit_settle`] since the last write of this session
+    /// that changed a setting (see [`wait_for_commit`](Self::wait_for_commit):
+    /// a switch before that would lose the write, and a profile change seen
+    /// meanwhile fails with [`WriteError::ProfileChangedBeforeSave`]), then
+    /// sends the select,
+    /// waits for its acknowledgement and profile push, and confirms the
+    /// switch with `21/11` (a missing push is only a warning when `21/11`
+    /// confirms). Retries once, then fails with
     /// [`WriteError::ProfileNotSelected`].
     pub fn select_profile(&mut self, profile: ProfileId) -> Result<SelectOutcome, WriteError> {
+        self.select_profile_observed(profile, &mut |_| {})
+    }
+
+    /// [`select_profile`](Self::select_profile), calling `on_wait` before it
+    /// waits for the keyboard to save the last write (not called when there
+    /// is nothing to wait for).
+    pub fn select_profile_observed(
+        &mut self,
+        profile: ProfileId,
+        on_wait: &mut dyn FnMut(CommitWait),
+    ) -> Result<SelectOutcome, WriteError> {
         self.ensure_usable()?;
         self.listen_checked(Duration::ZERO)?;
         let mut active = self.active_profile()?;
@@ -450,6 +597,12 @@ impl<T: WriteTransport> Writer<'_, T> {
                 warnings,
             });
         }
+        // A select before the keyboard saved the last write loses it.
+        if let Some(wait) = self.wait_for_commit_observed(on_wait)? {
+            warnings.push(WriteWarning::WaitedForCommit {
+                waited_ms: wait.wait_ms,
+            });
+        }
         let request = WriteRequest::SelectProfile(profile);
         for attempt in 1..=2u32 {
             if attempt > 1 {
@@ -459,7 +612,7 @@ impl<T: WriteTransport> Writer<'_, T> {
             }
             for step in request.steps() {
                 self.ensure_usable()?;
-                self.session.send_write(&step.packet)?;
+                self.session.send_select(&step.packet)?;
                 // Read the push before any 21/11 query: the query's collector
                 // would take a late push as its reply.
                 let tracker = self.wait_for(step.ack, self.options.profile_push_timeout)?;
@@ -493,6 +646,130 @@ impl<T: WriteTransport> Writer<'_, T> {
         })
     }
 
+    /// How much longer the keyboard needs before it has had the commit
+    /// settle ([`WriteOptions::commit_settle`]) since the last write of this
+    /// session that changed a setting ([`Session::last_write_at`]); zero
+    /// when nothing is pending, also when the keyboard switched profiles
+    /// before the save (see [`commit_interrupted`](Self::commit_interrupted):
+    /// it reloaded the profile, there is nothing left to save).
+    pub fn commit_pending(&self) -> Duration {
+        match self.session.last_write() {
+            Some(last) if !last.discarded => (last.at + self.options.commit_settle.duration())
+                .saturating_duration_since(self.session.now()),
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// Whether the keyboard may not have saved the last write of this
+    /// session that changed a setting: before the commit settle had passed
+    /// since it, another profile became active (seen in a report, in a
+    /// `21/11` read, or at the end of a wait; see
+    /// [`WriteError::ProfileChangedBeforeSave`]) or the connection was lost
+    /// (an unplugged keyboard very likely loses unsaved edits; spec 4.5.3,
+    /// "Delayed commit"). Such a write was verified, but only in the
+    /// keyboard's working copy. The writes concerned are those made to
+    /// [`Session::last_write_profile`] since that profile was last selected.
+    /// A reset notification is not counted here: it reports a reset of the
+    /// keyboard's settings.
+    pub fn commit_interrupted(&self) -> bool {
+        let Some(last) = self.session.last_write() else {
+            return false;
+        };
+        if last.discarded {
+            return true;
+        }
+        let saved_by = last.at + self.options.commit_settle.duration();
+        self.session.connection_lost() && self.session.fatal_at().is_some_and(|at| at < saved_by)
+    }
+
+    /// Waits until the keyboard had the commit settle since the last write
+    /// that changed a setting, so that it saved the write (see
+    /// [`CommitSettle`]). Listens meanwhile: reports are classified as
+    /// always, and a reset notification or an unexpected profile report
+    /// ends the wait with an error (a reset poisons the writer). After a
+    /// wait it reads the active profile again: a profile switch made on the
+    /// keyboard is not necessarily reported (spec 4.5.3, Q2), and one made
+    /// during the wait may have discarded the write. A profile change seen
+    /// during the wait or at its end fails with
+    /// [`WriteError::ProfileChangedBeforeSave`]
+    /// ([`commit_interrupted`](Self::commit_interrupted) is then true, and
+    /// nothing waits for that write any more). Returns the wait, or `None`
+    /// when nothing was pending.
+    ///
+    /// [`select_profile`](Self::select_profile) calls it before every
+    /// switch; restores and edits call it before they return. A caller of
+    /// [`write_guarded`](Self::write_guarded) should call it before it tells
+    /// the user that a change is done.
+    pub fn wait_for_commit(&mut self) -> Result<Option<CommitWait>, WriteError> {
+        self.wait_for_commit_observed(&mut |_| {})
+    }
+
+    /// [`wait_for_commit`](Self::wait_for_commit), calling `on_wait` before
+    /// the wait starts (not called when nothing is pending).
+    pub fn wait_for_commit_observed(
+        &mut self,
+        on_wait: &mut dyn FnMut(CommitWait),
+    ) -> Result<Option<CommitWait>, WriteError> {
+        self.ensure_usable()?;
+        let remaining = self.commit_pending();
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let wait = CommitWait {
+            profile: self.session.last_write_profile(),
+            wait_ms: millis(remaining),
+            settle_ms: millis(self.options.commit_settle.duration()),
+        };
+        on_wait(wait);
+        // A listen can end early (a transport that does not block); keep
+        // listening until the transport's clock says the settle is over.
+        let mut other_program = None;
+        loop {
+            let left = self.commit_pending();
+            if left.is_zero() {
+                break;
+            }
+            // The listen ends at a profile report, which arrived before the
+            // settle was over: a profile change came before the save.
+            match self.listen_checked_until(left, true) {
+                Ok(()) => {}
+                Err(WriteError::ProfileChanged { reported, .. })
+                    if wait.profile != Some(reported) =>
+                {
+                    self.session.discard_pending_write();
+                    return Err(WriteError::ProfileChangedBeforeSave {
+                        profile: wait.profile,
+                        reported,
+                    });
+                }
+                // Another program's query reply for the same profile: the
+                // keyboard still has to save, so the wait goes on, and the
+                // error is returned when it is over.
+                Err(error @ WriteError::OtherProgramActive { .. }) => {
+                    other_program.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A switch on the keyboard may come without a report: the profile
+        // the write went to must still be active. When it is not, the switch
+        // happened at some time during the wait, possibly before the save.
+        if let Some(profile) = wait.profile {
+            let active = self.read_active_profile()?;
+            if active.get() != profile {
+                self.session.discard_pending_write();
+                return Err(WriteError::ProfileChangedBeforeSave {
+                    profile: Some(profile),
+                    reported: active.get(),
+                });
+            }
+        }
+        match other_program {
+            Some(error) => Err(error),
+            None => Ok(Some(wait)),
+        }
+    }
+
     /// Writes one table to the active profile, guarded like every write of
     /// this crate. This is the only public way to send a table write.
     ///
@@ -514,6 +791,16 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// A profile select needs no backup: use
     /// [`select_profile`](Self::select_profile) (a
     /// [`WriteRequest::SelectProfile`] passed here is handled the same way).
+    ///
+    /// It returns as soon as the write is verified, which reads the
+    /// keyboard's working copy: the keyboard saves the write about 1 s later.
+    /// Several writes can follow each other; call
+    /// [`wait_for_commit`](Self::wait_for_commit) before reporting the
+    /// change as done ([`select_profile`](Self::select_profile) waits on its
+    /// own). When that fails with [`WriteError::ProfileChangedBeforeSave`],
+    /// or the connection was lost, see
+    /// [`commit_interrupted`](Self::commit_interrupted): the change may not
+    /// have been saved.
     pub fn write_guarded(
         &mut self,
         saved: &SavedBackup,
@@ -730,27 +1017,64 @@ impl<T: WriteTransport> Writer<'_, T> {
         }
     }
 
-    /// The error for a profile report we did not cause.
-    fn unexpected_profile_report(&self, reported: u8) -> WriteError {
+    /// The error for a profile report we did not cause. A report of another
+    /// profile than the known one is a profile change: the reported profile
+    /// becomes the known one.
+    fn unexpected_profile_report(&mut self, reported: u8) -> WriteError {
         let expected = self.known_profile.map(ProfileId::get);
         if expected == Some(reported) {
             // The same profile: another program's query reply.
-            WriteError::OtherProgramActive {
+            return WriteError::OtherProgramActive {
                 evidence: ForeignActivity {
                     profile_reports: 1,
                     ..ForeignActivity::default()
                 },
-            }
-        } else {
-            WriteError::ProfileChanged { expected, reported }
+            };
         }
+        if let Some(profile) = ProfileId::new(reported) {
+            self.known_profile = Some(profile);
+        }
+        self.profile_changed(expected, reported)
+    }
+
+    /// The error for a change of the active profile to `reported` that we
+    /// did not cause (`expected`: the profile we expected). While the commit
+    /// settle since the last write has not passed and that write went to
+    /// another profile, the keyboard probably discarded it: the error says
+    /// so ([`WriteError::ProfileChangedBeforeSave`]), and the pending write
+    /// is recorded as discarded
+    /// ([`commit_interrupted`](Self::commit_interrupted)), so nothing waits
+    /// for it any more.
+    pub(crate) fn profile_changed(&mut self, expected: Option<u8>, reported: u8) -> WriteError {
+        let last = self.session.last_write_profile();
+        if !self.commit_pending().is_zero() && last != Some(reported) {
+            self.session.discard_pending_write();
+            return WriteError::ProfileChangedBeforeSave {
+                profile: last,
+                reported,
+            };
+        }
+        WriteError::ProfileChanged { expected, reported }
     }
 
     /// Listens for `duration` (draining queued reports even when it is zero)
     /// and classifies what arrives.
     fn listen_checked(&mut self, duration: Duration) -> Result<(), WriteError> {
+        self.listen_checked_until(duration, false)
+    }
+
+    /// [`listen_checked`](Self::listen_checked); with
+    /// `stop_at_profile_report` it ends (with the error) at the first
+    /// profile report we did not cause.
+    fn listen_checked_until(
+        &mut self,
+        duration: Duration,
+        stop_at_profile_report: bool,
+    ) -> Result<(), WriteError> {
         let events = self.session.events().len();
-        let summary = self.session.listen(duration)?;
+        let summary = self
+            .session
+            .listen_until(duration, stop_at_profile_report)?;
         self.note_foreign(summary.activity);
         self.check_new_events(events)
     }
@@ -859,7 +1183,8 @@ impl<T: WriteTransport> Writer<'_, T> {
                     self.options.optional_ack_timeout + self.options.status_push_window,
                 );
             }
-            self.session.send_write(&step.packet)?;
+            self.session
+                .send_write(&step.packet, self.known_profile.map(ProfileId::get))?;
             outcome.packets += 1;
             if step.ack.expects_reply() {
                 let required = step.ack.is_required();
