@@ -355,3 +355,21 @@ keymap group that writes macro or advanced-key slots with an `18 02`):
 For each test record: pass or fail, the full output, and for a failure the
 safety backup path and the undo command that was printed. Attach the
 `--verbose` statistics of any command that warned about another program.
+
+## Results log
+
+Wraith W75, PID `0xC368`, firmware V3.22.07, Windows 11, USB cable.
+
+| Date | Test | Result | Notes |
+|---|---|---|---|
+| 2026-10-24 | H0-H1 (list, info, backup, dry runs) | pass | 0 writes, no foreign traffic |
+| 2026-10-24 | H2 (all-profile backup) | pass | 4 profile selects, back on profile 1 |
+| 2026-10-24 | H3 (nothing to restore) | pass | |
+| 2026-10-24 | H4-H5 (trigger edit and its restore) | pass | W 1.70 -> 1.20 -> 1.70 mm |
+| 2026-10-24 | RT modes 0C / 0D / 00 on W | pass | each 1 packet, verified |
+| 2026-10-24 | H6 (light: brightness 2, static blue, restore) | pass | confirmed visually; `17` + `07` on the mode change |
+| 2026-10-24 | H7 (restore of another profile) | **fail** -> fixed | write lost on the immediate switch back; fixed by the commit settle (`b7c861c`), PROTOCOL 4.5.3 |
+| 2026-10-24 | H7b (same scenario again) | pass | `persisted`; independent all-profile check: nothing to write |
+| 2026-10-24 | H9 (base keymap restore) | **fail** -> fixed | base keymap alone not saved; fixed by the `18 02` commit trigger (`5542432`), PROTOCOL 4.8.2 |
+| 2026-10-27 | H9 (again) | pass | 20 packets (base + Fn re-sent), `persisted`; knob and Fn shortcuts work with all knob slots back at `00` |
+| 2026-10-27 | H8 (USB power cycle) | pass | all four profiles byte-identical before and after |
