@@ -14,11 +14,11 @@ use openwraith_hid::protocol::{
 };
 use openwraith_hid::sim::FACTORY_TRIGGER;
 use openwraith_hid::{
-    Backup, BackupEntry, BlockCause, CommitSettle, DeviceSim, ErrorKind, ItemResult, Outcome,
-    Persistence, PersistenceCheck, PlanAction, PreparedRestore, ProfileSet, RestoreError,
-    RestoreOptions, RestoreReport, SavedBackup, Scope, ScopeConfig, Session, SimTable, SkipReason,
-    WriteOptions, WriteProgress, dry_run_restore, execute_restore, plan_restore, prepare_restore,
-    read_all, read_all_profiles,
+    Backup, BackupEntry, BlockCause, CommitSettle, CommitTriggerReason, DeviceSim, ErrorKind,
+    ItemResult, KeymapCommit, Outcome, Persistence, PersistenceCheck, PlanAction, PreparedRestore,
+    ProfileSet, RestoreError, RestoreOptions, RestoreReport, SavedBackup, Scope, ScopeConfig,
+    Session, SimTable, SkipReason, WriteOptions, WriteProgress, WriteWarning, dry_run_restore,
+    execute_restore, plan_restore, prepare_restore, read_all, read_all_profiles,
 };
 
 /// c13 macro slot 0: "A down 100 ms, A up 100 ms, B down 100 ms, B up".
@@ -654,17 +654,36 @@ fn offline_planning_against_another_backup() {
         .filter(|(p, _, _)| *p == profile(1))
         .map(|(_, item, _)| item.table)
         .collect();
+    // The keymap group in the vendor site's order: macro slots, the base
+    // keymap, then the (unchanged) Fn keymap so that the keyboard saves the
+    // base keymap (spec 4.8.2).
     assert_eq!(
         tables,
         [
             TableId::DeadBand,
-            TableId::Keymap { layer: Layer::Base },
             TableId::Macro { slot: slot(0) },
+            TableId::Keymap { layer: Layer::Base },
+            TableId::Keymap { layer: Layer::Fn },
             TableId::CustomColors {
                 table: CustomTable::Custom1
             },
         ]
     );
+    let fn_write = plan
+        .writes()
+        .find(|(_, item, _)| item.table == TableId::Keymap { layer: Layer::Fn })
+        .map(|(_, _, w)| w)
+        .expect("Fn keymap write");
+    assert!(fn_write.is_resent_unchanged());
+    assert_eq!(
+        fn_write.commit_trigger,
+        Some(CommitTriggerReason::BaseKeymap)
+    );
+    assert_eq!(
+        fn_write.summary,
+        "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap"
+    );
+    assert_eq!(fn_write.packets, 10);
     // The keymap entries that change: W (46) and Caps (66).
     let keymap = plan
         .writes()
@@ -674,7 +693,7 @@ fn offline_planning_against_another_backup() {
     let indices: Vec<usize> = keymap.changes.iter().map(|c| c.index).collect();
     assert_eq!(indices, [46, 66]);
     assert_eq!(keymap.packets, 10);
-    // The macro is cleared (written as zeros) after the keymap unbinds it.
+    // The macro is cleared (written as zeros), before the keymaps.
     let macro_write = plan
         .writes()
         .find(|(_, item, _)| item.table == TableId::Macro { slot: slot(0) })
@@ -800,16 +819,686 @@ fn knob_defaults_are_never_introduced() {
         sim.table(profile(1), SimTable::Keymap(Layer::Base)),
         Some(&[0u8; 528][..])
     );
-    // The ten keymap packets carry exactly the backup's (zero) bytes.
+    // The ten base-keymap packets carry exactly the backup's (zero) bytes;
+    // the ten Fn-keymap packets after them re-send its (zero) Fn keymap.
     let keymap_packets: Vec<_> = write_bytes(&sim)
         .into_iter()
         .filter(|b| b[0] == 0x18)
         .collect();
-    assert_eq!(keymap_packets.len(), 10);
+    assert_eq!(heads(&keymap_packets), base_then_fn());
     assert!(
         keymap_packets
             .iter()
-            .all(|b| b[1] == 0x00 && b[5..].iter().all(|x| *x == 0))
+            .all(|b| b[5..].iter().all(|x| *x == 0))
+    );
+    sim.assert_clean();
+}
+
+/// The write packets sent since `from` (an index into the write packets),
+/// without profile selects.
+fn table_packets(sim: &DeviceSim, from: usize) -> Vec<[u8; 63]> {
+    write_bytes(sim)[from..]
+        .iter()
+        .filter(|b| b[..6] != [0x21, 0, 0, 0, 0, 0x12])
+        .copied()
+        .collect()
+}
+
+/// `(command, sub, chunk)` of each packet.
+fn heads(packets: &[[u8; 63]]) -> Vec<(u8, u8, u8)> {
+    packets.iter().map(|b| (b[0], b[1], b[3])).collect()
+}
+
+/// `18 00` chunks 0-9, then `18 02` chunks 0-9.
+fn base_then_fn() -> Vec<(u8, u8, u8)> {
+    (0..10)
+        .map(|c| (0x18, 0x00, c))
+        .chain((0..10).map(|c| (0x18, 0x02, c)))
+        .collect()
+}
+
+/// Hardware test H9 of 2026-10-24 (PROTOCOL.md 4.8.2): restoring the pre-c09
+/// backup wrote only the base keymap (`18 00`, ten packets); it was verified
+/// and given the commit settle, but the persistence check found it gone. The
+/// keyboard saves the base keymap only when the Fn keymap (`18 02`) is
+/// written after it, so the restore re-sends the (unchanged) Fn keymap right
+/// after the base keymap.
+#[test]
+fn a_base_keymap_restore_re_sends_the_fn_keymap_so_that_the_keyboard_saves_it() {
+    let target = c06_backup();
+    // Both models of the (untested) macro / advanced-key commit.
+    for macros_wait in [false, true] {
+        let mut sim = DeviceSim::from_backup(&target);
+        assert!(sim.keymap_commit().base_needs_fn_write);
+        sim.set_keymap_commit(KeymapCommit {
+            macros_and_advanced_need_fn_write: macros_wait,
+            ..KeymapCommit::default()
+        });
+        // The keyboard holds the vendor site's knob defaults (c10); the
+        // backup has zeros. Nothing else differs.
+        sim.set_table(profile(1), SimTable::Keymap(Layer::Base), c10_base_keymap());
+        let fn_before = sim
+            .table(profile(1), SimTable::Keymap(Layer::Fn))
+            .map(<[u8]>::to_vec)
+            .expect("Fn keymap");
+        let first = sim.writes_sent();
+        let report = restore(&mut sim, &target, &options());
+        assert!(report.is_success(), "{macros_wait}: {:#?}", report.error);
+
+        // 18 00 x10, then 18 02 x10 with the backup's Fn table, nothing
+        // else.
+        let packets = table_packets(&sim, first);
+        assert_eq!(heads(&packets), base_then_fn(), "{macros_wait}");
+        let fn_table = content(
+            target
+                .response(ReadRequest::Keymap(Layer::Fn))
+                .expect("Fn keymap in the backup"),
+        );
+        for (chunk, packet) in packets[10..].iter().enumerate() {
+            let start = chunk * 56;
+            let len = usize::from(packet[4]);
+            assert_eq!(&packet[5..5 + len], &fn_table[start..start + len]);
+        }
+        // Both written; the base keymap, read again after a profile switch,
+        // was saved. The unchanged Fn keymap reads the same either way, so
+        // the persistence check does not count it. It says why it was
+        // written.
+        assert_eq!(
+            written_tables(&report, 1),
+            [
+                TableId::Keymap { layer: Layer::Base },
+                TableId::Keymap { layer: Layer::Fn }
+            ]
+        );
+        let results: Vec<&ItemResult> = report.items().map(|(_, i)| &i.result).collect();
+        assert!(matches!(
+            results[..],
+            [
+                ItemResult::Written {
+                    persistence: Persistence::Persisted,
+                    packets: 10,
+                    ..
+                },
+                ItemResult::Written {
+                    persistence: Persistence::NotChecked,
+                    packets: 10,
+                    sends: 1,
+                    ..
+                }
+            ]
+        ));
+        let (_, fn_item) = report.items().nth(1).expect("Fn keymap item");
+        assert_eq!(
+            fn_item.summary,
+            "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap"
+        );
+        assert_eq!(
+            fn_item.commit_trigger,
+            Some(CommitTriggerReason::BaseKeymap)
+        );
+        assert!(fn_item.resent_unchanged);
+        assert_eq!((report.written(), report.resent_unchanged()), (2, 1));
+        assert_eq!(
+            report.persistence,
+            Some(PersistenceCheck {
+                profiles: vec![1],
+                persisted: 1,
+                lost: 0,
+                not_checked: 0
+            })
+        );
+        let json = serde_json::to_value(&report).expect("serializes");
+        let item = &json["profiles"][0]["items"][1];
+        assert_eq!(item["commit_trigger"], "base_keymap");
+        assert_eq!(item["resent_unchanged"], true);
+        assert!(
+            json["profiles"][0]["items"][0]
+                .get("commit_trigger")
+                .is_none()
+        );
+        assert_eq!(
+            sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+            Some(&[0u8; 528][..])
+        );
+        assert_eq!(
+            sim.persisted_table(profile(1), SimTable::Keymap(Layer::Fn)),
+            Some(fn_before.as_slice())
+        );
+        assert_eq!(sim.discarded_edits(), 0);
+        sim.assert_clean();
+    }
+}
+
+/// A backup of c06 whose profile 1 has the c13 macro in slot 0, bound to
+/// Caps, and W -> A (the state of capture session 2's c13).
+fn macro_backup() -> Backup {
+    let mut source = DeviceSim::from_backup(&c06_backup());
+    let p1 = profile(1);
+    source.set_table(p1, SimTable::Macro(slot(0)), c13_macro());
+    patch(
+        &mut source,
+        p1,
+        SimTable::Keymap(Layer::Base),
+        46 * 4,
+        &[0x00, 0x04, 0x00, 0x00],
+    );
+    patch(
+        &mut source,
+        p1,
+        SimTable::Keymap(Layer::Base),
+        66 * 4,
+        &[0x10, 0x39, 0x00, 0x00],
+    );
+    let mut session = Session::new(&mut source);
+    read_all(&mut session).expect("backup")
+}
+
+/// The keymap group is written in the vendor site's order: macro slots,
+/// base keymap, Fn keymap, advanced-key clears (spec 4.8.2). With the
+/// default commit model everything persists. If macro and advanced-key
+/// slots also needed a following `18 02` (untested; the simulator's
+/// switch), the advanced-key clear after the Fn keymap would be lost: the
+/// persistence check reports it, and running the restore again writes the
+/// clear followed by the unchanged Fn keymap, which persists.
+#[test]
+fn the_keymap_group_is_written_in_the_vendor_sites_order() {
+    let target = macro_backup();
+    for macros_wait in [false, true] {
+        // The keyboard: c06 (no macro, zero keymaps) with advanced-key slot
+        // 5 in use.
+        let mut sim = DeviceSim::from_backup(&c06_backup());
+        sim.set_keymap_commit(KeymapCommit {
+            macros_and_advanced_need_fn_write: macros_wait,
+            ..KeymapCommit::default()
+        });
+        patch(
+            &mut sim,
+            profile(1),
+            SimTable::AdvancedKeys,
+            5 * 40,
+            &[0x01, 0x02, 0x03],
+        );
+        let first = sim.writes_sent();
+        let report = restore(&mut sim, &target, &options());
+        let mut expected: Vec<(u8, u8, u8)> = (0..5).map(|c| (0x19, 0x00, c)).collect();
+        expected.extend(base_then_fn());
+        expected.push((0x22, 0x05, 0));
+        assert_eq!(
+            heads(&table_packets(&sim, first)),
+            expected,
+            "{macros_wait}"
+        );
+        let advanced5 = TableId::AdvancedKey {
+            slot: openwraith_hid::protocol::AdvancedSlotId::new(5).expect("slot"),
+        };
+        assert_eq!(
+            report.items().map(|(_, i)| i.table).collect::<Vec<_>>(),
+            [
+                TableId::Macro { slot: slot(0) },
+                TableId::Keymap { layer: Layer::Base },
+                TableId::Keymap { layer: Layer::Fn },
+                advanced5,
+            ]
+        );
+        let persisted = |sim: &DeviceSim, table: SimTable| {
+            sim.persisted_table(profile(1), table).map(<[u8]>::to_vec)
+        };
+        assert_eq!(persisted(&sim, SimTable::Macro(slot(0))), Some(c13_macro()));
+        let base = content(
+            target
+                .response(ReadRequest::Keymap(Layer::Base))
+                .expect("base keymap"),
+        );
+        assert_eq!(persisted(&sim, SimTable::Keymap(Layer::Base)), Some(base));
+        if !macros_wait {
+            assert!(report.is_success(), "{:#?}", report.error);
+            // Macro, base keymap and advanced-key clear; the unchanged Fn
+            // keymap is not counted.
+            assert_eq!(report.persistence.as_ref().map(|c| c.persisted), Some(3));
+            assert_eq!(persisted(&sim, SimTable::AdvancedKeys), Some(vec![0; 1600]));
+            sim.assert_clean();
+            continue;
+        }
+        // The safety net: the clear after the trigger was not kept.
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert_eq!(
+            report.error.as_ref().map(|e| e.kind),
+            Some(ErrorKind::NotPersisted)
+        );
+        let lost: Vec<TableId> = report
+            .items()
+            .filter(|(_, i)| matches!(i.result, ItemResult::Lost { .. }))
+            .map(|(_, i)| i.table)
+            .collect();
+        assert_eq!(lost, [advanced5]);
+        // Again: the clear, then the unchanged Fn keymap ends the group.
+        let first = sim.writes_sent();
+        let again = restore(&mut sim, &target, &options());
+        assert!(again.is_success(), "{:#?}", again.error);
+        let mut expected = vec![(0x22, 0x05, 0)];
+        expected.extend((0..10).map(|c| (0x18, 0x02, c)));
+        assert_eq!(heads(&table_packets(&sim, first)), expected);
+        let (_, trigger) = again.items().nth(1).expect("Fn keymap");
+        assert_eq!(
+            trigger.commit_trigger,
+            Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+        );
+        assert!(trigger.resent_unchanged);
+        assert_eq!(persisted(&sim, SimTable::AdvancedKeys), Some(vec![0; 1600]));
+        sim.assert_clean();
+    }
+}
+
+/// Macro slots written while neither keymap layer differs: the group ends
+/// with the unchanged Fn keymap (a precaution; whether macro slots need it
+/// is untested), and the slot persists in both commit models.
+#[test]
+fn macro_slots_alone_end_with_the_unchanged_fn_keymap() {
+    let target = c06_backup();
+    for macros_wait in [false, true] {
+        let mut sim = DeviceSim::from_backup(&target);
+        sim.set_keymap_commit(KeymapCommit {
+            macros_and_advanced_need_fn_write: macros_wait,
+            ..KeymapCommit::default()
+        });
+        sim.set_table(profile(1), SimTable::Macro(slot(4)), c13_macro());
+        let first = sim.writes_sent();
+        let report = restore(&mut sim, &target, &options());
+        assert!(report.is_success(), "{macros_wait}: {:#?}", report.error);
+        let mut expected: Vec<(u8, u8, u8)> = (0..5).map(|c| (0x19, 0x04, c)).collect();
+        expected.extend((0..10).map(|c| (0x18, 0x02, c)));
+        assert_eq!(heads(&table_packets(&sim, first)), expected);
+        let items: Vec<(TableId, Option<CommitTriggerReason>)> = report
+            .items()
+            .map(|(_, i)| (i.table, i.commit_trigger))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (TableId::Macro { slot: slot(4) }, None),
+                (
+                    TableId::Keymap { layer: Layer::Fn },
+                    Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+                ),
+            ]
+        );
+        assert_eq!(
+            sim.persisted_table(profile(1), SimTable::Macro(slot(4))),
+            Some(&[0u8; 256][..])
+        );
+        sim.assert_clean();
+    }
+}
+
+/// A cancellation asked for between the base keymap and the Fn keymap after
+/// it takes effect after the Fn keymap: the keyboard would not keep the
+/// base keymap otherwise.
+#[test]
+fn a_cancellation_never_separates_the_base_keymap_from_the_fn_keymap() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    patch(
+        &mut sim,
+        profile(1),
+        SimTable::Keymap(Layer::Base),
+        46 * 4,
+        &[0x00, 0x04, 0x00, 0x00],
+    );
+    // A colour slot differs too: a table after the keymap group.
+    patch(&mut sim, profile(1), SimTable::CustomColors1, 0, &[1, 2, 3]);
+    let prepared = prepare(&mut sim, &target, &options());
+    let dir = temp_dir();
+    let saved = prepared
+        .safety()
+        .save_safety(dir.path(), "restore")
+        .expect("safety");
+    let report = {
+        let mut session = Session::new(&mut sim);
+        execute_restore(&mut session, &prepared, &saved, consent(), |p| match p {
+            // Ctrl+C when the Fn keymap is about to start.
+            WriteProgress::Writing {
+                table: TableId::Keymap { layer: Layer::Fn },
+                packet: 0,
+                ..
+            } => ControlFlow::Break(()),
+            _ => ControlFlow::Continue(()),
+        })
+    };
+    assert_eq!(report.outcome, Outcome::Cancelled);
+    assert_eq!(
+        written_tables(&report, 1),
+        [
+            TableId::Keymap { layer: Layer::Base },
+            TableId::Keymap { layer: Layer::Fn }
+        ]
+    );
+    let colours = TableId::CustomColors {
+        table: CustomTable::Custom1,
+    };
+    assert!(
+        report
+            .items()
+            .any(|(_, i)| i.table == colours && matches!(i.result, ItemResult::NotAttempted))
+    );
+    // The keyboard saved the base keymap.
+    assert!(!sim.has_edits_waiting_for_fn_write());
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+        Some(&[0u8; 528][..])
+    );
+    sim.assert_clean();
+}
+
+/// When another program shows up during the base-keymap write, the restore
+/// stops before the Fn keymap (nothing is written after foreign activity):
+/// the base keymap is reported as may-be-lost, with a note that the keyboard
+/// will not keep it, and not as written.
+#[test]
+fn a_restore_that_stops_before_the_fn_keymap_says_the_base_keymap_is_not_saved() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    patch(
+        &mut sim,
+        profile(1),
+        SimTable::Keymap(Layer::Base),
+        46 * 4,
+        &[0x00, 0x04, 0x00, 0x00],
+    );
+    let prepared = prepare(&mut sim, &target, &options());
+    let dir = temp_dir();
+    let saved = prepared
+        .safety()
+        .save_safety(dir.path(), "restore")
+        .expect("safety");
+    // A foreign trigger ack right after the first base-keymap packet.
+    let at = {
+        let mut copy = sim.clone();
+        let start = copy.written().len();
+        execute(&mut copy, &prepared, &saved);
+        start
+            + copy.written()[start..]
+                .iter()
+                .position(|p| p.is_write() && p.as_bytes()[..2] == [0x18, 0x00])
+                .expect("base keymap write")
+            + 1
+    };
+    sim.inject_after_packets(at, report(&[0x21, 0, 0, 0, 0x01, 0x00]));
+    let first = sim.writes_sent();
+    let result = execute(&mut sim, &prepared, &saved);
+    assert_eq!(result.outcome, Outcome::Failed);
+    assert_eq!(
+        result.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::OtherProgramActive)
+    );
+    // The base keymap went out, the Fn keymap did not.
+    let packets = table_packets(&sim, first);
+    assert_eq!(heads(&packets), base_then_fn()[..10].to_vec());
+    let (_, base) = result.items().next().expect("base keymap");
+    match &base.result {
+        ItemResult::MaybeLost {
+            warnings, packets, ..
+        } => {
+            assert_eq!(*packets, 10);
+            assert!(
+                warnings.contains(&WriteWarning::BaseKeymapNotSaved),
+                "{warnings:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let (_, fn_item) = result.items().nth(1).expect("Fn keymap");
+    assert!(matches!(fn_item.result, ItemResult::Failed { .. }));
+    // Not counted as written, but as sent (the undo hint stays).
+    assert_eq!((result.written(), result.maybe_lost()), (0, 1));
+    assert!(result.anything_written());
+    // The keyboard indeed holds it unsaved.
+    assert!(sim.has_edits_waiting_for_fn_write());
+    sim.assert_clean();
+}
+
+/// Ctrl+C while the first macro slot of the keymap group is written: the
+/// group's other tables (here the base keymap, a new change) are not
+/// written, but the Fn keymap that makes the keyboard save the macro slot
+/// is still sent, and the restore stops after it. In both models of the
+/// (untested) macro commit the macro slot is saved.
+#[test]
+fn a_cancellation_inside_the_keymap_group_skips_to_the_fn_keymap() {
+    let target = macro_backup();
+    for macros_wait in [false, true] {
+        let mut sim = DeviceSim::from_backup(&c06_backup());
+        sim.set_keymap_commit(KeymapCommit {
+            macros_and_advanced_need_fn_write: macros_wait,
+            ..KeymapCommit::default()
+        });
+        let prepared = prepare(&mut sim, &target, &options());
+        let dir = temp_dir();
+        let saved = prepared
+            .safety()
+            .save_safety(dir.path(), "restore")
+            .expect("safety");
+        let first = sim.writes_sent();
+        let mut starts = Vec::new();
+        let report = {
+            let mut session = Session::new(&mut sim);
+            execute_restore(&mut session, &prepared, &saved, consent(), |p| match p {
+                WriteProgress::Writing {
+                    table, packet: 0, ..
+                } => {
+                    starts.push(table);
+                    ControlFlow::Continue(())
+                }
+                // Ctrl+C during the first macro packet.
+                WriteProgress::Writing {
+                    table: TableId::Macro { .. },
+                    packet: 1,
+                    ..
+                } => ControlFlow::Break(()),
+                _ => ControlFlow::Continue(()),
+            })
+        };
+        assert_eq!(report.outcome, Outcome::Cancelled, "{macros_wait}");
+        // The skipped base keymap is not even started.
+        assert_eq!(
+            starts,
+            [
+                TableId::Macro { slot: slot(0) },
+                TableId::Keymap { layer: Layer::Fn }
+            ]
+        );
+        let mut expected: Vec<(u8, u8, u8)> = (0..5).map(|c| (0x19, 0x00, c)).collect();
+        expected.extend((0..10).map(|c| (0x18, 0x02, c)));
+        assert_eq!(heads(&table_packets(&sim, first)), expected);
+        let results: Vec<(TableId, &ItemResult)> =
+            report.items().map(|(_, i)| (i.table, &i.result)).collect();
+        assert!(matches!(
+            results[..],
+            [
+                (TableId::Macro { .. }, ItemResult::Written { .. }),
+                (
+                    TableId::Keymap { layer: Layer::Base },
+                    ItemResult::NotAttempted
+                ),
+                (
+                    TableId::Keymap { layer: Layer::Fn },
+                    ItemResult::Written { .. }
+                ),
+            ]
+        ));
+        // No persistence check after a cancellation; the keyboard saved the
+        // macro slot (the restore waited for the commit before it returned).
+        assert_eq!(report.persistence, None);
+        assert!(!sim.has_unsaved_edits());
+        assert_eq!(
+            sim.persisted_table(profile(1), SimTable::Macro(slot(0))),
+            Some(c13_macro().as_slice())
+        );
+        assert_eq!(
+            sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+            Some(&[0u8; 528][..])
+        );
+        sim.assert_clean();
+    }
+}
+
+/// A Ctrl+C during the Fn keymap, when it is the last planned write: the
+/// restore did complete, so it is not reported as cancelled and the
+/// persistence check runs.
+#[test]
+fn a_cancellation_during_the_last_write_still_completes_the_restore() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    sim.set_table(profile(1), SimTable::Keymap(Layer::Base), c10_base_keymap());
+    let prepared = prepare(&mut sim, &target, &options());
+    let dir = temp_dir();
+    let saved = prepared
+        .safety()
+        .save_safety(dir.path(), "restore")
+        .expect("safety");
+    let report = {
+        let mut session = Session::new(&mut sim);
+        execute_restore(&mut session, &prepared, &saved, consent(), |p| match p {
+            WriteProgress::Writing {
+                table: TableId::Keymap { layer: Layer::Base },
+                packet: 3,
+                ..
+            } => ControlFlow::Break(()),
+            _ => ControlFlow::Continue(()),
+        })
+    };
+    assert_eq!(report.outcome, Outcome::Completed, "{:#?}", report.error);
+    assert_eq!(report.written(), 2);
+    assert_eq!(report.persistence.as_ref().map(|c| c.persisted), Some(1));
+    sim.assert_clean();
+}
+
+/// The write index (1-based, as `DeviceSim::drop_ack` counts) of the first
+/// `18 02` packet a restore of `target` sends to a copy of `sim`.
+fn first_fn_keymap_write(sim: &DeviceSim, target: &Backup) -> usize {
+    let mut copy = sim.clone();
+    let before = copy.writes_sent();
+    restore(&mut copy, target, &options());
+    copy.write_packets()
+        .skip(before)
+        .position(|p| p.as_bytes()[..2] == [0x18, 0x02])
+        .expect("an 18 02 write")
+        + before
+        + 1
+}
+
+/// The ack of the first `18 02` packet of the commit trigger times out: the
+/// read-back of an unchanged table cannot tell what arrived, so the whole
+/// table is sent once more (not counted as written after one packet).
+#[test]
+fn a_commit_trigger_cut_short_by_an_ack_timeout_is_sent_again_in_full() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    sim.set_table(profile(1), SimTable::Keymap(Layer::Base), c10_base_keymap());
+    let fn_write = first_fn_keymap_write(&sim, &target);
+    sim.drop_ack(fn_write);
+    let first = sim.writes_sent();
+    let report = restore(&mut sim, &target, &options());
+    assert!(report.is_success(), "{:#?}", report.error);
+    let mut expected: Vec<(u8, u8, u8)> = (0..10).map(|c| (0x18, 0x00, c)).collect();
+    expected.push((0x18, 0x02, 0));
+    expected.extend((0..10).map(|c| (0x18, 0x02, c)));
+    assert_eq!(heads(&table_packets(&sim, first)), expected);
+    let (_, fn_item) = report.items().nth(1).expect("Fn keymap");
+    match &fn_item.result {
+        ItemResult::Written {
+            sends,
+            packets,
+            warnings,
+            ..
+        } => {
+            assert_eq!((*sends, *packets), (2, 11));
+            assert!(warnings.contains(&WriteWarning::AckTimeout {
+                packet: 1,
+                of: 10,
+                send: 1
+            }));
+            assert!(warnings.contains(&WriteWarning::Retried));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+        Some(&[0u8; 528][..])
+    );
+    sim.assert_clean();
+}
+
+/// Both sends of the commit trigger are cut short: the restore fails, and
+/// the base keymap before it is reported as not saved (the simulator, like
+/// the keyboard as far as known, did not save it).
+#[test]
+fn a_commit_trigger_that_never_arrives_complete_fails_the_restore() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    sim.set_table(profile(1), SimTable::Keymap(Layer::Base), c10_base_keymap());
+    let fn_write = first_fn_keymap_write(&sim, &target);
+    // The first packet of each send.
+    sim.drop_ack(fn_write);
+    sim.drop_ack(fn_write + 1);
+    let report = restore(&mut sim, &target, &options());
+    assert_eq!(report.outcome, Outcome::Failed);
+    let error = report.error.as_ref().expect("error");
+    assert_eq!(error.kind, ErrorKind::Timeout);
+    assert!(
+        error.message.contains("did not reach it complete"),
+        "{error:?}"
+    );
+    let results: Vec<&ItemResult> = report.items().map(|(_, i)| &i.result).collect();
+    match results[..] {
+        [
+            ItemResult::MaybeLost { warnings, .. },
+            ItemResult::Failed { .. },
+        ] => assert!(warnings.contains(&WriteWarning::BaseKeymapNotSaved)),
+        _ => panic!("{results:?}"),
+    }
+    assert_eq!(report.persistence, None);
+    assert!(sim.has_edits_waiting_for_fn_write());
+    sim.assert_clean();
+}
+
+/// Without the commit settle (test-only option), a profile switch right
+/// after the base keymap and its Fn keymap loses both: the persistence
+/// check reports the base keymap lost. (The simulator does not save the
+/// keymap at the moment the `18 02` arrives.)
+#[test]
+fn without_the_settle_a_base_keymap_restore_is_reported_lost() {
+    let target = c06_backup();
+    let mut sim = DeviceSim::from_backup(&target);
+    sim.set_table(profile(1), SimTable::Keymap(Layer::Base), c10_base_keymap());
+    let options = RestoreOptions {
+        write: WriteOptions {
+            commit_settle: CommitSettle::disabled_for_tests(),
+            ..WriteOptions::default()
+        },
+        ..options()
+    };
+    let report = restore(&mut sim, &target, &options);
+    assert_eq!(report.outcome, Outcome::Failed);
+    assert_eq!(
+        report.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::NotPersisted)
+    );
+    assert!(matches!(
+        report.items().next().map(|(_, i)| &i.result),
+        Some(ItemResult::Lost { .. })
+    ));
+    assert_eq!(
+        report.persistence,
+        Some(PersistenceCheck {
+            profiles: vec![1],
+            persisted: 0,
+            lost: 1,
+            not_checked: 0
+        })
+    );
+    assert!(sim.discarded_edits() >= 1);
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+        Some(c10_base_keymap().as_slice())
     );
     sim.assert_clean();
 }
@@ -923,6 +1612,7 @@ fn advanced_keys_are_only_cleared_and_after_the_keymaps() {
         tables,
         [
             TableId::Keymap { layer: Layer::Base },
+            TableId::Keymap { layer: Layer::Fn },
             TableId::AdvancedKey {
                 slot: openwraith_hid::protocol::AdvancedSlotId::new(5).expect("slot")
             },
@@ -1705,8 +2395,8 @@ fn the_active_profile_is_only_reported_as_read() {
 #[test]
 fn an_interrupted_read_mid_table_is_retried() {
     // The keyboard is on profile 2; the base keymap of profile 1 differs
-    // from the backup (W -> A), so the restore selects 1, writes ten keymap
-    // chunks and selects 2 again.
+    // from the backup (W -> A), so the restore selects 1, writes ten
+    // base-keymap and ten Fn-keymap chunks and selects 2 again.
     let target = c06_backup();
     let mut sim = sim_with_profiles(ScopeConfig::default());
     patch(
@@ -1739,7 +2429,10 @@ fn an_interrupted_read_mid_table_is_retried() {
     assert_eq!(report.outcome, Outcome::Completed, "{:#?}", report.error);
     assert_eq!(
         written_tables(&report, 1),
-        [TableId::Keymap { layer: Layer::Base }]
+        [
+            TableId::Keymap { layer: Layer::Base },
+            TableId::Keymap { layer: Layer::Fn }
+        ]
     );
     assert_eq!(
         sim.table(profile(1), SimTable::Keymap(Layer::Base)),

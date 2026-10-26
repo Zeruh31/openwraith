@@ -5,7 +5,10 @@
 //! [`Terminal`] is the real console: normal output goes to stdout (stripped
 //! of control characters), notes, progress and prompts go to stderr, and
 //! answers are read from stdin. Ctrl+C sets a cancel flag that the write
-//! commands check at every table boundary; a second Ctrl+C exits at once.
+//! commands check at every table boundary (inside a restore's keymap group,
+//! once a group table was sent, the group's Fn keymap (`18 02`) that makes
+//! the keyboard save it is still written first); a second Ctrl+C exits at
+//! once.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +37,9 @@ pub trait Ui {
     /// `yes` (and end of input) is No.
     fn confirm(&mut self, question: &str) -> anyhow::Result<bool>;
 
-    /// Starts honouring Ctrl+C as "cancel at the next table boundary".
-    /// Called by the commands that write.
+    /// Starts honouring Ctrl+C as "cancel at the next table boundary" (in a
+    /// restore's keymap group: after the group's Fn keymap, `18 02`, which
+    /// makes the keyboard save it). Called by the commands that write.
     fn enable_cancel(&mut self);
 
     /// Whether the user asked to cancel (Ctrl+C).
@@ -139,8 +143,9 @@ impl Ui for Terminal {
                 std::process::exit(130);
             }
             eprintln!(
-                "\nCtrl+C: stopping after the current table and returning to the original \
-                 profile (press Ctrl+C again to stop immediately)."
+                "\nCtrl+C: stopping after the current table (inside the keymap group: after \
+                 the Fn keymap (18 02) that makes the keyboard save it) and returning to the \
+                 original profile (press Ctrl+C again to stop immediately)."
             );
         });
         if let Err(e) = installed {

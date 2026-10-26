@@ -50,6 +50,29 @@
 //! and skipped as a whole when it would need a non-empty advanced-key write
 //! (format CODE-ONLY), a non-canonical macro, or holds a malformed reference.
 //!
+//! The keymap group is written in the vendor site's order: every macro slot
+//! that changes (content and clears), the base keymap, the Fn keymap, the
+//! advanced-key clears. The keyboard keeps a base-keymap write (`18 00`)
+//! only when an Fn-keymap write (`18 02`) follows it (CONFIRMED on
+//! hardware, spec 4.8.2), so whenever the base keymap is written, the Fn
+//! keymap is written right after it, re-sent unchanged if it already holds
+//! the backup's bytes ([`CommitTriggerReason::BaseKeymap`]; a
+//! [`CommitTrigger`] is sent even when the keyboard holds it). When macro or
+//! advanced-key slots are written but neither keymap layer differs, the
+//! unchanged Fn keymap ends the group as a precaution (GUESS: whether those
+//! slots need it is untested; [`CommitTriggerReason::MacrosOrAdvancedKeys`]).
+//! If the Fn keymap cannot be written, the group is not written at all
+//! ([`BlockCause::FnKeymapNotWritable`]). A cancellation asked for after a
+//! group table was sent skips the group's other tables up to that Fn-keymap
+//! write ([`ItemResult::NotAttempted`]), still sends it (an `18 02` alone is
+//! kept) and takes effect after it. A commit trigger must reach the keyboard
+//! complete: every packet acknowledged, or the whole table is sent once
+//! more ([`Writer::write_commit_trigger`]). If the restore stops between the
+//! base keymap and the Fn keymap anyway (another program, a failure), the
+//! base keymap is reported [`ItemResult::MaybeLost`] with
+//! [`WriteWarning::BaseKeymapNotSaved`]. The persistence check stays the
+//! safety net: a table the keyboard did not keep is reported lost.
+//!
 //! Trigger and dead-band values are stored in the keyboard's distance unit
 //! (`21/04` unit x status high-precision flag). They are only restored when
 //! the backup and the keyboard both use the 0.02 mm unit; otherwise the same
@@ -78,7 +101,9 @@ use crate::safety::SavedBackup;
 use crate::session::{ForeignActivity, Session};
 use crate::summary::identify;
 use crate::transport::{Transport, WriteTransport};
-use crate::writer::{CommitWait, PacketProgress, WriteConsent, WriteOptions, WriteWarning, Writer};
+use crate::writer::{
+    CommitTrigger, CommitWait, PacketProgress, WriteConsent, WriteOptions, WriteWarning, Writer,
+};
 
 /// The active profile after [`Session::writer`] failed: unknown after a
 /// reset or a lost connection; the profile another program or the keyboard
@@ -121,7 +146,10 @@ pub struct RestoreOptions {
 
 /// Progress of a restore or an edit. Returning [`ControlFlow::Break`] from
 /// the callback cancels at the next table boundary; the original profile is
-/// always selected again.
+/// always selected again. Inside a restore's keymap group, once a group
+/// table was sent, the cancellation skips the group's other tables but still
+/// sends the group's Fn keymap (`18 02`), without which the keyboard does not
+/// keep the base keymap (spec 4.8.2), and takes effect after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum WriteProgress {
@@ -313,13 +341,67 @@ pub struct PlannedWrite {
     pub request: WriteRequest,
     /// Request kind, e.g. `"keymap"`.
     pub kind: &'static str,
-    /// Human-readable description, e.g. `base keymap (18 00)`.
+    /// Human-readable description, e.g. `base keymap (18 00)`, or `Fn keymap
+    /// (18 02) re-sent unchanged to make the keyboard save the base keymap`.
     pub summary: String,
     /// Packets the write sends (its first attempt).
     pub packets: usize,
     /// The entries that change (key index, colour slot, macro slot, ...),
-    /// with the keyboard's bytes and the backup's bytes.
+    /// with the keyboard's bytes and the backup's bytes. Empty for an
+    /// unchanged Fn keymap re-sent as the commit trigger.
     pub changes: Vec<EntryChange>,
+    /// Set when this write is the keymap group's commit trigger: the Fn
+    /// keymap (`18 02`), sent even when the keyboard already holds it (see
+    /// [`CommitTriggerReason`]). Without `changes` it re-sends the
+    /// keyboard's Fn keymap unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_trigger: Option<CommitTriggerReason>,
+}
+
+impl PlannedWrite {
+    /// Whether this write re-sends an unchanged Fn keymap as the commit
+    /// trigger of the keymap group (the keyboard held the backup's Fn keymap
+    /// when the restore was planned).
+    pub fn is_resent_unchanged(&self) -> bool {
+        self.commit_trigger.is_some() && self.changes.is_empty()
+    }
+}
+
+/// Why the Fn keymap (`18 02`) is written as the keymap group's commit
+/// trigger, also when the keyboard already holds it.
+///
+/// The keyboard saves the base keymap (`18 00`) only when the Fn keymap is
+/// written after it: written alone, the base keymap reads back at once but
+/// is gone after a profile switch, even 6 s later (CONFIRMED on hardware,
+/// spec 4.8.2). The vendor site always writes the macro slots, the base
+/// keymap, the Fn keymap and the advanced-key slots, in that order, and a
+/// restore keeps that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitTriggerReason {
+    /// The base keymap is written right before it (CONFIRMED rule). It is
+    /// the next write after the base keymap.
+    BaseKeymap,
+    /// Neither keymap layer differs, but macro or advanced-key slots are
+    /// written: a precaution (GUESS). Whether those slots are saved without a
+    /// following `18 02` is untested; they may depend on the same trigger.
+    /// It is the last write of the keymap group.
+    MacrosOrAdvancedKeys,
+}
+
+impl CommitTriggerReason {
+    /// The summary of an unchanged Fn keymap re-sent for this reason.
+    fn resent_summary(self) -> &'static str {
+        match self {
+            CommitTriggerReason::BaseKeymap => {
+                "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap"
+            }
+            CommitTriggerReason::MacrosOrAdvancedKeys => {
+                "Fn keymap (18 02) re-sent unchanged to make sure the keyboard saves the macro \
+                 and advanced-key slots (precaution)"
+            }
+        }
+    }
 }
 
 /// One changed entry of a planned write.
@@ -424,6 +506,14 @@ pub enum BlockCause {
     Incomplete {
         /// The table.
         table: TableId,
+    },
+    /// The group must end with an Fn-keymap write (the commit trigger, see
+    /// [`CommitTriggerReason`]), but the backup's Fn keymap cannot be
+    /// written. The base keymap is never written alone: the keyboard would
+    /// not keep it (spec 4.8.2).
+    FnKeymapNotWritable {
+        /// Why the Fn keymap had to be written.
+        reason: CommitTriggerReason,
     },
 }
 
@@ -642,7 +732,9 @@ pub enum Persistence {
     /// Not read again after a profile switch. Edits of the active profile
     /// are not (switching would change the lighting); the operation waited
     /// for the [`CommitSettle`](crate::CommitSettle) instead. A restore that
-    /// was cancelled or failed does not check either. A write whose save was
+    /// was cancelled or failed does not check either, and an unchanged Fn
+    /// keymap re-sent as the commit trigger is never checked (it reads the
+    /// same either way; see [`PersistenceCheck`]). A write whose save was
     /// interrupted is reported as [`ItemResult::MaybeLost`] instead.
     NotChecked,
     /// Read again after switching profiles away and back: it still held what
@@ -683,8 +775,11 @@ pub enum ItemResult {
     /// had the commit settle to save it, the active profile changed (on the
     /// keyboard or by another program) or the connection was lost
     /// ([`Writer::commit_interrupted`]): the keyboard may have discarded it
-    /// (spec 4.5.3, "Delayed commit"). It was not read again; the operation
-    /// failed.
+    /// (spec 4.5.3, "Delayed commit"). Also a base keymap after which the
+    /// restore stopped before the Fn-keymap write that makes the keyboard
+    /// save it (its warnings then hold [`WriteWarning::BaseKeymapNotSaved`]:
+    /// the keyboard drops it at the next profile switch or power loss, spec
+    /// 4.8.2). It was not read again; the operation failed.
     MaybeLost {
         /// How often the whole table was sent (1 or 2).
         sends: u32,
@@ -720,6 +815,15 @@ pub struct ItemReport {
     pub key: Option<KeyPos>,
     /// Human-readable description of the write.
     pub summary: String,
+    /// Set when the write is the keymap group's commit trigger (see
+    /// [`PlannedWrite::commit_trigger`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_trigger: Option<CommitTriggerReason>,
+    /// Whether it re-sends an unchanged Fn keymap as the commit trigger
+    /// ([`PlannedWrite::is_resent_unchanged`]): written, but no setting
+    /// changes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub resent_unchanged: bool,
     /// What happened.
     pub result: ItemResult,
 }
@@ -758,6 +862,12 @@ pub struct FinalCheck {
 /// The persistence check after a restore: every profile with written tables
 /// was selected again after switching away from it (so that the keyboard
 /// reloaded what it had saved), and its written tables were read again.
+///
+/// An unchanged Fn keymap re-sent as the keymap group's commit trigger
+/// ([`ItemReport::resent_unchanged`]) is not counted and stays
+/// [`Persistence::NotChecked`]: it reads the same whether the keyboard kept
+/// it or not, so reading it again proves nothing. The tables it made the
+/// keyboard save (the base keymap) are checked themselves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PersistenceCheck {
     /// The profiles read again, in order.
@@ -828,6 +938,15 @@ impl RestoreReport {
     pub fn written(&self) -> usize {
         self.items()
             .filter(|(_, i)| matches!(i.result, ItemResult::Written { .. }))
+            .count()
+    }
+
+    /// Number of written items that only re-sent an unchanged Fn keymap as
+    /// the keymap group's commit trigger ([`ItemReport::resent_unchanged`]);
+    /// they are included in [`written`](Self::written).
+    pub fn resent_unchanged(&self) -> usize {
+        self.items()
+            .filter(|(_, i)| i.resent_unchanged && matches!(i.result, ItemResult::Written { .. }))
             .count()
     }
 
@@ -919,6 +1038,8 @@ pub fn execute_restore<T: WriteTransport>(
                         table: item.table,
                         key: item.key,
                         summary: write.summary.clone(),
+                        commit_trigger: write.commit_trigger,
+                        resent_unchanged: write.is_resent_unchanged(),
                         result: ItemResult::NotAttempted,
                     })
                     .collect(),
@@ -1051,6 +1172,28 @@ impl RestoreReport {
         }
     }
 
+    /// The restore stopped after writing the base keymap of `profile` and
+    /// before the Fn-keymap write that makes the keyboard save it: the base
+    /// keymap becomes [`ItemResult::MaybeLost`] with the warning
+    /// [`WriteWarning::BaseKeymapNotSaved`] (the keyboard drops it at the
+    /// next profile switch or power loss, spec 4.8.2).
+    fn note_base_keymap_unsaved(&mut self, profile: ProfileId) {
+        let base = TableId::Keymap { layer: Layer::Base };
+        for item in self
+            .profiles
+            .iter_mut()
+            .filter(|p| p.profile == profile.get())
+            .flat_map(|p| p.items.iter_mut())
+            .filter(|i| i.table == base)
+        {
+            if let ItemResult::Written { warnings, .. } = &mut item.result {
+                warnings.push(WriteWarning::BaseKeymapNotSaved);
+            }
+            let result = std::mem::replace(&mut item.result, ItemResult::NotAttempted);
+            item.result = result.into_maybe_lost();
+        }
+    }
+
     fn item_mut(&mut self, profile: ProfileId, index: usize) -> Option<&mut ItemReport> {
         self.profiles
             .iter_mut()
@@ -1110,6 +1253,15 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
         if writes.is_empty() {
             return Ok(());
         }
+        // The keymap group's commit trigger (the Fn keymap, spec 4.8.2): once
+        // a group write before it was sent, the trigger must be sent too.
+        let trigger_at = writes
+            .iter()
+            .position(|(_, _, write)| write.commit_trigger.is_some());
+        let mut trigger_due = false;
+        // Group tables left out because of a cancellation while the trigger
+        // was due.
+        let mut skipped = false;
         for (index, (table, key, write)) in writes.into_iter().enumerate() {
             if index == 0 {
                 // The keyboard must save the previous profile's writes before
@@ -1124,7 +1276,19 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
                     }
                 })?;
             }
-            if self.cancel || self.should_stop(profile, table, key, write) {
+            if trigger_due {
+                // A keymap-group table was sent, and the group's Fn-keymap
+                // write must follow (without it the keyboard does not keep
+                // the base keymap). A cancellation skips the group's other
+                // tables up to it (they stay NotAttempted), still sends it
+                // (an 18 02 alone is kept), and takes effect after it.
+                if trigger_at == Some(index) {
+                    self.should_stop(profile, table, key, write);
+                } else if self.cancel || self.should_stop(profile, table, key, write) {
+                    skipped = true;
+                    continue;
+                }
+            } else if self.cancel || self.should_stop(profile, table, key, write) {
                 return Err(Stop::Cancelled);
             }
             if index == 0 {
@@ -1146,12 +1310,30 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
                     Some(Stop::Failed(error)),
                 ),
             };
+            let sent = item_result.was_sent();
             if let Some(item) = report.item_mut(profile, index) {
                 item.result = item_result;
             }
+            let before_trigger = trigger_at.is_some_and(|at| index < at);
+            if before_trigger && sent && is_keymap_group(table) {
+                trigger_due = true;
+            }
+            if trigger_at == Some(index) && sent {
+                trigger_due = false;
+            }
             if let Some(stop) = stop {
+                if trigger_due {
+                    report.note_base_keymap_unsaved(profile);
+                }
                 return Err(stop);
             }
+        }
+        if skipped {
+            // Cancelled while the trigger was due, and the trigger was the
+            // last write of the profile: the cancellation takes effect now.
+            // (When nothing was skipped, every planned write of the profile
+            // was made, and a later profile stops at its first table.)
+            return Err(Stop::Cancelled);
         }
         confirm_profile(writer, profile)?;
         Ok(())
@@ -1211,6 +1393,26 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
             Vec::new()
         };
 
+        // The commit trigger is sent even when the keyboard already holds it;
+        // only an Fn-keymap write can be one.
+        let trigger =
+            match write.commit_trigger {
+                Some(_) => Some(CommitTrigger::try_from(request.clone()).map_err(|other| {
+                    TableFailure {
+                        error: ErrorInfo {
+                            kind: ErrorKind::InvalidRequest,
+                            message: format!("{other} cannot be a keymap commit trigger"),
+                        },
+                        mismatch: None,
+                    }
+                })?),
+                None => None,
+            };
+        let checked = match &trigger {
+            Some(trigger) => Checked::CommitTrigger(trigger),
+            None => Checked::Table(request),
+        };
+
         let progress = &mut *self.progress;
         let cancel = &mut self.cancel;
         let mut on_packet = |p: PacketProgress| {
@@ -1229,7 +1431,7 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
         let result = write_checked(
             writer,
             profile,
-            request,
+            checked,
             &planned,
             &written_here,
             &mut on_packet,
@@ -1266,13 +1468,15 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
         original: ProfileId,
         report: &mut RestoreReport,
     ) -> Result<(), ErrorInfo> {
+        // An unchanged Fn keymap re-sent as the commit trigger has nothing
+        // to check (see check_profile_persisted).
         let written: Vec<ProfileId> = report
             .profiles
             .iter()
             .filter(|p| {
                 p.items
                     .iter()
-                    .any(|i| matches!(i.result, ItemResult::Written { .. }))
+                    .any(|i| !i.resent_unchanged && matches!(i.result, ItemResult::Written { .. }))
             })
             .filter_map(|p| ProfileId::new(p.profile))
             .collect();
@@ -1392,6 +1596,12 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
             let Some(item) = report.item_mut(profile, index) else {
                 continue;
             };
+            if item.resent_unchanged {
+                // It holds what the keyboard held before: reading it again
+                // proves nothing. It stays NotChecked; the tables it made
+                // the keyboard save are checked themselves.
+                continue;
+            }
             let ItemResult::Written {
                 sends,
                 packets,
@@ -1610,21 +1820,35 @@ pub(crate) fn confirm_profile<T: WriteTransport>(
     Ok(())
 }
 
+/// What [`write_checked`] writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Checked<'a> {
+    /// A table write: nothing is sent when the keyboard already holds it.
+    Table(&'a WriteRequest),
+    /// The Fn keymap as the keymap group's commit trigger: sent also when
+    /// the keyboard already holds it (spec 4.8.2).
+    CommitTrigger(&'a CommitTrigger),
+}
+
 /// One guarded table write, shared by restores and edits:
 ///
 /// 1. refuses when another program was seen while writing;
 /// 2. confirms with `21/11` that `profile` is active;
-/// 3. re-reads exactly the bytes `request` changes: when the keyboard
-///    already holds them the result is [`ItemResult::AlreadyMatched`]; when
-///    they are neither `planned` (the state the write was planned against)
-///    nor one of `also_expected` (states this operation wrote), the result
-///    is a `changed_since_plan` failure and nothing is written;
+/// 3. re-reads exactly the bytes the request changes: when the keyboard
+///    already holds them the result is [`ItemResult::AlreadyMatched`]
+///    (except for a [`Checked::CommitTrigger`], which is then sent
+///    unchanged); when they are neither `planned` (the state the write was
+///    planned against) nor one of `also_expected` (states this operation
+///    wrote), the result is a `changed_since_plan` failure and nothing is
+///    written;
 /// 4. writes with [`Writer::write_observed`] (stop-and-wait, verification,
-///    one more attempt with the whole table).
+///    one more attempt with the whole table); a [`Checked::CommitTrigger`]
+///    with [`Writer::write_trigger_observed`], which also needs every
+///    packet acknowledged.
 pub(crate) fn write_checked<T: WriteTransport>(
     writer: &mut Writer<'_, T>,
     profile: ProfileId,
-    request: &WriteRequest,
+    checked: Checked<'_>,
     planned: &[Option<Vec<u8>>],
     also_expected: &[TableState],
     on_packet: &mut dyn FnMut(PacketProgress),
@@ -1634,12 +1858,20 @@ pub(crate) fn write_checked<T: WriteTransport>(
     }
     confirm_profile(writer, profile)?;
 
+    let request = match checked {
+        Checked::Table(request) => request,
+        Checked::CommitTrigger(trigger) => trigger.request(),
+    };
     let reads = request.verify_reads();
     let mut fresh = Vec::with_capacity(reads.len());
     for read in &reads {
         fresh.push(writer.read(*read)?);
     }
     if request.check(&fresh).is_ok() {
+        if let Checked::CommitTrigger(_) = checked {
+            // Unchanged: re-sent so that the keyboard saves the keymap.
+            return written(writer, checked, on_packet);
+        }
         return Ok(ItemResult::AlreadyMatched);
     }
     let now = state_of(request, &fresh);
@@ -1656,13 +1888,36 @@ pub(crate) fn write_checked<T: WriteTransport>(
             mismatch: None,
         });
     }
-    let outcome = writer.write_observed(request, on_packet)?;
+    written(writer, checked, on_packet)
+}
+
+/// Step 4 of [`write_checked`]: the write itself, with verification (for a
+/// commit trigger also of every packet's acknowledgement, see
+/// [`Writer::write_commit_trigger`]).
+fn written<T: WriteTransport>(
+    writer: &mut Writer<'_, T>,
+    checked: Checked<'_>,
+    on_packet: &mut dyn FnMut(PacketProgress),
+) -> Result<ItemResult, TableFailure> {
+    let outcome = match checked {
+        Checked::Table(request) => writer.write_observed(request, on_packet)?,
+        Checked::CommitTrigger(trigger) => writer.write_trigger_observed(trigger, on_packet)?,
+    };
     Ok(ItemResult::Written {
         sends: outcome.sends,
         packets: outcome.packets,
         warnings: outcome.warnings,
         persistence: Persistence::NotChecked,
     })
+}
+
+/// Whether `table` belongs to the keymap group (keymaps, macro slots,
+/// advanced-key slots).
+fn is_keymap_group(table: TableId) -> bool {
+    matches!(
+        table,
+        TableId::Keymap { .. } | TableId::Macro { .. } | TableId::AdvancedKey { .. }
+    )
 }
 
 /// The profiles with writes: the original one first, then ascending.
@@ -1900,10 +2155,10 @@ fn scope_warnings(target: &Backup, current: &Backup, profiles: &[ProfilePlan]) -
     let mut warnings = Vec::new();
     let mut written: Vec<TableId> = Vec::new();
     for item in profiles.iter().flat_map(|p| p.items.iter()) {
-        if matches!(item.action, PlanAction::Write(_))
-            && possibly_global(item.table)
-            && !written.contains(&item.table)
-        {
+        // An unchanged Fn keymap re-sent as the commit trigger writes the
+        // bytes the keyboard holds: it changes no other profile.
+        let changes = matches!(&item.action, PlanAction::Write(w) if !w.is_resent_unchanged());
+        if changes && possibly_global(item.table) && !written.contains(&item.table) {
             written.push(item.table);
         }
     }
@@ -2002,6 +2257,31 @@ fn write_action(request: WriteRequest, changes: Vec<EntryChange>) -> PlanAction 
         summary: request.to_string(),
         packets: request.steps().len(),
         changes,
+        commit_trigger: None,
+        request,
+    })
+}
+
+/// A planned Fn-keymap write that is the keymap group's commit trigger
+/// (sent even when the keyboard already holds it); without `changes` it
+/// re-sends the Fn keymap unchanged.
+fn trigger_action(
+    trigger: CommitTrigger,
+    changes: Vec<EntryChange>,
+    reason: CommitTriggerReason,
+) -> PlanAction {
+    let request = trigger.request().clone();
+    let summary = if changes.is_empty() {
+        reason.resent_summary().to_string()
+    } else {
+        request.to_string()
+    };
+    PlanAction::Write(PlannedWrite {
+        kind: request.kind(),
+        summary,
+        packets: request.steps().len(),
+        changes,
+        commit_trigger: Some(reason),
         request,
     })
 }
@@ -2559,6 +2839,51 @@ fn plan_keymap_group(t: SnapshotView<'_>, c: SnapshotView<'_>) -> Vec<PlanItem> 
         }
     }
 
+    // The commit trigger (spec 4.8.2): the keyboard saves the base keymap
+    // only when the Fn keymap is written after it, so the Fn keymap is
+    // written whenever the base keymap is, even unchanged. Macro and
+    // advanced-key slots may depend on the same trigger (untested): when
+    // they are written and neither layer differs, the group ends with the
+    // unchanged Fn keymap as a precaution (GUESS).
+    let writes = |state: &GroupState| matches!(state, GroupState::Differs(Ok(_)));
+    let layer_state = |wanted: Layer| {
+        layers
+            .iter()
+            .find(|(table, _)| *table == TableId::Keymap { layer: wanted })
+            .map(|(_, state)| state)
+    };
+    let base_state = layer_state(Layer::Base);
+    let fn_state = layer_state(Layer::Fn);
+    let base_written = base_state.is_some_and(writes);
+    let fn_written = fn_state.is_some_and(writes);
+    let slots_written = macros.iter().any(|(_, _, state)| writes(state))
+        || advanced.iter().any(|(_, state)| writes(state));
+    let reason = if base_written {
+        Some(CommitTriggerReason::BaseKeymap)
+    } else if slots_written {
+        Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+    } else {
+        None
+    };
+    // The Fn-keymap write that triggers the commit, with its changes.
+    let trigger: Option<(CommitTrigger, Vec<EntryChange>, CommitTriggerReason)> =
+        match (reason, fn_state) {
+            (Some(reason), Some(GroupState::Differs(Ok((request, changes))))) => {
+                CommitTrigger::try_from(request.clone())
+                    .ok()
+                    .map(|trigger| (trigger, changes.clone(), reason))
+            }
+            (Some(reason), Some(GroupState::Unchanged)) => t
+                .response(ReadRequest::Keymap(Layer::Fn))
+                .and_then(|raw| CommitTrigger::try_from(write_request_of(raw)?).ok())
+                .map(|trigger| (trigger, Vec::new(), reason)),
+            _ => None,
+        };
+    if let (Some(reason), None, None) = (reason, &trigger, &cause) {
+        // Never the base keymap (or the slots) without the trigger.
+        cause = Some(BlockCause::FnKeymapNotWritable { reason });
+    }
+
     let to_item = |table: TableId, state: &GroupState| -> PlanItem {
         match state {
             GroupState::NotInBackup => item(table, None, PlanAction::NotInBackup),
@@ -2603,37 +2928,43 @@ fn plan_keymap_group(t: SnapshotView<'_>, c: SnapshotView<'_>) -> Vec<PlanItem> 
             .collect();
     }
 
-    // Execution order: macro content before the keymaps that bind it,
-    // unbinding before clearing.
-    let referenced: BTreeSet<u8> = Layer::ALL
-        .into_iter()
-        .filter_map(|layer| t.response(ReadRequest::Keymap(layer)))
-        .filter_map(|raw| KeymapData::from_response(raw).ok())
-        .flat_map(|(_, data)| data.references())
-        .filter_map(|r| match r {
-            KeymapReference::Macro { slot, .. } => Some(slot.get()),
-            _ => None,
-        })
-        .collect();
-    let bound_first = |slot: &MacroSlotId, state: &GroupState| {
-        referenced.contains(&slot.get()) && matches!(state, GroupState::Differs(Ok(_)))
+    // Execution order: the vendor site's (spec 4.8.2): every macro slot
+    // (content and clears), the base keymap, the Fn keymap right after it,
+    // the advanced-key clears. When neither layer differs, the unchanged Fn
+    // keymap ends the group instead.
+    let base_table = TableId::Keymap { layer: Layer::Base };
+    let fn_table = TableId::Keymap { layer: Layer::Fn };
+    let fn_item = || match (&trigger, fn_state) {
+        (Some((trigger, changes, reason)), _) => item(
+            fn_table,
+            None,
+            trigger_action(trigger.clone(), changes.clone(), *reason),
+        ),
+        (None, Some(state)) => to_item(fn_table, state),
+        (None, None) => item(fn_table, None, PlanAction::NotInBackup),
     };
-    let mut items = Vec::new();
-    items.extend(
-        macros
-            .iter()
-            .filter(|(slot, _, state)| bound_first(slot, state))
-            .map(|(_, table, state)| to_item(*table, state)),
-    );
-    items.extend(layers.iter().map(|(table, state)| to_item(*table, state)));
-    items.extend(
-        macros
-            .iter()
-            .filter(|(slot, _, state)| !bound_first(slot, state))
-            .map(|(_, table, state)| to_item(*table, state)),
-    );
+    let fn_last = trigger.is_some() && !base_written && !fn_written;
+    let mut items: Vec<PlanItem> = macros
+        .iter()
+        .map(|(_, table, state)| to_item(*table, state))
+        .collect();
+    if let Some(state) = base_state {
+        items.push(to_item(base_table, state));
+    }
+    if !fn_last {
+        items.push(fn_item());
+    }
     items.extend(advanced.iter().map(|(table, state)| to_item(*table, state)));
+    if fn_last {
+        items.push(fn_item());
+    }
     items
+}
+
+/// The write request of a keymap reply (`None` when it is unusable).
+fn write_request_of(raw: &RawResponse) -> Option<WriteRequest> {
+    let (layer, data) = KeymapData::from_response(raw).ok()?;
+    Some(WriteRequest::Keymap(layer, data))
 }
 
 /// Human-readable form of a [`BlockCause`].
@@ -2657,5 +2988,137 @@ fn block_message(cause: &BlockCause) -> String {
         BlockCause::Incomplete { table } => {
             format!("{table} is missing or unusable in the backup or on the keyboard")
         }
+        BlockCause::FnKeymapNotWritable { reason } => format!(
+            "the backup's Fn keymap cannot be written (unusable reply), and {}",
+            match reason {
+                CommitTriggerReason::BaseKeymap =>
+                    "the keyboard keeps the base keymap only when the Fn keymap (18 02) is \
+                     written after it, so the base keymap is not written alone",
+                CommitTriggerReason::MacrosOrAdvancedKeys =>
+                    "the macro and advanced-key slots are only written followed by the Fn \
+                     keymap (18 02), as the vendor site does (precaution)",
+            }
+        ),
+    }
+}
+
+#[cfg(all(test, feature = "mock"))]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+    use crate::backup::{ToolInfo, read_all_with};
+    use crate::mock::MockTransport;
+    use crate::sim::{DeviceSim, SimTable};
+    use crate::writer::ConsentOrigin;
+
+    /// The c06 capture replayed into a backup (zero keymaps).
+    fn c06() -> Backup {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../captures/capture_06_powercycle_W_persisted.json");
+        let mock = MockTransport::from_capture_file(path).expect("capture loads");
+        read_all_with(&mut Session::new(mock), &options().backup, |_| {}).expect("backup")
+    }
+
+    fn options() -> RestoreOptions {
+        RestoreOptions {
+            backup: BackupOptions {
+                tool: ToolInfo {
+                    name: "openwraith-tests".into(),
+                    version: "0".into(),
+                },
+                created_at: Some(UNIX_EPOCH + Duration::from_secs(1_792_827_000)),
+            },
+            ..RestoreOptions::default()
+        }
+    }
+
+    /// The order before the fix of 2026-10-24 (spec 4.8.2): the base keymap
+    /// without the Fn keymap after it, reproduced by taking the commit
+    /// trigger out of a prepared plan. The keyboard (simulator) does not
+    /// keep the base keymap, and the persistence check reports it lost.
+    #[test]
+    fn the_base_keymap_alone_is_reported_lost_by_the_persistence_check() {
+        let target = c06();
+        let mut sim = DeviceSim::from_backup(&target);
+        let p1 = ProfileId::ALL[0];
+        let base = SimTable::Keymap(Layer::Base);
+        let mut remapped = vec![0u8; 528];
+        remapped[46 * 4..47 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+        sim.set_table(p1, base, remapped.clone());
+        let consent = WriteConsent::new(ConsentOrigin::CommandLineFlag);
+        let mut prepared = prepare_restore(
+            &mut Session::new(&mut sim),
+            &target,
+            &options(),
+            consent,
+            |_| ControlFlow::Continue(()),
+        )
+        .expect("prepared");
+        // The plan of the fix: the base keymap, then the unchanged Fn keymap.
+        let planned: Vec<(TableId, Option<CommitTriggerReason>)> = prepared
+            .plan
+            .writes()
+            .map(|(_, item, write)| (item.table, write.commit_trigger))
+            .collect();
+        assert_eq!(
+            planned,
+            [
+                (TableId::Keymap { layer: Layer::Base }, None),
+                (
+                    TableId::Keymap { layer: Layer::Fn },
+                    Some(CommitTriggerReason::BaseKeymap)
+                ),
+            ]
+        );
+        // The old order: without it.
+        for profile in &mut prepared.plan.profiles {
+            profile.items.retain(
+                |item| !matches!(&item.action, PlanAction::Write(w) if w.commit_trigger.is_some()),
+            );
+        }
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let saved = prepared
+            .safety
+            .save_safety(dir.path(), "restore")
+            .expect("safety backup");
+        let first = sim.writes_sent();
+        let report = execute_restore(
+            &mut Session::new(&mut sim),
+            &prepared,
+            &saved,
+            consent,
+            |_| ControlFlow::Continue(()),
+        );
+        // Written (ten 18 00 packets, no 18 02), verified, given the commit
+        // settle, and gone after the switch away and back.
+        let keymap: Vec<(u8, u8)> = sim
+            .write_packets()
+            .skip(first)
+            .filter(|p| p.cmd() == 0x18)
+            .map(|p| (p.sub(), p.as_bytes()[3]))
+            .collect();
+        assert_eq!(keymap, (0..10).map(|c| (0x00, c)).collect::<Vec<_>>());
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert_eq!(
+            report.error.as_ref().map(|e| e.kind),
+            Some(ErrorKind::NotPersisted)
+        );
+        assert_eq!(
+            report.persistence,
+            Some(PersistenceCheck {
+                profiles: vec![1],
+                persisted: 0,
+                lost: 1,
+                not_checked: 0
+            })
+        );
+        assert!(matches!(
+            report.items().next().map(|(_, i)| &i.result),
+            Some(ItemResult::Lost { packets: 10, .. })
+        ));
+        assert_eq!(sim.persisted_table(p1, base), Some(remapped.as_slice()));
+        assert!(sim.discarded_edits() >= 1);
+        sim.assert_clean();
     }
 }

@@ -47,7 +47,7 @@ use serde::Serialize;
 
 use crate::error::{ErrorInfo, RestoreError, SessionError};
 use crate::restore::{
-    ItemReport, ItemResult, Outcome, TableFailure, WriteProgress, confirm_profile,
+    Checked, ItemReport, ItemResult, Outcome, TableFailure, WriteProgress, confirm_profile,
     profile_after_gate_failure, write_checked,
 };
 use crate::safety::SavedBackup;
@@ -513,6 +513,8 @@ fn apply<T: WriteTransport>(
                 table: w.table,
                 key: w.key,
                 summary: w.request.to_string(),
+                commit_trigger: None,
+                resent_unchanged: false,
                 result: ItemResult::NotAttempted,
             })
             .collect(),
@@ -571,7 +573,7 @@ fn apply<T: WriteTransport>(
         let result = write_checked(
             &mut writer,
             profile,
-            &write.request,
+            Checked::Table(&write.request),
             &write.planned,
             &[],
             &mut on_packet,

@@ -380,6 +380,28 @@ pub enum WriteError {
         /// The last read-back difference.
         mismatch: Box<Mismatch>,
     },
+    /// The Fn keymap sent as the keymap commit trigger
+    /// ([`CommitTrigger`](crate::CommitTrigger)) did not reach the keyboard
+    /// complete, even after one more attempt with the whole table: the
+    /// acknowledgement of `packet` did not arrive, and the rest of the table
+    /// was not sent. The read-back cannot tell (an unchanged table reads the
+    /// same), and whether a partial `18 02` makes the keyboard save is
+    /// unknown, so a base keymap written before it may not be saved
+    /// (spec 4.8.2).
+    #[error(
+        "the Fn keymap (18 02) that makes the keyboard save the keymap did not reach it complete \
+         after {sends} attempt(s) (no acknowledgement for packet {packet} of {of}); a base \
+         keymap written before it may not be saved"
+    )]
+    CommitTriggerIncomplete {
+        /// How often the whole table was sent.
+        sends: u32,
+        /// The packet (1-based) whose acknowledgement did not arrive, in the
+        /// last send.
+        packet: usize,
+        /// Packets in the table.
+        of: usize,
+    },
     /// The same table of the same profile was already written twice by this
     /// writer (protection against loops and floods).
     #[error("{table} was already written twice in this operation; not writing it again")]
@@ -476,6 +498,7 @@ impl WriteError {
             WriteError::VerifyFailed { .. } | WriteError::RepeatedWrite { .. } => {
                 ErrorKind::VerifyFailed
             }
+            WriteError::CommitTriggerIncomplete { .. } => ErrorKind::Timeout,
             WriteError::ProfileNotSelected { .. }
             | WriteError::ProfileChanged { .. }
             | WriteError::ProfileChangedBeforeSave { .. }

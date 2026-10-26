@@ -5,11 +5,11 @@ mod common;
 
 use common::{c06_backup, fixed_options, pos};
 use openwraith_hid::protocol::{
-    CustomTable, KeyPos, Layer, RawResponse, ReadRequest, Report, TableId,
+    CustomTable, KeyPos, Layer, MacroSlotId, RawResponse, ReadRequest, Report, TableId,
 };
 use openwraith_hid::{
-    Backup, BackupEntry, BlockCause, PlanAction, PlanWarning, RestoreOptions, RestorePlan,
-    SkipReason, plan_restore,
+    Backup, BackupEntry, BlockCause, CommitTriggerReason, PlanAction, PlanWarning, RestoreOptions,
+    RestorePlan, SkipReason, plan_restore,
 };
 
 fn options() -> RestoreOptions {
@@ -403,4 +403,147 @@ fn writing_a_table_of_unknown_scope_warns_about_the_other_profiles() {
             .iter()
             .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. }))
     );
+}
+
+/// The backup's Fn keymap reply cannot be written (chunk 9 declares 56
+/// bytes instead of 24); the keyboard holds the same reply.
+fn unusable_fn(backup: &Backup) -> Backup {
+    edited(backup, ReadRequest::Keymap(Layer::Fn), 9, |b| b[4] = 0x38)
+}
+
+/// W -> A in the base keymap (index 46 = chunk 3, report byte 21).
+fn w_to_a(backup: &Backup) -> Backup {
+    edited(backup, ReadRequest::Keymap(Layer::Base), 3, |b| {
+        b[21..25].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+    })
+}
+
+#[test]
+fn the_base_keymap_is_never_planned_without_the_fn_keymap_after_it() {
+    let base = TableId::Keymap { layer: Layer::Base };
+    let fn_layer = TableId::Keymap { layer: Layer::Fn };
+    // The base keymap differs, the Fn keymap cannot be written: the group
+    // is blocked, nothing is written.
+    let plan = plan(
+        &unusable_fn(&w_to_a(&c06_backup())),
+        &unusable_fn(&c06_backup()),
+    );
+    let cause = BlockCause::FnKeymapNotWritable {
+        reason: CommitTriggerReason::BaseKeymap,
+    };
+    assert_eq!(
+        reason(&plan, base, None),
+        SkipReason::KeymapGroupBlocked {
+            cause: cause.clone()
+        }
+    );
+    match action(&plan, base, None) {
+        PlanAction::Skip { message, .. } => {
+            assert!(message.contains("not written alone"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(action(&plan, fn_layer, None), PlanAction::Unchanged);
+    assert!(!plan.has_writes());
+    let json = serde_json::to_value(&plan).expect("serializes");
+    assert!(
+        json.to_string().contains("fn_keymap_not_writable"),
+        "{json}"
+    );
+
+    // Macro slots alone: blocked the same way (the precaution).
+    let with_macro = edited(&c06_backup(), ReadRequest::Macro(slot0()), 0, |b| b[5] = 0);
+    let plan = plan_restore(
+        &unusable_fn(&c06_backup()),
+        &unusable_fn(&with_macro),
+        &options(),
+    )
+    .expect("plan");
+    assert_eq!(
+        reason(&plan, TableId::Macro { slot: slot0() }, None),
+        SkipReason::KeymapGroupBlocked {
+            cause: BlockCause::FnKeymapNotWritable {
+                reason: CommitTriggerReason::MacrosOrAdvancedKeys
+            }
+        }
+    );
+    assert!(!plan.has_writes());
+
+    // The keyboard did not report its Fn keymap: blocked too.
+    let missing = plan_restore(
+        &w_to_a(&c06_backup()),
+        &without(&c06_backup(), ReadRequest::Keymap(Layer::Fn)),
+        &options(),
+    )
+    .expect("plan");
+    assert!(!missing.has_writes());
+}
+
+fn slot0() -> MacroSlotId {
+    MacroSlotId::new(0).expect("slot 0")
+}
+
+#[test]
+fn the_fn_keymap_follows_the_base_keymap_changed_or_not() {
+    let base = TableId::Keymap { layer: Layer::Base };
+    let fn_layer = TableId::Keymap { layer: Layer::Fn };
+    let order = |plan: &RestorePlan| -> Vec<(TableId, Option<CommitTriggerReason>, bool)> {
+        plan.writes()
+            .map(|(_, item, w)| (item.table, w.commit_trigger, w.is_resent_unchanged()))
+            .collect()
+    };
+    // Only the base keymap differs: the unchanged Fn keymap is re-sent.
+    let plan = plan_restore(&w_to_a(&c06_backup()), &c06_backup(), &options()).expect("plan");
+    assert_eq!(
+        order(&plan),
+        [
+            (base, None, false),
+            (fn_layer, Some(CommitTriggerReason::BaseKeymap), true)
+        ]
+    );
+    assert_eq!(plan.packet_count(), 20);
+    // Re-sending unchanged bytes changes no other profile: no warning.
+    assert!(
+        plan.warnings
+            .iter()
+            .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. })),
+        "{:?}",
+        plan.warnings
+    );
+
+    // Both differ (Fn index 130 = chunk 9, report byte 21): the Fn write
+    // is a real change and still the trigger.
+    let target = edited(
+        &w_to_a(&c06_backup()),
+        ReadRequest::Keymap(Layer::Fn),
+        9,
+        |b| {
+            b[21..25].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+        },
+    );
+    let plan = plan_restore(&target, &c06_backup(), &options()).expect("plan");
+    assert_eq!(
+        order(&plan),
+        [
+            (base, None, false),
+            (fn_layer, Some(CommitTriggerReason::BaseKeymap), false)
+        ]
+    );
+    let fn_write = plan
+        .writes()
+        .find(|(_, item, _)| item.table == fn_layer)
+        .map(|(_, _, w)| w)
+        .expect("Fn write");
+    assert_eq!(fn_write.summary, "Fn keymap (18 02)");
+    assert_eq!(fn_write.changes.len(), 1);
+    assert!(plan.warnings.iter().any(|w| matches!(
+        w,
+        PlanWarning::SharedTablesMayChangeOtherProfiles { tables, .. } if tables.contains(&fn_layer)
+    )));
+
+    // Only the Fn keymap differs: a plain write, no trigger.
+    let target = edited(&c06_backup(), ReadRequest::Keymap(Layer::Fn), 9, |b| {
+        b[21..25].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+    });
+    assert_eq!(order(&plan_for(&target)), [(fn_layer, None, false)]);
 }

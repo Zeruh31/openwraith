@@ -12,7 +12,9 @@
 //!   [`Writer::write_guarded`], which needs a [`SavedBackup`] of the active
 //!   profile of this keyboard, confirms the active profile with `21/11` and
 //!   re-reads the bytes it would replace (nothing is sent when the keyboard
-//!   already holds them). The higher-level operations
+//!   already holds them), and its variant for the Fn keymap,
+//!   [`Writer::write_commit_trigger`], which has the same guards but sends a
+//!   matching table too (see below). The higher-level operations
 //!   ([`execute_restore`](crate::execute_restore),
 //!   [`apply_trigger_edit`](crate::apply_trigger_edit),
 //!   [`apply_light_edit`](crate::apply_light_edit)) take a `SavedBackup` too
@@ -75,6 +77,21 @@
 //!   passed fails with [`WriteError::ProfileChangedBeforeSave`]: the write
 //!   may not have been saved ([`Writer::commit_interrupted`]). The settle
 //!   cannot be turned off outside tests ([`CommitSettle`]).
+//! * **The base keymap needs the Fn keymap after it.** The keyboard saves a
+//!   base-keymap write (`18 00`) only when an Fn-keymap write (`18 02`)
+//!   follows it; on its own it is gone after a profile switch, even after
+//!   the commit settle (CONFIRMED on hardware, spec 4.8.2). Since
+//!   [`Writer::write_guarded`] sends nothing when the keyboard already holds
+//!   a table, the Fn keymap is re-sent as a [`CommitTrigger`] with
+//!   [`Writer::write_commit_trigger`], which only accepts an Fn-keymap write
+//!   and keeps every other guard. A read-back cannot show whether such a
+//!   re-send arrived (the table reads the same either way), so a commit
+//!   trigger also needs an acknowledgement for **every** packet: an ack
+//!   timeout counts as a failed verification (one more attempt with the
+//!   whole table, then [`WriteError::CommitTriggerIncomplete`]). The writer
+//!   remembers a base keymap sent without a complete Fn-keymap write after
+//!   it ([`Writer::base_keymap_unsaved`]); a profile switch made then
+//!   reports [`WriteWarning::BaseKeymapNotSaved`].
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -82,8 +99,9 @@ use std::time::Duration;
 
 use openwraith_protocol::{
     AckOffer, AckSpec, AckTracker, ActiveProfile, DeviceEvent, DeviceInfo, FromResponse, KeyMask,
-    LightLimits, LightModeList, LightRecord, MainLightWrite, Mismatch, Model, ProfileId,
-    RawResponse, ReadRequest, Report, TableId, WriteRequest, WriteStep, model_for_product,
+    KeymapData, Layer, LightLimits, LightModeList, LightRecord, MainLightWrite, Mismatch, Model,
+    ProfileId, RawResponse, ReadRequest, Report, TableId, WriteRequest, WriteStep,
+    model_for_product,
 };
 use serde::Serialize;
 
@@ -312,6 +330,13 @@ pub enum WriteWarning {
         /// How long it waited, in milliseconds.
         waited_ms: u64,
     },
+    /// A base keymap was written, but the operation stopped before the
+    /// Fn-keymap write that makes the keyboard save it ([`CommitTrigger`]):
+    /// the keyboard will drop it at the next profile switch or power loss
+    /// (spec 4.8.2). In a [`SelectOutcome`]: the switch was made while such
+    /// a base keymap was unsaved ([`Writer::base_keymap_unsaved`]), so the
+    /// keyboard dropped it.
+    BaseKeymapNotSaved,
 }
 
 /// What a table write did.
@@ -344,6 +369,60 @@ pub enum GuardedWrite {
     },
     /// Written and verified by reading it back.
     Written(WriteOutcome),
+}
+
+/// An Fn-keymap write (`18 02`) sent as the keyboard's **keymap commit
+/// trigger**: [`Writer::write_commit_trigger`] sends it even when the
+/// keyboard already holds its bytes.
+///
+/// The keyboard saves a base-keymap write (`18 00`) only when an Fn-keymap
+/// write follows it: written alone, the base keymap is acked and reads back
+/// at once, but is gone after a profile switch, even 6 s later (CONFIRMED on
+/// hardware, spec 4.8.2). The vendor site never notices, because every Apply
+/// writes the macros, `18 00`, `18 02` and the advanced keys in that order.
+/// So after the base keymap, the Fn keymap must be written too, unchanged
+/// if need be; [`Writer::write_guarded`] would skip an unchanged table.
+///
+/// Only an Fn-keymap write can be a commit trigger: [`CommitTrigger::fn_keymap`]
+/// builds one, and `TryFrom<WriteRequest>` refuses every other request
+/// (giving it back). It is no way to send anything else, and the write keeps
+/// every guard of [`Writer::write_guarded`] except the skip of a matching
+/// table. It is stricter in one respect: every packet must be acknowledged
+/// (see [`Writer::write_commit_trigger`]).
+///
+/// ```
+/// use openwraith_hid::CommitTrigger;
+/// use openwraith_hid::protocol::{ProfileId, WriteRequest};
+///
+/// let select = WriteRequest::SelectProfile(ProfileId::ALL[1]);
+/// assert_eq!(CommitTrigger::try_from(select.clone()), Err(select));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTrigger(WriteRequest);
+
+impl CommitTrigger {
+    /// The Fn-keymap write of `data` as a commit trigger.
+    pub fn fn_keymap(data: KeymapData) -> Self {
+        CommitTrigger(WriteRequest::Keymap(Layer::Fn, data))
+    }
+
+    /// The Fn-keymap write (always a [`WriteRequest::Keymap`] of
+    /// [`Layer::Fn`]).
+    pub fn request(&self) -> &WriteRequest {
+        &self.0
+    }
+}
+
+impl TryFrom<WriteRequest> for CommitTrigger {
+    /// Any request other than an Fn-keymap write, given back unchanged.
+    type Error = WriteRequest;
+
+    fn try_from(request: WriteRequest) -> Result<Self, Self::Error> {
+        match request {
+            WriteRequest::Keymap(Layer::Fn, data) => Ok(CommitTrigger::fn_keymap(data)),
+            other => Err(other),
+        }
+    }
 }
 
 /// What [`Writer::select_profile`] did.
@@ -436,8 +515,35 @@ impl<T: WriteTransport> Session<T> {
             identity: None,
             sends: HashMap::new(),
             stop: None,
+            base_unsaved: false,
         })
     }
+}
+
+/// How far one sending of a table got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    /// Every packet was sent and every required acknowledgement arrived.
+    Complete,
+    /// The required acknowledgement of `packet` (1-based) of `of` did not
+    /// arrive in time; the rest of the table was not sent.
+    Stopped {
+        /// The packet whose acknowledgement timed out.
+        packet: usize,
+        /// Packets in the table.
+        of: usize,
+    },
+}
+
+/// What a write must achieve besides a matching read-back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    /// The read-back matches (an ack timeout stops the send, and the
+    /// read-back decides).
+    Verified,
+    /// The read-back matches **and** every packet was sent and acknowledged:
+    /// a [`CommitTrigger`], whose read-back cannot show whether it arrived.
+    EveryPacketAcked,
 }
 
 /// Which table a send counts against ([`WriteError::RepeatedWrite`]).
@@ -476,6 +582,9 @@ pub struct Writer<'s, T: WriteTransport> {
     identity: Option<Identity>,
     sends: HashMap<SendKey, u32>,
     stop: Option<ForeignActivity>,
+    /// A base keymap was sent and no complete Fn-keymap write followed yet
+    /// ([`base_keymap_unsaved`](Writer::base_keymap_unsaved)).
+    base_unsaved: bool,
 }
 
 impl<T: WriteTransport> Writer<'_, T> {
@@ -510,6 +619,19 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// selects are still allowed, to return to the original profile).
     pub fn foreign_activity_seen(&self) -> Option<ForeignActivity> {
         self.stop
+    }
+
+    /// Whether this writer sent a base keymap (`18 00`) and no complete
+    /// Fn-keymap write (`18 02`, every packet acknowledged) followed it yet.
+    /// The keyboard saves the base keymap only then: until a
+    /// [`write_commit_trigger`](Self::write_commit_trigger) (or a changed Fn
+    /// keymap written with [`write_guarded`](Self::write_guarded)), a
+    /// profile switch or a power loss drops it, even after the commit settle
+    /// (spec 4.8.2). [`select_profile`](Self::select_profile) reports such a
+    /// switch with [`WriteWarning::BaseKeymapNotSaved`] and clears this.
+    /// Kept per writer: a new writer starts with `false`.
+    pub fn base_keymap_unsaved(&self) -> bool {
+        self.base_unsaved
     }
 
     /// Reads the active profile (`21/11`).
@@ -574,6 +696,11 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// switch with `21/11` (a missing push is only a warning when `21/11`
     /// confirms). Retries once, then fails with
     /// [`WriteError::ProfileNotSelected`].
+    ///
+    /// A switch made while [`base_keymap_unsaved`](Self::base_keymap_unsaved)
+    /// drops that base keymap: the outcome then carries
+    /// [`WriteWarning::BaseKeymapNotSaved`]. The switch is made all the same
+    /// (an operation must always be able to return to the original profile).
     pub fn select_profile(&mut self, profile: ProfileId) -> Result<SelectOutcome, WriteError> {
         self.select_profile_observed(profile, &mut |_| {})
     }
@@ -633,6 +760,11 @@ impl<T: WriteTransport> Writer<'_, T> {
             }
             active = self.active_profile()?;
             if active == profile {
+                // The switch reloaded the profile: a base keymap without
+                // the Fn keymap after it is gone (spec 4.8.2).
+                if std::mem::take(&mut self.base_unsaved) {
+                    warnings.push(WriteWarning::BaseKeymapNotSaved);
+                }
                 return Ok(SelectOutcome {
                     profile,
                     switched: true,
@@ -771,7 +903,9 @@ impl<T: WriteTransport> Writer<'_, T> {
     }
 
     /// Writes one table to the active profile, guarded like every write of
-    /// this crate. This is the only public way to send a table write.
+    /// this crate. This is the only public way to send a table write (apart
+    /// from [`write_commit_trigger`](Self::write_commit_trigger), which only
+    /// sends the Fn keymap).
     ///
     /// 1. Refuses when another program was seen while writing.
     /// 2. Checks that `saved` (a verified safety backup, see
@@ -781,7 +915,11 @@ impl<T: WriteTransport> Writer<'_, T> {
     ///    [`WriteError::NotBackedUp`] and nothing is sent.
     /// 3. Re-reads exactly the bytes `request` writes: when the keyboard
     ///    already holds them, nothing is sent
-    ///    ([`GuardedWrite::AlreadyMatched`]).
+    ///    ([`GuardedWrite::AlreadyMatched`]). After a base-keymap write the
+    ///    Fn keymap must be sent even then: use
+    ///    [`write_commit_trigger`](Self::write_commit_trigger) (until then
+    ///    [`base_keymap_unsaved`](Self::base_keymap_unsaved) is true, and a
+    ///    profile switch reports [`WriteWarning::BaseKeymapNotSaved`]).
     /// 4. Writes stop-and-wait and verifies by reading back, with one more
     ///    attempt with the whole table (see the
     ///    [module documentation](crate::writer)). A main-light write is
@@ -828,17 +966,7 @@ impl<T: WriteTransport> Writer<'_, T> {
                 GuardedWrite::Written(outcome)
             });
         }
-        if let Some(evidence) = self.stop {
-            return Err(WriteError::OtherProgramActive { evidence });
-        }
-        let product = self.identity()?.product;
-        let profile = self.active_profile()?;
-        if !saved.covers(profile) || saved.product() != product.as_deref() {
-            return Err(WriteError::NotBackedUp {
-                path: saved.path().to_path_buf(),
-                profile: profile.get(),
-            });
-        }
+        let profile = self.check_backed_up(saved)?;
         let mut fresh = Vec::new();
         for read in request.verify_reads() {
             fresh.push(self.read(read)?);
@@ -852,6 +980,71 @@ impl<T: WriteTransport> Writer<'_, T> {
             .map(GuardedWrite::Written)
     }
 
+    /// Writes the Fn keymap of `trigger` to the active profile **also when
+    /// the keyboard already holds it**, so that the keyboard saves a base
+    /// keymap written before it (see [`CommitTrigger`]; spec 4.8.2). Call it
+    /// right after a base-keymap write made with
+    /// [`write_guarded`](Self::write_guarded), before anything else.
+    ///
+    /// Every guard of [`write_guarded`](Self::write_guarded) applies, except
+    /// that a matching table is sent anyway: it refuses after another
+    /// program was seen, needs a `saved` safety backup of the active
+    /// profile of this keyboard model (confirmed with `21/11`), writes
+    /// stop-and-wait, verifies by reading back (one more attempt with the
+    /// whole table) and counts towards [`WriteError::RepeatedWrite`].
+    ///
+    /// The read-back of an unchanged table matches whether it arrived or
+    /// not, and whether a partial `18 02` makes the keyboard save is
+    /// unknown. So every packet must also be acknowledged: an ack timeout
+    /// (which stops the send) counts as a failed verification, the whole
+    /// table is sent once more, and when that send is incomplete too the
+    /// write fails with [`WriteError::CommitTriggerIncomplete`] (the base
+    /// keymap then stays unsaved, see
+    /// [`base_keymap_unsaved`](Self::base_keymap_unsaved)).
+    ///
+    /// Like any write, the keyboard saves it about 1 s later: call
+    /// [`wait_for_commit`](Self::wait_for_commit) before reporting the change
+    /// as done.
+    pub fn write_commit_trigger(
+        &mut self,
+        saved: &SavedBackup,
+        trigger: &CommitTrigger,
+    ) -> Result<WriteOutcome, WriteError> {
+        self.write_commit_trigger_observed(saved, trigger, &mut |_| {})
+    }
+
+    /// [`write_commit_trigger`](Self::write_commit_trigger), calling
+    /// `on_packet` before every packet.
+    pub fn write_commit_trigger_observed(
+        &mut self,
+        saved: &SavedBackup,
+        trigger: &CommitTrigger,
+        on_packet: &mut dyn FnMut(PacketProgress),
+    ) -> Result<WriteOutcome, WriteError> {
+        self.ensure_usable()?;
+        self.check_backed_up(saved)?;
+        self.write_trigger_observed(trigger, on_packet)
+    }
+
+    /// Steps 1 and 2 of [`write_guarded`](Self::write_guarded): refuses
+    /// after foreign activity, and unless `saved` holds the active profile
+    /// (read with `21/11`) of this keyboard model. Returns the active
+    /// profile.
+    fn check_backed_up(&mut self, saved: &SavedBackup) -> Result<ProfileId, WriteError> {
+        if let Some(evidence) = self.stop {
+            return Err(WriteError::OtherProgramActive { evidence });
+        }
+        let product = self.identity()?.product;
+        let profile = self.active_profile()?;
+        if !saved.covers(profile) || saved.product() != product.as_deref() {
+            return Err(WriteError::NotBackedUp {
+                path: saved.path().to_path_buf(),
+                profile: profile.get(),
+            });
+        }
+        Ok(profile)
+    }
+
     /// Writes `request` to the active profile: stop-and-wait per packet,
     /// read-back verification, one more attempt with the whole table. See
     /// the [module documentation](crate::writer).
@@ -862,6 +1055,35 @@ impl<T: WriteTransport> Writer<'_, T> {
     pub(crate) fn write_observed(
         &mut self,
         request: &WriteRequest,
+        on_packet: &mut dyn FnMut(PacketProgress),
+    ) -> Result<WriteOutcome, WriteError> {
+        self.write_with(request, Completion::Verified, on_packet)
+    }
+
+    /// [`write_observed`](Self::write_observed) for a [`CommitTrigger`]
+    /// (always an Fn-keymap write): besides the read-back, every packet must
+    /// be sent and acknowledged, else the write counts as not verified (one
+    /// more attempt with the whole table, then
+    /// [`WriteError::CommitTriggerIncomplete`]). See
+    /// [`write_commit_trigger`](Self::write_commit_trigger).
+    ///
+    /// Crate-private like `write_observed`: callers are
+    /// [`write_commit_trigger_observed`](Self::write_commit_trigger_observed)
+    /// and the restore, which check the backup and the active profile.
+    pub(crate) fn write_trigger_observed(
+        &mut self,
+        trigger: &CommitTrigger,
+        on_packet: &mut dyn FnMut(PacketProgress),
+    ) -> Result<WriteOutcome, WriteError> {
+        self.write_with(trigger.request(), Completion::EveryPacketAcked, on_packet)
+    }
+
+    /// The write of [`write_observed`](Self::write_observed) and
+    /// [`write_trigger_observed`](Self::write_trigger_observed).
+    fn write_with(
+        &mut self,
+        request: &WriteRequest,
+        completion: Completion,
         on_packet: &mut dyn FnMut(PacketProgress),
     ) -> Result<WriteOutcome, WriteError> {
         if let WriteRequest::SelectProfile(profile) = request {
@@ -897,10 +1119,11 @@ impl<T: WriteTransport> Writer<'_, T> {
 
         self.count_send(key)?;
         outcome.sends = 1;
-        self.send_steps(request, 1, &mut outcome, on_packet)?;
-        let first = match self.verify(request, &mut outcome)? {
-            Ok(()) => return Ok(outcome),
-            Err(mismatch) => mismatch,
+        let sent = self.send_steps(request, 1, &mut outcome, on_packet)?;
+        let verified = self.verify(request, &mut outcome)?;
+        let first = match self.unverified(request, completion, sent, verified, 1) {
+            None => return Ok(self.verified_outcome(request, sent, outcome)),
+            Some(failure) => failure,
         };
 
         // One more attempt with the whole table.
@@ -908,26 +1131,60 @@ impl<T: WriteTransport> Writer<'_, T> {
             return Err(WriteError::OtherProgramActive { evidence });
         }
         if self.sends.get(&key).copied().unwrap_or(0) >= 2 {
-            return Err(WriteError::VerifyFailed {
-                table: request.table(),
-                sends: 1,
-                mismatch: Box::new(first),
-            });
+            return Err(first);
         }
         self.listen_checked(self.options.retry_quiet)?;
         let retry = self.rebuild(request)?;
         self.count_send(key)?;
         outcome.sends = 2;
         outcome.warnings.push(WriteWarning::Retried);
-        self.send_steps(&retry, 2, &mut outcome, on_packet)?;
-        match self.verify(&retry, &mut outcome)? {
-            Ok(()) => Ok(outcome),
-            Err(mismatch) => Err(WriteError::VerifyFailed {
+        let sent = self.send_steps(&retry, 2, &mut outcome, on_packet)?;
+        let verified = self.verify(&retry, &mut outcome)?;
+        match self.unverified(&retry, completion, sent, verified, 2) {
+            None => Ok(self.verified_outcome(&retry, sent, outcome)),
+            Some(failure) => Err(failure),
+        }
+    }
+
+    /// Why send number `sends` of `request` is not verified, if it is not:
+    /// the read-back differs ([`WriteError::VerifyFailed`]), or a commit
+    /// trigger did not reach the keyboard complete
+    /// ([`WriteError::CommitTriggerIncomplete`]).
+    fn unverified(
+        &self,
+        request: &WriteRequest,
+        completion: Completion,
+        sent: Sent,
+        verified: Result<(), Mismatch>,
+        sends: u32,
+    ) -> Option<WriteError> {
+        match (verified, sent) {
+            (Err(mismatch), _) => Some(WriteError::VerifyFailed {
                 table: request.table(),
-                sends: 2,
+                sends,
                 mismatch: Box::new(mismatch),
             }),
+            (Ok(()), Sent::Stopped { packet, of })
+                if completion == Completion::EveryPacketAcked =>
+            {
+                Some(WriteError::CommitTriggerIncomplete { sends, packet, of })
+            }
+            (Ok(()), _) => None,
         }
+    }
+
+    /// A verified write: records whether it saved a base keymap sent
+    /// before it (a complete Fn-keymap write, spec 4.8.2).
+    fn verified_outcome(
+        &mut self,
+        request: &WriteRequest,
+        sent: Sent,
+        outcome: WriteOutcome,
+    ) -> WriteOutcome {
+        if sent == Sent::Complete && matches!(request, WriteRequest::Keymap(Layer::Fn, _)) {
+            self.base_unsaved = false;
+        }
+        outcome
     }
 
     /// Reads one complete profile snapshot (the [`read_all`](crate::read_all)
@@ -1161,14 +1418,15 @@ impl<T: WriteTransport> Writer<'_, T> {
 
     /// Sends the packets of `request` one at a time, waiting for each
     /// acknowledgement. Stops (without an error) after an acknowledgement
-    /// timeout: the rest of the table is not sent and the caller verifies.
+    /// timeout: the rest of the table is not sent and the caller verifies
+    /// ([`Sent::Stopped`]).
     fn send_steps(
         &mut self,
         request: &WriteRequest,
         send: u32,
         outcome: &mut WriteOutcome,
         on_packet: &mut dyn FnMut(PacketProgress),
-    ) -> Result<(), WriteError> {
+    ) -> Result<Sent, WriteError> {
         let steps = request.steps();
         self.settle_late_acks(&steps, outcome)?;
         let of = steps.len();
@@ -1186,6 +1444,10 @@ impl<T: WriteTransport> Writer<'_, T> {
             self.session
                 .send_write(&step.packet, self.known_profile.map(ProfileId::get))?;
             outcome.packets += 1;
+            if let WriteRequest::Keymap(Layer::Base, _) = request {
+                // In the working copy now; saved only by an 18 02 after it.
+                self.base_unsaved = true;
+            }
             if step.ack.expects_reply() {
                 let required = step.ack.is_required();
                 let timeout = if required {
@@ -1203,7 +1465,7 @@ impl<T: WriteTransport> Writer<'_, T> {
                         outcome
                             .warnings
                             .push(WriteWarning::AckTimeout { packet, of, send });
-                        return Ok(());
+                        return Ok(Sent::Stopped { packet, of });
                     }
                     outcome
                         .warnings
@@ -1216,7 +1478,7 @@ impl<T: WriteTransport> Writer<'_, T> {
                 self.listen_checked(step.gap_after)?;
             }
         }
-        Ok(())
+        Ok(Sent::Complete)
     }
 
     /// Reads `request`'s verify reads and compares them; on a mismatch reads

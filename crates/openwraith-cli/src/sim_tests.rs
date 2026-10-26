@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use openwraith_hid::{Backup, DeviceSim, SimTable, WriteError};
-use openwraith_protocol::{KeyPos, ProfileId, ReadRequest, Report};
+use openwraith_protocol::{KeyPos, Layer, ProfileId, ReadRequest, Report};
 
 use crate::commands::Exit;
 use crate::test_support::{SimConnector, TestUi, c06_backup, sim_with_profiles};
@@ -1229,4 +1229,148 @@ fn offline_plan_against_another_backup_needs_no_keyboard() {
     assert_eq!(exit, Exit::Success);
     assert!(ui.out.contains("trigger of W (r2c2)"), "{}", ui.out);
     assert_eq!((connector.read_sessions, connector.write_sessions), (0, 0));
+}
+
+/// A base keymap with the vendor site's knob defaults (16-21) and `01` at
+/// Fn (121), as profile 1 read in c10 after the site's Applies.
+fn knob_defaults_keymap() -> Vec<u8> {
+    let mut table = vec![0u8; 528];
+    for (index, entry) in [
+        (16, [0x07, 0x12, 0, 0]),
+        (17, [0x07, 0x11, 0, 0]),
+        (18, [0x07, 0x10, 0, 0]),
+        (19, [0x02, 0x02, 0, 0]),
+        (20, [0x03, 0x01, 0, 0]),
+        (21, [0x03, 0x00, 0, 0]),
+        (121, [0x01, 0, 0, 0]),
+    ] {
+        table[index * 4..index * 4 + 4].copy_from_slice(&entry);
+    }
+    table
+}
+
+/// Hardware test H9 (PROTOCOL.md 4.8.2): restoring the pre-c09 backup
+/// writes the base keymap and then re-sends the unchanged Fn keymap, because
+/// the keyboard keeps the base keymap only when the Fn keymap is written
+/// after it. The plan and the report say so.
+#[test]
+fn a_base_keymap_restore_re_sends_the_unchanged_fn_keymap() {
+    let fx = Fixture::new();
+    let file = fx.save(&c06_backup(), "pre-c09");
+    let mut sim = DeviceSim::from_backup(&c06_backup());
+    sim.set_table(
+        profile(1),
+        SimTable::Keymap(Layer::Base),
+        knob_defaults_keymap(),
+    );
+    let mut connector = SimConnector::new(sim);
+
+    let mut ui = TestUi::answering(&[]);
+    let exit = run(
+        &["restore", text(&file), "--dry-run", "--packets"],
+        &mut connector,
+        &mut ui,
+    )
+    .expect("dry run");
+    // Shown with `cargo test -- --nocapture`.
+    println!(
+        "--- openwraith restore <pre-c09 backup> --dry-run --packets ---\n{}",
+        ui.out
+    );
+    assert_eq!(exit, Exit::Success);
+    let out = &ui.out;
+    assert!(
+        out.contains(
+            "unchanged, re-sent: the keyboard keeps the base keymap only when the Fn keymap is \
+             written after it"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("Total: 2 writes (20 packets) in profile 1."),
+        "{out}"
+    );
+    // Ten 18 00 packets, then ten 18 02 packets.
+    let packets: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("18 0"))
+        .collect();
+    assert_eq!(packets.len(), 20, "{out}");
+    for (i, line) in packets.iter().enumerate() {
+        let (sub, chunk) = (if i < 10 { "00" } else { "02" }, i % 10);
+        assert!(
+            line.starts_with(&format!("18 {sub} 00 0{chunk} ")),
+            "{i}: {line}"
+        );
+    }
+    assert_reads_only(&connector.sim.borrow());
+
+    let mut ui = TestUi::answering(&[]);
+    let exit = run(
+        &[
+            "restore",
+            text(&file),
+            "--yes",
+            "--safety-dir",
+            text(&fx.safety_dir()),
+        ],
+        &mut connector,
+        &mut ui,
+    )
+    .expect("restore");
+    println!(
+        "--- openwraith restore <pre-c09 backup> --yes ---\n{}",
+        ui.out
+    );
+    let out = &ui.out;
+    assert_eq!(exit, Exit::Success, "{out}\n{}", ui.err);
+    assert!(
+        out.contains(
+            "Done: 1 table of 1 written and verified by reading them back; the Fn keymap (18 02) \
+             was also re-sent unchanged to make the keyboard save the base keymap."
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("written and verified (10 packets), persisted"),
+        "{out}"
+    );
+    // The unchanged Fn keymap reads the same whether it arrived or not: what
+    // counts is that every packet was acknowledged, and the persistence
+    // check does not count it.
+    assert!(
+        out.contains("re-sent in full, every packet acknowledged (10 packets)"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "Persistence check: profile 1 selected again after switching away; 1 written table \
+             still holds what was written (the keyboard saved it)."
+        ),
+        "{out}"
+    );
+    let sim = connector.sim.borrow();
+    let sent = writes(&sim);
+    assert_eq!(sent.len(), 22, "{sent:?}");
+    assert!(
+        sent[..10].iter().all(|p| p.starts_with("18 00 ")),
+        "{sent:?}"
+    );
+    assert!(
+        sent[10..20].iter().all(|p| p.starts_with("18 02 ")),
+        "{sent:?}"
+    );
+    assert_eq!(sent[20..], ["21 00 00 00 00 12 02", "21 00 00 00 00 12 01"]);
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::Keymap(Layer::Base)),
+        Some(&[0u8; 528][..])
+    );
+    sim.assert_clean();
 }

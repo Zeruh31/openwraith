@@ -649,6 +649,11 @@ fn write_hint(err: &WriteError) -> Option<&'static str> {
             "the keyboard did not keep the written values; restore the safety backup and please \
              report this together with the output of the same command with --verbose",
         ),
+        WriteError::CommitTriggerIncomplete { .. } => Some(
+            "the keyboard did not acknowledge every packet of the Fn keymap, which it needs to \
+             save the base keymap; check the USB connection, then run the same command \
+             again or undo it with the printed command",
+        ),
         WriteError::ProfileChangedBeforeSave { .. } => Some(
             "the keyboard switched profiles before it had saved the last write, so it may have \
              discarded it: select the written profile with `openwraith profile select N` and \

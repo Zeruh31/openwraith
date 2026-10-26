@@ -85,7 +85,18 @@ spec allows, but unverified.
   vendor site writes its own knob defaults into the keymap; OpenWraith does
   not). If the keymaps, macros or advanced keys cannot be restored as a whole
   (for example because a non-empty advanced key would need an unconfirmed
-  write format), that whole group is skipped and the plan says why.
+  write format), that whole group is skipped and the plan says why. The
+  group is written in the vendor site's order (macros, base keymap, Fn
+  keymap, advanced keys). The keyboard keeps a changed base keymap only when
+  the Fn keymap is written after it (found on real hardware, docs/PROTOCOL.md
+  4.8.2), so the Fn keymap is then written right after it, unchanged if
+  need be. The plan shows it as "Fn keymap (18 02)" with the reason in its
+  Change column ("unchanged, re-sent: the keyboard keeps the base keymap only
+  when the Fn keymap is written after it"); the report lists it as "Fn keymap
+  (18 02) re-sent unchanged to make the keyboard save the base keymap", and
+  every one of its packets must be acknowledged. As a precaution (an untested
+  guess), a restore that writes only macro or advanced-key slots ends with
+  the unchanged Fn keymap as well.
 - **The keyboard saves a change about 1 second after it is written.** Until
   then it keeps it only in memory: a profile switch (or unplugging the cable)
   in that second loses it, and reading it back cannot tell (found on real
@@ -112,7 +123,10 @@ spec allows, but unverified.
   table no longer holds the backup's values (the "final check"). A restore
   limited to some profiles warns that such a write may change the others.
 - Press **Ctrl+C** to stop: OpenWraith finishes the current table, switches
-  back to the original profile and reports what was written. A second Ctrl+C
+  back to the original profile and reports what was written. Inside the
+  keymap group (macros, keymaps, advanced keys) it skips the group's other
+  tables but still writes the Fn keymap, without which the keyboard would
+  not keep what was already written, and stops after it. A second Ctrl+C
   stops immediately. The final check of a restore is not interrupted.
 
 ## Build (Windows)
@@ -414,7 +428,17 @@ gelecek.
   varsayılanlarını yazar; OpenWraith yazmaz). Tuş atamaları, makrolar ve
   gelişmiş tuşlar bir bütün olarak geri yüklenemiyorsa (örneğin boş olmayan
   bir gelişmiş tuş, doğrulanmamış bir yazma biçimi gerektirdiği için) bu grup
-  tümüyle atlanır ve plan nedenini söyler.
+  tümüyle atlanır ve plan nedenini söyler. Grup, sitenin sırasıyla yazılır
+  (makrolar, ana tuş tablosu, Fn tuş tablosu, gelişmiş tuşlar). Klavye
+  değişen ana tuş tablosunu yalnızca ardından Fn tuş tablosu yazılırsa tutar
+  (gerçek klavyede bulundu, docs/PROTOCOL.md 4.8.2); bu yüzden Fn tuş
+  tablosu hemen ardından, gerekirse değişmeden yeniden yazılır. Plan bunu
+  "Fn keymap (18 02)" olarak, nedenini Change sütununda gösterir
+  ("unchanged, re-sent: ..."); rapor "Fn keymap (18 02) re-sent unchanged to
+  make the keyboard save the base keymap" olarak listeler ve paketlerinin her
+  birinin onaylanmasını şart koşar. Önlem olarak (denenmemiş bir tahmin),
+  yalnızca makro ya da gelişmiş tuş yazan bir geri yükleme de değişmemiş Fn
+  tuş tablosuyla biter.
 - **Klavye bir değişikliği yazıldıktan yaklaşık 1 saniye sonra kaydeder.**
   O ana kadar değişiklik yalnızca bellektedir: bu bir saniye içinde profil
   değiştirmek (ya da kabloyu çıkarmak) değişikliği kaybettirir ve geri okuma
@@ -444,8 +468,11 @@ gelecek.
   Yalnızca bazı profillerle sınırlı bir geri yükleme, böyle bir yazmanın diğer
   profilleri de değiştirebileceği konusunda uyarır.
 - **Ctrl+C** ile durdurabilirsiniz: OpenWraith o anki tabloyu bitirir, eski
-  profile geri geçer ve neyin yazıldığını bildirir. İkinci Ctrl+C hemen
-  durdurur. Geri yüklemenin son denetimi yarıda kesilmez.
+  profile geri geçer ve neyin yazıldığını bildirir. Tuş grubunun (makrolar,
+  tuş tabloları, gelişmiş tuşlar) içindeyse grubun diğer tablolarını atlar,
+  ama Fn tuş tablosunu yine de yazar (o olmadan klavye yazılmış olanları
+  tutmaz) ve ondan sonra durur. İkinci Ctrl+C hemen durdurur. Geri
+  yüklemenin son denetimi yarıda kesilmez.
 - Metin çıktısında `*` ile işaretlenen değerlerin anlamı üreticinin sitesinin
   kodundan alınmıştır ve henüz USB trafiğinde doğrulanmamıştır; JSON
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.

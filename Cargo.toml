@@ -21,5 +21,6 @@ hidapi = "2.6"
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 tempfile = "3.27"
-# Ctrl+C handling of the CLI's write commands (cancel at the next table boundary).
+# Ctrl+C handling of the CLI's write commands (cancel at the next table boundary;
+# in a restore's keymap group after its Fn keymap).
 ctrlc = "3.5"

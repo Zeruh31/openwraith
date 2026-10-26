@@ -25,10 +25,13 @@
 //!   `DeviceSim` (feature `mock`) implement it.
 //! * [`Writer`] ([`Session::writer`]): consent, the "other program" gate,
 //!   profile selection, and [`Writer::write_guarded`], the only public table
-//!   write: it needs a [`SavedBackup`] of the active profile and writes
-//!   stop-and-wait with read-back verification. The keyboard saves a write
-//!   about 1 s later, so the writer never switches profiles (and operations
-//!   never return) before the [`CommitSettle`] has passed.
+//!   write (with [`Writer::write_commit_trigger`], its variant that re-sends
+//!   an unchanged Fn keymap after a base keymap): it needs a [`SavedBackup`]
+//!   of the active profile and writes stop-and-wait with read-back
+//!   verification. The keyboard saves a write about 1 s later, so the writer
+//!   never switches profiles (and operations never return) before the
+//!   [`CommitSettle`] has passed; it keeps a base keymap only when the Fn
+//!   keymap is written after it ([`CommitTrigger`]).
 //! * [`read_profiles`]: an all-profile backup (schema 2).
 //! * [`safety`]: safety backups saved and verified before any write
 //!   ([`SavedBackup`]).
@@ -104,18 +107,19 @@ pub use profiles::{
     ProfileSet, ProfilesOptions, ProfilesProgress, read_all_profiles, read_profiles,
 };
 pub use restore::{
-    BlockCause, EntryChange, FinalCheck, FinalMismatch, ItemReport, ItemResult, Outcome,
-    Persistence, PersistenceCheck, PlanAction, PlanItem, PlanWarning, PlannedWrite,
-    PreparedRestore, ProfilePlan, ProfileReport, RestoreOptions, RestorePlan, RestoreReport,
-    SkipReason, WriteProgress, dry_run_restore, execute_restore, plan_restore, prepare_restore,
+    BlockCause, CommitTriggerReason, EntryChange, FinalCheck, FinalMismatch, ItemReport,
+    ItemResult, Outcome, Persistence, PersistenceCheck, PlanAction, PlanItem, PlanWarning,
+    PlannedWrite, PreparedRestore, ProfilePlan, ProfileReport, RestoreOptions, RestorePlan,
+    RestoreReport, SkipReason, WriteProgress, dry_run_restore, execute_restore, plan_restore,
+    prepare_restore,
 };
 pub use safety::SavedBackup;
 pub use session::{ForeignActivity, ListenSummary, Session, SessionOptions, SessionStats};
 #[cfg(feature = "mock")]
-pub use sim::{DeviceSim, Scope, ScopeConfig, SimPacket, SimTable, Violation};
+pub use sim::{DeviceSim, KeymapCommit, Scope, ScopeConfig, SimPacket, SimTable, Violation};
 pub use summary::{DeviceSummary, read_summary};
 pub use transport::{Transport, UsbInfo, WriteTransport};
 pub use writer::{
-    CommitSettle, CommitWait, ConsentOrigin, GuardedWrite, PacketProgress, SelectOutcome,
-    WriteConsent, WriteOptions, WriteOutcome, WriteWarning, Writer,
+    CommitSettle, CommitTrigger, CommitWait, ConsentOrigin, GuardedWrite, PacketProgress,
+    SelectOutcome, WriteConsent, WriteOptions, WriteOutcome, WriteWarning, Writer,
 };

@@ -247,14 +247,58 @@ Restore the pre-c09 backup `backups/openwraith-W75HEARGB-20261024-151752.owbacku
 (made at 15:17 UTC, before the vendor site wrote its knob defaults in c08/c09):
 
 ```text
-openwraith restore backups/openwraith-W75HEARGB-20261024-151752.owbackup.json --dry-run
+openwraith restore backups/openwraith-W75HEARGB-20261024-151752.owbackup.json --dry-run --packets
 openwraith restore backups/openwraith-W75HEARGB-20261024-151752.owbackup.json
 ```
 
+On 2026-10-24 this restore wrote only the base keymap (`18 00`, 10
+packets); after the 2 s wait the persistence check found it gone and the
+restore reported `LOST` (exit code 1). Probes then showed that the keyboard
+keeps the base keymap only when the Fn keymap (`18 02`) is written after it
+(PROTOCOL.md 4.8.2). OpenWraith now writes the Fn keymap right after the base
+keymap, unchanged when it already matches. Expected plan (the simulator run
+of the same restore prints exactly these lines; other rows appear if other
+tables differ):
+
+```text
+Profile 1 (active)
+  Write                Packets  Change
+  base keymap (18 00)       10  #16 (#16): 07 12 00 00 -> 00 00 00 00
+                                ...
+                                ... and 1 more entries
+                                  18 00 00 00 38
+                                  ...
+                                  18 00 00 09 18
+  Fn keymap (18 02)         10  unchanged, re-sent: the keyboard keeps the base keymap only when the Fn keymap is written after it
+                                  18 02 00 00 38
+                                  ...
+                                  18 02 00 09 18
+...
+Total: 2 writes (20 packets) in profile 1.
+```
+
+and after `y`:
+
+```text
+Done: 1 table of 1 written and verified by reading them back; the Fn keymap (18 02) was also re-sent unchanged to make the keyboard save the base keymap.
+  Profile  What                                                                           Result
+        1  base keymap (18 00)                                                            written and verified (10 packets), persisted
+        1  Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap  re-sent in full, every packet acknowledged (10 packets)
+Persistence check: profile 1 selected again after switching away; 1 written table still holds what was written (the keyboard saved it).
+```
+
+(The unchanged Fn keymap reads the same whether the keyboard kept it or not,
+so the persistence check does not count it; what it proves is that the base
+keymap was kept.)
+
 Pass: the plan writes the base keymap with zeros at the knob entries (16-21)
-and at 121, and no defaults are added. After `y`, check that the knob still
-controls the volume (the factory state had zeros there). If it does not, run
-the printed undo command.
+and at 121, no defaults are added, and the Fn keymap follows it (10 + 10 =
+20 packets, the `18 00` packets before the `18 02` packets); the report says
+`persisted` for the base keymap and `every packet acknowledged` for the Fn
+keymap, and exits with code 0. Then check that the knob still
+controls the volume (the factory state had zeros there). If it does not, or
+the restore reports `LOST`, run the printed undo command and report the
+output.
 
 ## H10 (optional, later). Multi-key trigger mask
 
@@ -277,6 +321,34 @@ Pass: the dead band of W reads `05 0a` at table offsets 92/93 (0.10 / 0.20 mm),
 and the macro slot is in the canonical flat layout (the restore plan does not
 block the keymap group). Then restore `before-h11.owbackup.json` and check
 with `--dry-run` that nothing is left to write.
+
+Optional macro-persistence check (PROTOCOL.md 4.8.2: whether macro slots
+are kept without a following `18 02` is untested; OpenWraith always ends a
+keymap group that writes macro or advanced-key slots with an `18 02`):
+
+4. `openwraith restore h11.owbackup.json --dry-run --packets`, then
+   `openwraith restore h11.owbackup.json` and answer `y`. The plan writes
+   W's dead band first (`26 01`, 5 packets; step 2 changed it, and step 3
+   restored the state before), then the keymap group: the macro slot
+   (`19 0n`, 5 packets) is its first write, followed by the base keymap
+   (`18 00`, 10 packets) and the Fn keymap (`18 02`, 10 packets). The base
+   keymap differs because every Apply of the site rewrites its knob
+   defaults at base slots 16-21 (PROTOCOL.md 4.10), and the keyboard holds
+   zeros there since H9; recording a macro reaches the keyboard only
+   through such an Apply. So this check confirms that "a macro slot
+   followed by `18 00` + `18 02` persists", not the macros-only
+   precaution. If instead the group ends with `Fn keymap (18 02)` and the
+   change `unchanged, re-sent as a precaution (untested guess): ...`
+   (no base keymap), record it.
+5. Pass: every changed item, the macro slot included, says `persisted`
+   (exit code 0). Then unplug the keyboard, plug it in again and run
+   `openwraith show macros`: the macro is still there and plays on its key.
+   A macro slot reported `LOST` would mean that macros need more than the
+   `18 02` after them: record the output.
+6. Restore `before-h11.owbackup.json` again (answer `y`). Expected plan:
+   the dead band, the macro clear, the base keymap (zeros at 16-21 again)
+   and the Fn keymap after it. Check with `--dry-run` that nothing is left
+   to write.
 
 ## Reporting
 

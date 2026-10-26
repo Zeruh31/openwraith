@@ -15,13 +15,15 @@ use common::{
 };
 use openwraith_hid::protocol::FromResponse;
 use openwraith_hid::protocol::{
-    ColorTableData, CustomTable, Distance, KeyMask, LightLimits, LightMode, LightModeList,
-    LightRecord, MacroData, MacroSlotId, MainLightWrite, ReadRequest, Rgb, TriggerGlobal,
-    TriggerLimits, TriggerSetting, TriggerWrite, TriggerWriteMode, W75, WriteRequest,
+    AdvancedSlotId, ColorTableData, CustomTable, DeadBandData, DeadBandWrite, Distance, KeyMask,
+    KeymapData, Layer, LightLimits, LightMode, LightModeList, LightRecord, MacroData, MacroSlotId,
+    MainLightWrite, ReadRequest, Rgb, TableId, TriggerGlobal, TriggerLimits, TriggerSetting,
+    TriggerWrite, TriggerWriteMode, W75, WriteRequest,
 };
 use openwraith_hid::{
-    CommitSettle, CommitWait, DeviceSim, ErrorKind, GuardedWrite, SavedBackup, ScopeConfig,
-    Session, SimTable, WriteError, WriteOptions, WriteOutcome, WriteWarning, Writer, read_all_with,
+    CommitSettle, CommitTrigger, CommitWait, DeviceSim, ErrorKind, GuardedWrite, SavedBackup,
+    ScopeConfig, Session, SimTable, WriteError, WriteOptions, WriteOutcome, WriteWarning, Writer,
+    read_all_with,
 };
 
 fn sim() -> DeviceSim {
@@ -1153,4 +1155,288 @@ fn another_programs_query_during_the_wait_does_not_cut_it_short() {
     assert_eq!(sim.discarded_edits(), 0);
     assert!(!sim.has_unsaved_edits());
     sim.assert_clean();
+}
+
+/// A keymap write of `layer` with the keyboard's table, `edit`ed.
+fn keymap_with<T: openwraith_hid::WriteTransport>(
+    writer: &mut Writer<'_, T>,
+    layer: Layer,
+    edit: impl FnOnce(&mut KeymapData),
+) -> WriteRequest {
+    let raw = writer.read(ReadRequest::Keymap(layer)).expect("keymap");
+    let (layer, mut data) = KeymapData::from_response(&raw).expect("table");
+    edit(&mut data);
+    WriteRequest::Keymap(layer, data)
+}
+
+/// W -> A (`00 04 00 00` at index 46).
+fn w_to_a(data: &mut KeymapData) {
+    data.set_entry(pos(2, 2), [0x00, 0x04, 0x00, 0x00]);
+}
+
+#[test]
+fn only_an_fn_keymap_write_can_be_a_commit_trigger() {
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let dead_band = {
+        let raw = writer.read(ReadRequest::DeadBand).expect("26 00");
+        let data = DeadBandData::from_response(&raw).expect("dead band");
+        WriteRequest::DeadBand(DeadBandWrite::new(&W75, data, 50).expect("in range"))
+    };
+    // One request of every other kind: each is refused and given back.
+    let others = vec![
+        WriteRequest::SelectProfile(profile(2)),
+        light_to(&mut writer, |r| r.with_brightness(1)),
+        colours_with(&mut writer, Rgb::new(1, 2, 3)),
+        keymap_with(&mut writer, Layer::Base, |_| {}),
+        keymap_with(&mut writer, Layer::Base, w_to_a),
+        c13_macro(MacroSlotId::new(3).expect("slot")),
+        WriteRequest::AdvancedKeyClear(AdvancedSlotId::new(0).expect("slot")),
+        q_trigger(&mut writer, 100),
+        dead_band,
+    ];
+    for request in others {
+        assert_eq!(
+            CommitTrigger::try_from(request.clone()),
+            Err(request.clone()),
+            "{request}"
+        );
+    }
+    // The Fn keymap, changed or not, is one.
+    for edit in [|_: &mut KeymapData| {}, w_to_a] {
+        let request = keymap_with(&mut writer, Layer::Fn, edit);
+        let trigger = CommitTrigger::try_from(request.clone()).expect("Fn keymap");
+        assert_eq!(trigger.request(), &request);
+    }
+    drop(writer);
+    drop(session);
+    // Building them sent nothing.
+    assert_eq!(sim.writes_sent(), 0);
+    sim.assert_clean();
+}
+
+#[test]
+fn a_commit_trigger_is_sent_although_the_keyboard_holds_it_with_every_guard() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    // A GUI-style keymap edit: the base keymap, then the unchanged Fn
+    // keymap, then the wait for the keyboard to save.
+    let base = keymap_with(&mut writer, Layer::Base, w_to_a);
+    let unchanged_fn = keymap_with(&mut writer, Layer::Fn, |_| {});
+    written(writer.write_guarded(&saved, &base));
+    // write_guarded skips the matching Fn keymap...
+    assert_eq!(
+        writer
+            .write_guarded(&saved, &unchanged_fn)
+            .expect("guarded"),
+        GuardedWrite::AlreadyMatched { profile: 1 }
+    );
+    // ...the commit trigger sends it, stop-and-wait, and verifies it.
+    let trigger = CommitTrigger::try_from(unchanged_fn).expect("Fn keymap");
+    let mut packets = Vec::new();
+    let outcome = writer
+        .write_commit_trigger_observed(&saved, &trigger, &mut |p| packets.push(p.packet))
+        .expect("sent");
+    assert_eq!((outcome.sends, outcome.packets), (1, 10));
+    assert_eq!(packets, (1..=10).collect::<Vec<_>>());
+    assert_eq!(outcome.table, TableId::Keymap { layer: Layer::Fn });
+    writer.wait_for_commit().expect("saved");
+    // A second and a third send of the Fn keymap: RepeatedWrite, like any
+    // table.
+    writer
+        .write_commit_trigger(&saved, &trigger)
+        .expect("second send");
+    let err = writer.write_commit_trigger(&saved, &trigger).unwrap_err();
+    assert!(matches!(err, WriteError::RepeatedWrite { .. }), "{err}");
+    drop(writer);
+    assert_eq!(session.stats().acks, 30);
+    drop(session);
+    let cmds: Vec<(u8, u8)> = common::write_bytes(&sim)
+        .iter()
+        .map(|b| (b[0], b[1]))
+        .collect();
+    let mut expected = vec![(0x18, 0x00); 10];
+    expected.extend(vec![(0x18, 0x02); 20]);
+    assert_eq!(cmds, expected);
+    // The keyboard kept the base keymap.
+    assert!(!sim.has_edits_waiting_for_fn_write());
+    let base_table = sim
+        .persisted_table(profile(1), SimTable::Keymap(Layer::Base))
+        .expect("base keymap");
+    assert_eq!(&base_table[46 * 4..47 * 4], &[0x00, 0x04, 0x00, 0x00]);
+    sim.assert_clean();
+
+    // Without a safety backup of the active profile nothing is sent.
+    let mut sim = self::sim();
+    sim.set_active_profile(profile(2));
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let request = keymap_with(&mut writer, Layer::Fn, |_| {});
+    let trigger = CommitTrigger::try_from(request).expect("Fn keymap");
+    let err = writer.write_commit_trigger(&saved, &trigger).unwrap_err();
+    assert!(
+        matches!(err, WriteError::NotBackedUp { profile: 2, .. }),
+        "{err}"
+    );
+    drop(writer);
+    drop(session);
+    assert_eq!(sim.writes_sent(), 0);
+    sim.assert_clean();
+}
+
+#[test]
+fn a_commit_trigger_is_refused_after_another_program() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    let mut sim = sim();
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let base = keymap_with(&mut writer, Layer::Base, w_to_a);
+    let trigger =
+        CommitTrigger::try_from(keymap_with(&mut writer, Layer::Fn, |_| {})).expect("Fn keymap");
+    drop(writer);
+    drop(session);
+    // A foreign ack while the base keymap is written: after the reads of
+    // 0D, 21/11 and 18 80, right after its first packet.
+    let at = sim.written().len() + 4;
+    sim.inject_after_packets(at, report(&[0x21, 0, 0, 0, 0x01, 0x00]));
+    let mut session = Session::new(&mut sim);
+    let mut writer = session.writer(consent()).expect("writer");
+    let writes_before = writer.session().stats().writes;
+    written(writer.write_guarded(&saved, &base));
+    assert!(writer.foreign_activity_seen().is_some());
+    let err = writer.write_commit_trigger(&saved, &trigger).unwrap_err();
+    assert!(
+        matches!(err, WriteError::OtherProgramActive { .. }),
+        "{err}"
+    );
+    assert_eq!(writer.session().stats().writes - writes_before, 10);
+    drop(writer);
+    drop(session);
+    assert!(sim.has_edits_waiting_for_fn_write());
+    sim.assert_clean();
+}
+
+/// The ack of the first packet of a commit trigger times out. An unchanged
+/// table reads back the same whether it arrived or not, so the whole table
+/// is sent once more; when that send is cut short too, the write fails with
+/// `CommitTriggerIncomplete` and the base keymap stays unsaved.
+#[test]
+fn a_commit_trigger_needs_every_packet_acknowledged() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    for both_sends in [false, true] {
+        let mut sim = sim();
+        // Writes 1-10: the base keymap; 11: the trigger's first packet; 12:
+        // the first packet of its second send.
+        sim.drop_ack(11);
+        if both_sends {
+            sim.drop_ack(12);
+        }
+        let mut session = Session::new(&mut sim);
+        let mut writer = session.writer(consent()).expect("writer");
+        let base = keymap_with(&mut writer, Layer::Base, w_to_a);
+        let trigger = CommitTrigger::try_from(keymap_with(&mut writer, Layer::Fn, |_| {}))
+            .expect("Fn keymap");
+        written(writer.write_guarded(&saved, &base));
+        assert!(writer.base_keymap_unsaved());
+        let result = writer.write_commit_trigger(&saved, &trigger);
+        if both_sends {
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    WriteError::CommitTriggerIncomplete {
+                        sends: 2,
+                        packet: 1,
+                        of: 10
+                    }
+                ),
+                "{err}"
+            );
+            assert_eq!(err.kind(), ErrorKind::Timeout);
+            assert!(writer.base_keymap_unsaved());
+        } else {
+            let outcome = result.expect("sent again in full");
+            assert_eq!((outcome.sends, outcome.packets), (2, 11));
+            assert!(outcome.warnings.contains(&WriteWarning::AckTimeout {
+                packet: 1,
+                of: 10,
+                send: 1
+            }));
+            assert!(outcome.warnings.contains(&WriteWarning::Retried));
+            assert!(!writer.base_keymap_unsaved());
+        }
+        writer.wait_for_commit().expect("waited");
+        drop(writer);
+        drop(session);
+        let fn_packets = common::write_bytes(&sim)
+            .iter()
+            .filter(|b| b[..2] == [0x18, 0x02])
+            .count();
+        assert_eq!(fn_packets, if both_sends { 2 } else { 11 });
+        assert_eq!(sim.has_edits_waiting_for_fn_write(), both_sends);
+        sim.assert_clean();
+    }
+}
+
+/// A base keymap written without the Fn keymap after it: the writer knows
+/// that the keyboard has not saved it, and a profile switch reports that
+/// it dropped it (the switch is made all the same). With the commit trigger
+/// after it, or a changed Fn keymap, neither.
+#[test]
+fn a_switch_after_a_base_keymap_without_its_trigger_is_reported() {
+    let dir = common::temp_dir();
+    let saved = safety(&dir);
+    for then in ["nothing", "trigger", "changed Fn keymap"] {
+        let mut sim = sim();
+        let mut session = Session::new(&mut sim);
+        let mut writer = session.writer(consent()).expect("writer");
+        assert!(!writer.base_keymap_unsaved());
+        let base = keymap_with(&mut writer, Layer::Base, w_to_a);
+        written(writer.write_guarded(&saved, &base));
+        assert!(writer.base_keymap_unsaved(), "{then}");
+        match then {
+            "trigger" => {
+                let trigger = CommitTrigger::try_from(keymap_with(&mut writer, Layer::Fn, |_| {}))
+                    .expect("Fn keymap");
+                writer.write_commit_trigger(&saved, &trigger).expect("sent");
+            }
+            "changed Fn keymap" => {
+                let changed = keymap_with(&mut writer, Layer::Fn, w_to_a);
+                written(writer.write_guarded(&saved, &changed));
+            }
+            _ => {}
+        }
+        let saves = then != "nothing";
+        assert_eq!(writer.base_keymap_unsaved(), !saves, "{then}");
+        let selected = writer.select_profile(profile(2)).expect("selected");
+        assert!(selected.switched);
+        assert_eq!(
+            selected
+                .warnings
+                .contains(&WriteWarning::BaseKeymapNotSaved),
+            !saves,
+            "{then}: {:?}",
+            selected.warnings
+        );
+        assert!(!writer.base_keymap_unsaved());
+        let back = writer.select_profile(profile(1)).expect("back");
+        assert!(!back.warnings.contains(&WriteWarning::BaseKeymapNotSaved));
+        drop(writer);
+        drop(session);
+        let base_now = sim
+            .table(profile(1), SimTable::Keymap(Layer::Base))
+            .expect("base keymap");
+        assert_eq!(
+            base_now[46 * 4..47 * 4] == [0x00, 0x04, 0, 0],
+            saves,
+            "{then}"
+        );
+        sim.assert_clean();
+    }
 }

@@ -42,14 +42,14 @@ A future Tauri app will sit next to the CLI and use the same two libraries.
 | `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). `last_write_at()` / `last_write_profile()`: when and to which profile the last write that changes a setting was sent (for the commit settle; kept per session, so it spans writers). |
 | `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` and `openwraith profile`, with the model check shared with `read_all`. |
 | `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable`, save/load, typed accessors. |
-| `writer` | `WriteConsent`, `WriteOptions` (with `CommitSettle`), the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`), stop-and-wait writes with read-back verification, profile selection behind the commit settle (`select_profile[_observed]`, `commit_pending`, `wait_for_commit[_observed]`, `CommitWait`), detection of a profile change or lost connection before the keyboard saved (`commit_interrupted`, `WriteError::ProfileChangedBeforeSave`), poisoning after a reset or a lost connection. |
+| `writer` | `WriteConsent`, `WriteOptions` (with `CommitSettle`), the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`) and `write_commit_trigger` (the same guards, for a `CommitTrigger`, the Fn keymap only, sent even when the keyboard holds it: the keyboard keeps a base keymap only when the Fn keymap is written after it; every packet must be acknowledged, else one more send of the whole table, then `WriteError::CommitTriggerIncomplete`), `base_keymap_unsaved()` (a base keymap sent without a complete Fn-keymap write after it; a profile switch then reports `WriteWarning::BaseKeymapNotSaved`), stop-and-wait writes with read-back verification, profile selection behind the commit settle (`select_profile[_observed]`, `commit_pending`, `wait_for_commit[_observed]`, `CommitWait`), detection of a profile change or lost connection before the keyboard saved (`commit_interrupted`, `WriteError::ProfileChangedBeforeSave`), poisoning after a reset or a lost connection. |
 | `profiles` | `read_profiles` / `read_all_profiles`: the all-profile backup (switches profiles and back). |
 | `safety` | `default_dir`, `Backup::save_safety` and `SavedBackup` (the proof that a verified safety backup exists). |
-| `restore` | `plan_restore` (pure), `dry_run_restore` (read-only), `prepare_restore`, `execute_restore` (with the persistence check), and the serialisable plan, progress and report types (`Persistence`, `PersistenceCheck`, `ItemResult::Lost`, `ItemResult::MaybeLost`). |
+| `restore` | `plan_restore` (pure), `dry_run_restore` (read-only), `prepare_restore`, `execute_restore` (with the persistence check), and the serialisable plan, progress and report types (`Persistence`, `PersistenceCheck`, `ItemResult::Lost`, `ItemResult::MaybeLost` (also a base keymap left without its Fn keymap, with `WriteWarning::BaseKeymapNotSaved`), `CommitTriggerReason` on the Fn-keymap write that makes the keyboard save the keymap group). |
 | `edit` | `plan_trigger_edit` / `apply_trigger_edit` and `plan_light_edit` / `apply_light_edit`. |
 | `error` | Error types and `ErrorKind` (serialisable, for a GUI). |
 | `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. Read-only. |
-| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the nine write forms, configurable table scopes, fault injection, a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time; `sent_times()` gives the time of every packet) and the keyboard's **delayed commit** (writes go to a working copy of the active profile, saved 1 s of virtual time after the last write; a select or `power_cycle()` before that discards them, counted by `discarded_edits()`; `persisted_table` / `persisted_trigger` show the saved state; on by default), and profile switches made on the keyboard at a virtual time, with or without a profile report (`switch_profile_at`; the profile is reloaded as of that time). |
+| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the nine write forms, configurable table scopes, fault injection, a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time; `sent_times()` gives the time of every packet) and the keyboard's **delayed commit** (writes go to a working copy of the active profile, saved 1 s of virtual time after the last write; a select or `power_cycle()` before that discards them, counted by `discarded_edits()`; `persisted_table` / `persisted_trigger` show the saved state; on by default), the **keymap commit rule** (`KeymapCommit`, on by default: the timer never saves base-keymap edits on their own; a complete `18 02` write, every chunk applied, releases them to it, so base and Fn keymap are saved 1 s after the last `18 02` chunk and a switch before that loses both; a partial `18 02` releases nothing; `has_edits_waiting_for_fn_write()`; `KeymapCommit::macros_and_advanced_need_fn_write` (off by default; an untested guess, the tests run both ways) makes macro and advanced-key edits wait for the `18 02` too), and profile switches made on the keyboard at a virtual time, with or without a profile report (`switch_profile_at`; the profile is reloaded as of that time). |
 
 ### `openwraith-cli`
 
@@ -206,6 +206,41 @@ doctest checks it):
 Restores and edits use the same steps 3-8 through a crate-private guarded
 write that additionally refuses a table whose bytes changed since the plan.
 
+The one exception to step 2 is the **keymap commit trigger**. The keyboard
+keeps a base-keymap write (`18 00`) only when an Fn-keymap write (`18 02`)
+follows it; written alone, the base keymap reads back correctly but is gone
+after a profile switch, even after the commit settle (CONFIRMED on hardware,
+[PROTOCOL.md](PROTOCOL.md) 4.8.2). So the Fn keymap must be sent after the
+base keymap even when the keyboard already holds it.
+`Writer::write_commit_trigger(&SavedBackup, &CommitTrigger)` does that with
+every other guard (steps 1 and 4-8: backup and active-profile check,
+stop-and-wait, verification, the `RepeatedWrite` count). A `CommitTrigger`
+can only hold an Fn-keymap write: `CommitTrigger::fn_keymap(KeymapData)`
+builds one, and `TryFrom<WriteRequest>` gives every other request back
+(tested for every request kind), so it is no way to send anything else or to
+skip a check. The restore's crate-private guarded write takes the same type
+(`Checked::CommitTrigger`).
+
+A commit trigger is checked more strictly than other writes in one respect.
+An unchanged Fn keymap reads back the same whether it arrived or not, and
+whether a partial `18 02` makes the keyboard save is unknown (every probe
+and every vendor-site Apply sent all ten chunks). So for a commit trigger an
+acknowledgement timeout in step 5 counts as a failed verification: the whole
+table is sent once more (step 7, still counted by `RepeatedWrite`), and if
+that send is cut short too the write fails with
+`WriteError::CommitTriggerIncomplete`. The flag lives in a private `write_with`
+behind the crate-private `write_trigger_observed(&CommitTrigger, ..)`, so only
+a `CommitTrigger` can ask for it.
+
+The writer also remembers a base keymap it sent without a complete
+Fn-keymap write after it (`Writer::base_keymap_unsaved()`, set by any `18 00`
+packet and cleared by a verified Fn-keymap write whose packets were all
+acknowledged). A profile switch made while it is set adds
+`WriteWarning::BaseKeymapNotSaved` to the `SelectOutcome` and clears it. The
+switch is not refused: a failing operation must still be able to return to
+the original profile. So a caller of the public API that forgets the trigger
+is told, instead of seeing a silent success.
+
 `Writer::select_profile` sends nothing when the profile is already active;
 otherwise it waits for the commit settle (below), sends W1, waits for the
 acknowledgement and the push (reading the push before any `21/11` query),
@@ -227,7 +262,8 @@ profile 2 reported "written and verified" and switched back to profile 1
 within milliseconds, and the write was gone (CONFIRMED, measured threshold
 between 0.8 s and 1.0 s; [PROTOCOL.md](PROTOCOL.md) section 4.5.3, "Delayed
 commit"). A power loss in that second very likely loses the write too
-(untested). Four rules follow, all in `openwraith-hid`:
+(untested). Four rules follow, all in `openwraith-hid`, and a fifth for the
+base keymap, which the keyboard does not save on a timer at all:
 
 1. **No switch before the save.** `Session` records when the last write
    packet that changes a setting was sent (`last_write_at`, on the
@@ -288,6 +324,43 @@ commit"). A power loss in that second very likely loses the write too
    the one the keyboard reported. A switch found at the end of a wait counts
    as made before the save, because its time is unknown. A reset
    notification is not counted: it reports a reset of the settings.
+5. **The base keymap needs the Fn keymap after it (commit trigger).** The
+   settle is not enough for the base keymap: written alone (`18 00`), it
+   was gone after a profile switch even 6 s later; followed by an `18 02`,
+   both layers were kept, and `18 02`, the dead band, triggers, the main
+   light and custom colours 1 are kept on their own (CONFIRMED on hardware
+   2026-10-24, [PROTOCOL.md](PROTOCOL.md) 4.8.2; this is how hardware test
+   H9 lost its write). A restore therefore writes the keymap group in the
+   vendor site's order: every macro slot that changes (content and
+   clears), the base keymap, the Fn keymap right after it, the
+   advanced-key clears. Whenever the base keymap is written the Fn keymap
+   follows, re-sent unchanged with the backup's Fn table if it already
+   matches (`CommitTriggerReason::BaseKeymap`; shown as "Fn keymap (18 02)
+   re-sent unchanged to make the keyboard save the base keymap"). Whether
+   macro (`19`) and advanced-key (`22`) slots need the trigger too is
+   untested, so as a precaution (GUESS) a group that writes such slots
+   while neither keymap layer differs ends with the unchanged Fn keymap
+   (`CommitTriggerReason::MacrosOrAdvancedKeys`). If the Fn keymap cannot be
+   written (an unusable reply), the whole group is skipped
+   (`BlockCause::FnKeymapNotWritable`, or `Incomplete` when the Fn keymap is
+   missing): the base keymap is never written alone. The Fn-keymap write
+   must arrive complete: every packet acknowledged, else the whole table
+   is sent once more (see the write gate above). A Ctrl+C after a group
+   table was sent skips the group's other tables (they stay
+   `NotAttempted`, a not-yet-written base keymap included), still sends
+   the Fn keymap (an `18 02` alone is kept), and stops after it; when that
+   Fn keymap was the last planned write, the restore did complete and
+   ends normally, persistence check included. If the restore stops between
+   the base keymap and the Fn keymap for another reason (another program,
+   an incomplete trigger, a failure), the base keymap is reported
+   `MaybeLost` with the warning `WriteWarning::BaseKeymapNotSaved` ("will
+   be lost" in the CLI), not as written. The persistence check stays the
+   safety net: it reads the base keymap (and every other changed table)
+   again after a profile switch; it does not count an unchanged re-sent Fn
+   keymap, which reads the same whether the keyboard kept it or not. An
+   advanced-key clear written after the Fn keymap would be reported lost if
+   those slots did need the trigger, and running the restore again ends
+   the group with the Fn keymap.
 
 Edits (`set trigger`, `set light`) do not switch away and back: that would
 change the lighting for every small edit. They rely on rules 2 and 4: they
@@ -356,14 +429,18 @@ openwraith restore FILE [--profile N]...
       cancelled (Ctrl+C, also during the wait)? stop here
       select_profile                          nothing left to wait for
       for each table, in order: triggers (one key per packet), dead band,
-      keymap group (macros bound by a keymap before the keymaps, 18 00,
-      18 02, the other macros, advanced-key clears), custom colours 1,
-      main light (W2 only on a mode change):
-        cancelled (Ctrl+C)? stop here
+      keymap group (every changed macro slot, 18 00, 18 02 right after
+      it, advanced-key clears; no layer differs: the slots, then the
+      unchanged 18 02), custom colours 1, main light (W2 only on a mode
+      change):
+        cancelled (Ctrl+C)? stop here; inside the keymap group after a
+                            group table was sent: skip the group's
+                            other tables, send its 18 02, stop after it
         confirm 21/11
         re-read exactly the bytes the write changes
         already the target?        -> AlreadyMatched (a global table written
-                                      in an earlier profile)
+                                      in an earlier profile); the 18 02
+                                      commit trigger is sent anyway
         neither planned nor ours?  -> changed_since_plan, stop
         else write (stop-and-wait, verify, one whole-table retry)
       confirm 21/11
@@ -389,7 +466,14 @@ openwraith restore FILE [--profile N]...
 without a confirmed write command are skipped when they differ. The keymap
 group (both keymaps, ten macro slots, forty advanced-key slots) is planned as
 one unit and skipped as a whole when it would need a non-empty advanced-key
-write, a non-canonical macro, or holds a malformed reference. An empty macro
+write, a non-canonical macro, holds a malformed reference, or would need the
+Fn keymap as its commit trigger (rule 5 above) while the backup's Fn keymap
+cannot be written. The Fn-keymap write that is the commit trigger carries
+`PlannedWrite::commit_trigger` (and, when it re-sends the keyboard's Fn
+keymap unchanged, no changes; `is_resent_unchanged`); the CLI shows the
+reason in the plan and counts it apart in the report ("the Fn keymap (18 02)
+was also re-sent unchanged ..."). Such an unchanged re-send changes no other
+profile, so it does not raise `SharedTablesMayChangeOtherProfiles`. An empty macro
 slot (all `00` or all `FF`) is written as 256 x `00`; nothing else is ever
 normalised, and defaults the backup does not contain are never written.
 
@@ -450,7 +534,11 @@ simulator mode.
 - Before the safety backup and the question, a session that already saw
   another program is refused (the writer's gate would refuse later anyway).
 - Ctrl+C sets a flag that the progress callbacks turn into a cancellation at
-  the next table boundary; the original profile is selected again. A Ctrl+C
+  the next table boundary; the original profile is selected again. Inside a
+  restore's keymap group, once a group table was sent, the group's other
+  tables are skipped but its Fn keymap (`18 02`) is still written, because
+  without it the keyboard would not keep the base keymap (rule 5 above);
+  the message the CLI prints says so. A Ctrl+C
   during a wait for the keyboard to save is seen right after the wait,
   before the next profile is selected. A second
   Ctrl+C exits at once with a warning. The final check of a restore is not
@@ -638,6 +726,35 @@ keep backups usable across versions:
   `write_guarded` + `wait_for_commit` with `ProfileChangedBeforeSave` and
   reports the write `maybe_lost` (the simulator confirms it dropped it); so
   do a switch right after the last packet and an unplug right after it.
+  The simulator's keymap commit rule is on in every test too (a base
+  keymap without a following complete `18 02` is never saved, and a
+  complete one only releases it to the 1 s commit; the simulator's own
+  tests check that a switch 300 ms after base + Fn loses both layers, that
+  a truncated `18 02` saves nothing and that an Fn-only write followed at
+  once by a select is lost). Regression tests for hardware test H9: the
+  restore of a backup that differs only in the base keymap sends `18 00`
+  x10 then `18 02` x10 (the backup's Fn table) and the base keymap
+  persists, with either setting of `macros_and_advanced_need_fn_write`;
+  the same plan without the trigger (the old order, made in a unit test of
+  `restore`) is reported lost by the persistence check, and so is the
+  restore with the trigger when the commit settle is turned off (test-only
+  option). Further tests: the group order (macros, `18 00`, `18 02`, `22`;
+  with the macro / advanced-key setting on, the advanced-key clear after
+  the trigger is reported lost and a second run ends with the trigger and
+  persists), macro slots alone ending with the unchanged Fn keymap, no
+  cancellation between the base and the Fn keymap, a Ctrl+C during the
+  first macro slot (the base keymap is skipped, the Fn keymap still sent,
+  the outcome `Cancelled`, the macro saved in both settings), a Ctrl+C
+  whose only remaining write is the trigger (the restore completes), a
+  dropped ack of the first `18 02` packet (the whole table is sent again)
+  and of both sends (the restore fails, the base keymap `MaybeLost` with
+  `BaseKeymapNotSaved`), the same warning when another program stops the
+  restore in between, an unwritable Fn keymap blocking the group, and
+  `CommitTrigger` refusing every other request kind while
+  `write_commit_trigger` keeps the backup, profile, other-program and
+  `RepeatedWrite` guards, needs every packet acknowledged
+  (`CommitTriggerIncomplete`), and clears `base_keymap_unsaved()`, whose
+  profile switch otherwise reports `BaseKeymapNotSaved`.
   `tests/planner.rs` pins every skip reason, block cause and plan warning of
   `plan_restore`. Every simulator test ends with `assert_clean`: the
   simulator refuses and records any packet outside the allowed read and write
@@ -654,7 +771,11 @@ keep backups usable across versions:
   hardware test H7 sequence with its "Waiting for the keyboard to save" and
   "persisted" lines (`cargo test -p openwraith-cli
   all_profile_backup_then_restore_of_one_profile -- --nocapture` prints
-  the output).
+  the output), and hardware test H9: the restore of the pre-c09 backup,
+  whose `--dry-run --packets` lists ten `18 00` packets and then ten
+  `18 02` packets with the reason, and whose report counts the re-sent Fn
+  keymap apart (`a_base_keymap_restore_re_sends_the_unchanged_fn_keymap`
+  prints both).
 - `crates/openwraith-cli/tests/cli.rs` runs the real binary on backup files
   replayed from the captures or made with the simulator (`--from`,
   `restore --dry-run --against`), including crafted files with edited headers

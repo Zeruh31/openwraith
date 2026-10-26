@@ -59,8 +59,28 @@
 //! The model is a guess at the firmware's behaviour (GUESS): it treats the
 //! tables whose scope is unknown like the per-profile ones (a switch drops
 //! their unsaved edits too). [`set_commit_delay`](DeviceSim::set_commit_delay)
-//! with zero turns it off (every write is saved at once); only tests that
-//! need instant saves use it.
+//! with zero turns it off (every write is saved at once, except the keymap
+//! edits below); only tests that need instant saves use it.
+//!
+//! # The base keymap is saved only by a following Fn-keymap write
+//!
+//! On the real keyboard an `18 00` (base keymap) write on its own is acked
+//! and reads back at once, but is gone after a profile switch, even after
+//! 6 s; written with an `18 02` (Fn keymap) after it, both layers are kept
+//! (CONFIRMED on hardware, spec 4.8.2). The simulator models this with
+//! [`KeymapCommit`] (on by default in every test): base-keymap edits in the
+//! working copy are **not** saved by the quiet-time commit. A **complete**
+//! `18 02` write (every chunk applied) releases them to it: they are saved
+//! together with the Fn keymap once the commit delay has passed since the
+//! last `18 02` chunk, and a profile switch before that loses both layers.
+//! A partial `18 02` releases nothing (whether it would on the keyboard is
+//! unknown; every hardware probe sent complete tables). The `18 02` chunks
+//! themselves, the dead band, triggers, the main light and the colour tables
+//! keep the quiet-time commit. Whether macro (`19`) and advanced-key (`22`)
+//! edits need the `18 02` too is untested: by default they keep the
+//! quiet-time commit, and [`KeymapCommit::macros_and_advanced_need_fn_write`]
+//! makes them wait for a complete `18 02` as well (GUESS; both settings are
+//! tested). An edit made after the `18 02` waits for the next one.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -244,6 +264,51 @@ pub const FACTORY_LIGHT: [u8; 12] = [0x02, 0x04, 0x03, 0xff, 0, 0, 0, 0, 0, 0, 0
 /// followed within 800 ms and kept them from 1000 ms on (spec 4.5.3).
 pub const DEFAULT_COMMIT_DELAY: Duration = Duration::from_secs(1);
 
+/// Data bytes per keymap chunk (`18 00` / `18 02`).
+const KEYMAP_CHUNK_LEN: usize = 56;
+
+/// Which keymap-group edits the simulated keyboard saves only after a
+/// complete `18 02` (Fn keymap) write was applied after them, instead of by
+/// the quiet-time commit alone (see "The base keymap is saved only by a
+/// following Fn-keymap write" in the [module documentation](self)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeymapCommit {
+    /// Base-keymap (`18 00`) edits wait for a complete `18 02` write, which
+    /// releases them to the quiet-time commit; a profile switch or a power
+    /// cycle before that commit loses them (CONFIRMED on hardware, spec
+    /// 4.8.2). Default: on.
+    pub base_needs_fn_write: bool,
+    /// Macro (`19`) and advanced-key (`22`) edits wait for a complete
+    /// `18 02` write too. Untested on hardware (GUESS), so off by default:
+    /// they are saved by the quiet-time commit like every other table.
+    pub macros_and_advanced_need_fn_write: bool,
+}
+
+impl Default for KeymapCommit {
+    /// The hardware finding: the base keymap needs the `18 02`, macros and
+    /// advanced keys do not (their behaviour is unknown).
+    fn default() -> Self {
+        KeymapCommit {
+            base_needs_fn_write: true,
+            macros_and_advanced_need_fn_write: false,
+        }
+    }
+}
+
+impl KeymapCommit {
+    /// Whether edits of `table` wait for an `18 02` write under this rule.
+    fn waits_for_fn_write(self, table: SimTable) -> bool {
+        match table {
+            SimTable::Keymap(Layer::Base) => self.base_needs_fn_write,
+            SimTable::Macro(_) | SimTable::AdvancedKeys => self.macros_and_advanced_need_fn_write,
+            SimTable::Keymap(Layer::Fn)
+            | SimTable::MainLight
+            | SimTable::CustomColors1
+            | SimTable::DeadBand => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct Faults {
     drop_ack: HashSet<usize>,
@@ -300,6 +365,14 @@ pub struct DeviceSim {
     /// edits are unsaved.
     last_edit: Option<Duration>,
     commit_delay: Duration,
+    /// Which keymap-group edits wait for an `18 02` write.
+    keymap_commit: KeymapCommit,
+    /// Unsaved edits that waited for an `18 02` write and were released to
+    /// the quiet-time commit by a complete one (keyed like `tables`).
+    released: HashSet<(u8, SimTable)>,
+    /// The `18 02` chunks applied to the active profile since the last
+    /// release or reload (bit n = chunk n).
+    fn_chunks: u16,
     discarded: usize,
     queue: VecDeque<Report>,
     delayed: Vec<Report>,
@@ -345,7 +418,7 @@ impl DeviceSim {
     }
 
     /// A simulator without any table, on profile `active`, with the delayed
-    /// commit on.
+    /// commit and the default [`KeymapCommit`] on.
     fn blank(model: &'static Model, scope: ScopeConfig, active: u8) -> Self {
         DeviceSim {
             model,
@@ -358,6 +431,9 @@ impl DeviceSim {
             unsaved_triggers: HashMap::new(),
             last_edit: None,
             commit_delay: DEFAULT_COMMIT_DELAY,
+            keymap_commit: KeymapCommit::default(),
+            released: HashSet::new(),
+            fn_chunks: 0,
             discarded: 0,
             queue: VecDeque::new(),
             delayed: Vec::new(),
@@ -481,14 +557,16 @@ impl DeviceSim {
 
     /// The saved bytes of `table` in `profile`: what survives a profile
     /// switch or a power cycle made now (unsaved edits count only once their
-    /// commit is due).
+    /// commit is due; edits that still wait for an `18 02` write, see
+    /// [`KeymapCommit`], do not count).
     pub fn persisted_table(&self, profile: ProfileId, table: SimTable) -> Option<&[u8]> {
         self.table_view(profile, table, false)
     }
 
     fn table_view(&self, profile: ProfileId, table: SimTable, working: bool) -> Option<&[u8]> {
         let key = (self.slot(table.request(), profile.get()), table);
-        let unsaved = (working || self.commit_due())
+        let saved_by_timer = self.commit_due() && !self.waits(key);
+        let unsaved = (working || saved_by_timer)
             .then(|| self.unsaved_tables.get(&key))
             .flatten();
         unsaved.or_else(|| self.tables.get(&key)).map(Vec::as_slice)
@@ -500,6 +578,7 @@ impl DeviceSim {
     pub fn set_table(&mut self, profile: ProfileId, table: SimTable, bytes: Vec<u8>) {
         let key = (self.slot(table.request(), profile.get()), table);
         self.unsaved_tables.remove(&key);
+        self.released.remove(&key);
         self.tables.insert(key, bytes);
     }
 
@@ -541,18 +620,43 @@ impl DeviceSim {
     }
 
     /// Sets the commit delay. `Duration::ZERO` turns the delayed commit off
-    /// (every write is saved at once); only for tests that need instant
-    /// saves. The default is [`DEFAULT_COMMIT_DELAY`].
+    /// (every write is saved at once, except the keymap-group edits that
+    /// wait for an `18 02` write, see [`KeymapCommit`]: they are saved when
+    /// a complete one is applied); only for tests that need instant saves.
+    /// The default is [`DEFAULT_COMMIT_DELAY`].
     pub fn set_commit_delay(&mut self, delay: Duration) {
         self.commit_delay = delay;
         self.commit_if_due();
     }
 
+    /// Which keymap-group edits wait for an `18 02` write (see the
+    /// [module documentation](self)).
+    pub fn keymap_commit(&self) -> KeymapCommit {
+        self.keymap_commit
+    }
+
+    /// Sets which keymap-group edits wait for an `18 02` write. Edits that
+    /// are in the working copy already follow the new rule from now on.
+    pub fn set_keymap_commit(&mut self, rule: KeymapCommit) {
+        self.keymap_commit = rule;
+        self.commit_if_due();
+    }
+
     /// Whether the working copy holds writes that are not saved yet (their
-    /// commit is not due): a profile switch or a power cycle now would lose
-    /// them.
+    /// commit is not due, or they wait for an `18 02` write): a profile
+    /// switch or a power cycle now would lose them.
     pub fn has_unsaved_edits(&self) -> bool {
-        self.has_unsaved() && !self.commit_due()
+        let waiting = self.unsaved_tables.keys().any(|key| self.waits(*key));
+        let timed = !self.unsaved_triggers.is_empty()
+            || self.unsaved_tables.keys().any(|key| !self.waits(*key));
+        waiting || (timed && !self.commit_due())
+    }
+
+    /// Whether the working copy holds keymap-group edits that only a
+    /// complete `18 02` write would release to the quiet-time commit (see
+    /// [`KeymapCommit`]): until then the quiet-time commit never saves them.
+    pub fn has_edits_waiting_for_fn_write(&self) -> bool {
+        self.unsaved_tables.keys().any(|key| self.waits(*key))
     }
 
     /// How often unsaved edits were discarded: by a profile switch before
@@ -583,14 +687,62 @@ impl DeviceSim {
             .is_some_and(|at| self.clock >= at.saturating_add(self.commit_delay))
     }
 
-    /// Saves the working copy if its commit is due.
+    /// Whether the unsaved edit `key` waits for an `18 02` write: its table
+    /// waits under the [`KeymapCommit`] rule, and no complete `18 02` was
+    /// applied since the edit.
+    fn waits(&self, key: (u8, SimTable)) -> bool {
+        self.keymap_commit.waits_for_fn_write(key.1) && !self.released.contains(&key)
+    }
+
+    /// Saves the working copy if its commit is due, except the keymap-group
+    /// edits that still wait for an `18 02` write ([`KeymapCommit`]).
     fn commit_if_due(&mut self) {
         if !self.commit_due() {
             return;
         }
-        self.tables.extend(self.unsaved_tables.drain());
+        let waiting: Vec<(u8, SimTable)> = self
+            .unsaved_tables
+            .keys()
+            .copied()
+            .filter(|key| self.waits(*key))
+            .collect();
+        let kept: HashMap<(u8, SimTable), Vec<u8>> = waiting
+            .into_iter()
+            .filter_map(|key| self.unsaved_tables.remove_entry(&key))
+            .collect();
+        let saved = std::mem::replace(&mut self.unsaved_tables, kept);
+        self.tables.extend(saved);
+        // Every released edit was saved now.
+        self.released.clear();
         self.triggers.extend(self.unsaved_triggers.drain());
         self.last_edit = None;
+    }
+
+    /// An edit was applied to the working copy of `key` (at `offset` into
+    /// the table). A table that waits for an `18 02` write waits again, also
+    /// when an earlier edit of it was released. An `18 02` chunk counts
+    /// towards a complete `18 02` (every chunk applied since the last
+    /// release or reload), which releases every waiting edit to the
+    /// quiet-time commit: the commit delay runs from this chunk, the last
+    /// edit. A partial `18 02` releases nothing.
+    fn note_edit(&mut self, key: (u8, SimTable), offset: usize) {
+        self.released.remove(&key);
+        if key.1 != SimTable::Keymap(Layer::Fn) {
+            return;
+        }
+        let chunks = SimTable::Keymap(Layer::Fn).len().div_ceil(KEYMAP_CHUNK_LEN);
+        self.fn_chunks |= 1 << (offset / KEYMAP_CHUNK_LEN);
+        if usize::try_from(self.fn_chunks.count_ones()).unwrap_or(0) == chunks {
+            self.fn_chunks = 0;
+            let rule = self.keymap_commit;
+            let waiting: Vec<(u8, SimTable)> = self
+                .unsaved_tables
+                .keys()
+                .copied()
+                .filter(|(_, table)| rule.waits_for_fn_write(*table))
+                .collect();
+            self.released.extend(waiting);
+        }
     }
 
     /// A profile reload: saves the working copy if its commit is due, else
@@ -602,6 +754,8 @@ impl DeviceSim {
             self.unsaved_triggers.clear();
             self.discarded += 1;
         }
+        self.released.clear();
+        self.fn_chunks = 0;
         self.last_edit = None;
     }
 
@@ -612,6 +766,8 @@ impl DeviceSim {
     pub fn factory_reset_all(&mut self) {
         self.unsaved_tables.clear();
         self.unsaved_triggers.clear();
+        self.released.clear();
+        self.fn_chunks = 0;
         self.last_edit = None;
         for profile in 0..=ProfileId::COUNT {
             for table in [
@@ -966,8 +1122,8 @@ impl DeviceSim {
             }
             0x09 if b[1] == 0x00 => chunk(b, SimTable::CustomColors1, 54),
             0x09 => Err("custom colour table other than 1".into()),
-            0x18 if b[1] == 0x00 => chunk(b, SimTable::Keymap(Layer::Base), 56),
-            0x18 if b[1] == 0x02 => chunk(b, SimTable::Keymap(Layer::Fn), 56),
+            0x18 if b[1] == 0x00 => chunk(b, SimTable::Keymap(Layer::Base), KEYMAP_CHUNK_LEN),
+            0x18 if b[1] == 0x02 => chunk(b, SimTable::Keymap(Layer::Fn), KEYMAP_CHUNK_LEN),
             0x18 => Err("keymap write sub other than 00 / 02".into()),
             0x19 => match MacroSlotId::new(b[1]) {
                 Some(slot) => chunk(b, SimTable::Macro(slot), 58),
@@ -999,10 +1155,15 @@ impl DeviceSim {
         }
     }
 
+    /// The key of `table` of the active profile in `tables`.
+    fn key_of(&self, table: SimTable) -> (u8, SimTable) {
+        (self.slot(table.request(), self.active), table)
+    }
+
     /// The working copy of `table` in the active profile, for a write: an
     /// unsaved edit starts from the saved bytes.
     fn table_mut(&mut self, table: SimTable) -> &mut Vec<u8> {
-        let key = (self.slot(table.request(), self.active), table);
+        let key = self.key_of(table);
         let saved = &self.tables;
         self.unsaved_tables.entry(key).or_insert_with(|| {
             saved
@@ -1078,6 +1239,9 @@ impl DeviceSim {
                     if let Some(dst) = bytes.get_mut(offset..offset + data.len()) {
                         dst.copy_from_slice(&data);
                     }
+                    // A complete Fn-keymap write releases the base keymap
+                    // to the quiet-time commit (spec 4.8.2).
+                    self.note_edit(self.key_of(table), offset);
                 }
                 let ack: &[u8] = match table {
                     SimTable::CustomColors1 => &[0x09, 0, 0, 0, 0],
@@ -1094,6 +1258,7 @@ impl DeviceSim {
                     if let Some(dst) = bytes.get_mut(slot * 40..slot * 40 + 40) {
                         dst.fill(0);
                     }
+                    self.note_edit(self.key_of(SimTable::AdvancedKeys), slot * 40);
                 }
                 vec![report(&[0x22, 0, 0, 0, 0])]
             }
@@ -1768,6 +1933,224 @@ mod tests {
         assert_eq!(s.discarded_edits(), 2);
         assert_eq!(s.persisted_trigger(p2, q), Some(FACTORY_TRIGGER));
         s.assert_clean();
+    }
+
+    /// The ten packets of a keymap write of `layer` with `bytes`.
+    fn keymap_packets(layer: Layer, bytes: &[u8]) -> Vec<WritePacket> {
+        let (layer, data) =
+            KeymapData::from_response(&raw(ReadRequest::Keymap(layer), bytes)).expect("keymap");
+        WriteRequest::Keymap(layer, data)
+            .steps()
+            .into_iter()
+            .map(|step| step.packet)
+            .collect()
+    }
+
+    /// The five packets of a macro write of `slot` with `bytes`.
+    fn macro_packets(slot: MacroSlotId, bytes: &[u8]) -> Vec<WritePacket> {
+        let (slot, data) =
+            MacroData::from_response(&raw(ReadRequest::Macro(slot), bytes)).expect("macro");
+        WriteRequest::Macro(slot, data)
+            .steps()
+            .into_iter()
+            .map(|step| step.packet)
+            .collect()
+    }
+
+    fn send_all(s: &mut DeviceSim, packets: &[WritePacket]) {
+        for packet in packets {
+            s.write_command(packet).expect("sent");
+        }
+        s.queue.clear();
+    }
+
+    /// Selects `away`, then `back` (a profile reload).
+    fn reload(s: &mut DeviceSim, away: ProfileId, back: ProfileId) {
+        s.write_command(&select_packet(away)).expect("sent");
+        s.write_command(&select_packet(back)).expect("sent");
+        s.queue.clear();
+    }
+
+    #[test]
+    fn the_base_keymap_is_saved_only_by_a_following_fn_write() {
+        let [p1, p2, ..] = ProfileId::ALL;
+        let base = SimTable::Keymap(Layer::Base);
+        let fn_layer = SimTable::Keymap(Layer::Fn);
+        let zeros = vec![0u8; 528];
+        let mut s = sim();
+        assert_eq!(s.keymap_commit(), KeymapCommit::default());
+        assert!(s.keymap_commit().base_needs_fn_write);
+        for p in [p1, p2] {
+            s.set_table(p, base, zeros.clone());
+            s.set_table(p, fn_layer, zeros.clone());
+        }
+        // W -> A and knob slot 16 -> 00, as in the hardware probe.
+        let mut remapped = zeros.clone();
+        remapped[46 * 4..47 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+
+        // 18 00 alone: it reads back at once, but even 6 s later it is not
+        // saved, and a profile switch loses it.
+        send_all(&mut s, &keymap_packets(Layer::Base, &remapped));
+        assert_eq!(s.table(p1, base), Some(remapped.as_slice()));
+        assert!(s.read(Duration::from_secs(6)).expect("read").is_none());
+        assert!(s.has_unsaved_edits());
+        assert!(s.has_edits_waiting_for_fn_write());
+        assert_eq!(s.persisted_table(p1, base), Some(zeros.as_slice()));
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(zeros.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // 18 00, then 18 02 with unchanged content: the complete 18 02
+        // releases the base keymap to the quiet-time commit, which saves both
+        // layers 1 s after the last 18 02 chunk (not at once).
+        send_all(&mut s, &keymap_packets(Layer::Base, &remapped));
+        send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+        assert!(!s.has_edits_waiting_for_fn_write());
+        assert!(s.has_unsaved_edits());
+        assert_eq!(s.persisted_table(p1, base), Some(zeros.as_slice()));
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        assert!(!s.has_unsaved_edits());
+        assert_eq!(s.persisted_table(p1, base), Some(remapped.as_slice()));
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(remapped.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // 18 02 alone is kept (index 130, unused, as in the probe).
+        let mut fn_table = zeros.clone();
+        fn_table[130 * 4..131 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+        send_all(&mut s, &keymap_packets(Layer::Fn, &fn_table));
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, fn_layer), Some(fn_table.as_slice()));
+
+        // Without the rule the quiet-time commit saves the base keymap.
+        s.set_keymap_commit(KeymapCommit {
+            base_needs_fn_write: false,
+            ..KeymapCommit::default()
+        });
+        send_all(&mut s, &keymap_packets(Layer::Base, &zeros));
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(zeros.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+        s.assert_clean();
+    }
+
+    /// A complete `18 02` only releases the waiting base keymap to the
+    /// quiet-time commit: it is not saved at once, a partial `18 02`
+    /// releases nothing, and the Fn keymap itself keeps the quiet-time
+    /// commit.
+    #[test]
+    fn a_complete_fn_write_releases_the_base_keymap_to_the_quiet_time_commit() {
+        let [p1, p2, ..] = ProfileId::ALL;
+        let base = SimTable::Keymap(Layer::Base);
+        let fn_layer = SimTable::Keymap(Layer::Fn);
+        let zeros = vec![0u8; 528];
+        let mut remapped = zeros.clone();
+        remapped[46 * 4..47 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+        let mut fn_table = zeros.clone();
+        fn_table[130 * 4..131 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+        let fresh = || {
+            let mut s = sim();
+            for p in [p1, p2] {
+                s.set_table(p, base, zeros.clone());
+                s.set_table(p, fn_layer, zeros.clone());
+            }
+            s
+        };
+
+        // A switch 300 ms after a complete base + Fn write loses both layers.
+        let mut s = fresh();
+        send_all(&mut s, &keymap_packets(Layer::Base, &remapped));
+        send_all(&mut s, &keymap_packets(Layer::Fn, &fn_table));
+        assert!(!s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_millis(300)).expect("read").is_none());
+        assert!(s.has_unsaved_edits());
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(zeros.as_slice()));
+        assert_eq!(s.table(p1, fn_layer), Some(zeros.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+        s.assert_clean();
+
+        // A truncated 18 02 (chunks 0-8 of an unchanged Fn keymap) releases
+        // nothing: even 6 s later the base keymap is not saved.
+        let mut s = fresh();
+        let unchanged_fn = keymap_packets(Layer::Fn, &zeros);
+        send_all(&mut s, &keymap_packets(Layer::Base, &remapped));
+        send_all(&mut s, &unchanged_fn[..9]);
+        assert!(s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_secs(6)).expect("read").is_none());
+        assert_eq!(s.persisted_table(p1, base), Some(zeros.as_slice()));
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(zeros.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // The writer's second attempt after an ack timeout: chunk 0, then
+        // the whole table. Complete, so the base keymap is saved 1 s later.
+        send_all(&mut s, &keymap_packets(Layer::Base, &remapped));
+        send_all(&mut s, &unchanged_fn[..1]);
+        assert!(s.has_edits_waiting_for_fn_write());
+        send_all(&mut s, &unchanged_fn);
+        assert!(!s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(remapped.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+
+        // A base keymap written after the 18 02 waits for the next one.
+        send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+        send_all(&mut s, &keymap_packets(Layer::Base, &zeros));
+        assert!(s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, base), Some(remapped.as_slice()));
+        assert_eq!(s.discarded_edits(), 2);
+        s.assert_clean();
+
+        // An Fn-keymap write followed at once by a select is discarded.
+        let mut s = fresh();
+        send_all(&mut s, &keymap_packets(Layer::Fn, &fn_table));
+        assert_eq!(s.table(p1, fn_layer), Some(fn_table.as_slice()));
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, fn_layer), Some(zeros.as_slice()));
+        assert_eq!(s.discarded_edits(), 1);
+        s.assert_clean();
+    }
+
+    #[test]
+    fn macros_wait_for_the_fn_write_only_when_configured() {
+        let [p1, p2, ..] = ProfileId::ALL;
+        let slot = MacroSlotId::new(0).expect("slot");
+        let table = SimTable::Macro(slot);
+        let zeros = vec![0u8; 528];
+        let mut content = vec![0u8; 256];
+        content[..12].copy_from_slice(&[0, 0, 0, 4, 0, 1, 0, 0, 0x04, 0x10, 0, 0]);
+        for waits in [false, true] {
+            let mut s = sim();
+            s.set_keymap_commit(KeymapCommit {
+                macros_and_advanced_need_fn_write: waits,
+                ..KeymapCommit::default()
+            });
+            for p in [p1, p2] {
+                s.set_table(p, table, vec![0xFF; 256]);
+                s.set_table(p, SimTable::Keymap(Layer::Fn), zeros.clone());
+            }
+            // A macro write alone, left alone for 2 s.
+            send_all(&mut s, &macro_packets(slot, &content));
+            assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+            assert_eq!(s.has_edits_waiting_for_fn_write(), waits);
+            reload(&mut s, p2, p1);
+            let kept = s.table(p1, table) == Some(content.as_slice());
+            assert_eq!(kept, !waits, "waits: {waits}");
+
+            // Followed by an 18 02: kept in both settings.
+            send_all(&mut s, &macro_packets(slot, &content));
+            send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+            assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+            reload(&mut s, p2, p1);
+            assert_eq!(s.table(p1, table), Some(content.as_slice()), "{waits}");
+            s.assert_clean();
+        }
     }
 
     #[test]
