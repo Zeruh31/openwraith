@@ -15,7 +15,7 @@ use openwraith_protocol::{
     WritePacket,
 };
 
-use crate::error::TransportError;
+use crate::error::{ErrorKind, TransportError};
 use crate::transport::{Transport, UsbInfo, WriteTransport};
 
 /// Whether a HID interface with these identifiers is the configuration
@@ -51,6 +51,83 @@ impl DeviceDescriptor {
     /// CLI's `--device` option).
     pub fn path(&self) -> String {
         self.path.to_string_lossy().into_owned()
+    }
+
+    /// A serialisable description of this interface (for a device list in a
+    /// user interface). Opening a device still needs the descriptor itself.
+    pub fn listing(&self) -> DeviceListing {
+        DeviceListing {
+            path: self.path(),
+            usb: self.usb.clone(),
+            interface_number: self.interface_number,
+        }
+    }
+}
+
+/// A serialisable description of a supported configuration interface found
+/// during enumeration ([`DeviceDescriptor::listing`]). It cannot be opened:
+/// [`HidBackend::open`] takes the [`DeviceDescriptor`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceListing {
+    /// Platform path of the HID interface, as text.
+    pub path: String,
+    /// USB identity of the device.
+    pub usb: UsbInfo,
+    /// USB interface number, or -1 if unknown.
+    pub interface_number: i32,
+}
+
+/// Why [`choose_device`] found no device.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeviceChoiceError {
+    /// No supported configuration interface is connected.
+    #[error("no supported keyboard found")]
+    NotFound,
+    /// Several supported keyboards are connected and none was chosen.
+    #[error("{count} supported keyboards are connected; choose one")]
+    Ambiguous {
+        /// How many are connected.
+        count: usize,
+    },
+    /// The requested path is not a connected supported keyboard.
+    #[error("no connected supported keyboard has the path {path:?}")]
+    UnknownPath {
+        /// The requested path.
+        path: String,
+    },
+}
+
+impl DeviceChoiceError {
+    /// The machine-readable class of this error.
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            DeviceChoiceError::NotFound | DeviceChoiceError::UnknownPath { .. } => {
+                ErrorKind::NotFound
+            }
+            DeviceChoiceError::Ambiguous { .. } => ErrorKind::InvalidRequest,
+        }
+    }
+}
+
+/// The only-one-device rule: the device at `path` when one is given, else
+/// the only device in `devices`. Several devices without a path are
+/// [`DeviceChoiceError::Ambiguous`]: a keyboard is never picked at random.
+/// Opens nothing.
+pub fn choose_device<'a>(
+    devices: &'a [DeviceDescriptor],
+    path: Option<&str>,
+) -> Result<&'a DeviceDescriptor, DeviceChoiceError> {
+    match path {
+        Some(path) => devices.iter().find(|d| d.path() == path).ok_or_else(|| {
+            DeviceChoiceError::UnknownPath {
+                path: path.to_string(),
+            }
+        }),
+        None => match devices {
+            [] => Err(DeviceChoiceError::NotFound),
+            [only] => Ok(only),
+            many => Err(DeviceChoiceError::Ambiguous { count: many.len() }),
+        },
     }
 }
 
@@ -292,5 +369,59 @@ mod tests {
         assert_eq!(non_empty(Some("  ")), None);
         assert_eq!(non_empty(Some("Wraith W75")), Some("Wraith W75".into()));
         assert_eq!(non_empty(None), None);
+    }
+
+    fn descriptor(path: &str, pid: u16) -> DeviceDescriptor {
+        DeviceDescriptor {
+            path: CString::new(path).expect("no NUL in test paths"),
+            usb: UsbInfo {
+                vendor_id: 0x2E3C,
+                product_id: pid,
+                product: Some("Wraith W75".into()),
+                manufacturer: None,
+                serial: None,
+            },
+            interface_number: 2,
+            usage_page: 0xFF1B,
+            usage: 0x0091,
+        }
+    }
+
+    #[test]
+    fn listings_carry_path_usb_and_interface() {
+        let device = descriptor(r"\\?\hid#vid_2e3c&pid_c368&mi_02", 0xC368);
+        let listing = device.listing();
+        assert_eq!(listing.path, device.path());
+        assert_eq!(listing.usb, device.usb);
+        assert_eq!(listing.interface_number, 2);
+        let json = serde_json::to_string(&listing).expect("serialisable");
+        let back: DeviceListing = serde_json::from_str(&json).expect("deserialisable");
+        assert_eq!(back, listing);
+    }
+
+    #[test]
+    fn the_only_device_is_chosen_without_a_path() {
+        let devices = [descriptor("a", 0xC368)];
+        assert_eq!(choose_device(&devices, None), Ok(&devices[0]));
+        assert_eq!(choose_device(&[], None), Err(DeviceChoiceError::NotFound));
+        assert_eq!(DeviceChoiceError::NotFound.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn several_devices_need_a_path() {
+        let devices = [descriptor("a", 0xC368), descriptor("b", 0xC365)];
+        assert_eq!(
+            choose_device(&devices, None),
+            Err(DeviceChoiceError::Ambiguous { count: 2 })
+        );
+        assert_eq!(choose_device(&devices, Some("b")), Ok(&devices[1]));
+        assert_eq!(
+            choose_device(&devices, Some("c")),
+            Err(DeviceChoiceError::UnknownPath { path: "c".into() })
+        );
+        assert_eq!(
+            DeviceChoiceError::Ambiguous { count: 2 }.kind(),
+            ErrorKind::InvalidRequest
+        );
     }
 }

@@ -1,0 +1,214 @@
+/* The Actuation & Rapid Trigger page (prefix act-). */
+
+.act-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.act-page > .ow-page-header {
+  margin-bottom: 0;
+}
+
+/* ---------- keyboard card ---------- */
+
+.act-read-at {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.act-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.act-toolbar__select,
+.act-toolbar__show {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.act-toolbar__label {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.act-toolbar__row {
+  min-height: 32px;
+  max-width: 220px;
+}
+
+/* Separate press / release values ("↓0,20 ↑0,40") wrap onto two lines on narrow keys. */
+.act-board .ow-key__value {
+  text-align: end;
+}
+
+/* Keys whose settings differ from the basic setting: a short bar along the
+   bottom edge, inset from the sides so it stays visible inside the
+   selection border. */
+.act-board .ow-key[data-flag]::after,
+.act-legend__changed::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 0;
+  left: 6px;
+  height: 3px;
+  border-radius: 2px 2px 0 0;
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+.act-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.act-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.act-legend__mark {
+  font-weight: 700;
+}
+
+.act-legend__mark--check {
+  color: var(--accent);
+}
+
+.act-legend__mark--pending,
+.act-legend__mark--warning {
+  color: var(--warning-fg);
+}
+
+.act-legend__chip {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.act-legend__changed {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 14px;
+  border: 1px solid var(--key-border);
+  border-radius: 3px;
+  background: var(--key-bg);
+}
+
+.act-legend__changed::after {
+  right: 3px;
+  left: 3px;
+}
+
+/* ---------- inspector ---------- */
+
+/* The target of "Set values" in the apply bar. */
+.act-inspector-anchor {
+  scroll-margin-top: var(--space-4);
+}
+
+.act-inspector-anchor:focus {
+  outline: none;
+}
+
+.act-apply-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.act-inspector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.act-inspector__summary {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+@container (min-width: 900px) {
+  .act-inspector {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .act-inspector__summary {
+    grid-column: auto;
+  }
+}
+
+.act-inspector__names {
+  overflow-wrap: anywhere;
+}
+
+.act-inspector__now {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.act-inspector__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* The columns are narrow: the slider takes the full width, its field goes below. */
+.act-inspector .ow-slider__row {
+  flex-wrap: wrap;
+}
+
+.act-inspector .ow-slider__input {
+  flex: 1 1 100%;
+}
+
+.act-inspector__title {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+/* ---------- review ---------- */
+
+.act-review__new strong {
+  font-weight: 700;
+}
+
+@media (forced-colors: active) {
+  .act-board .ow-key[data-flag]::after,
+  .act-legend__changed::after {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  /* A selected key is drawn in Highlight: its bar follows its text. */
+  .act-board .ow-key[aria-selected="true"][data-flag]::after {
+    background: HighlightText;
+  }
+}

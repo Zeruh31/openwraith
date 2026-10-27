@@ -5,10 +5,11 @@ the **Wraith W75** Hall-effect (magnetic switch) keyboard. It talks to the
 keyboard directly over USB HID. No browser, no account, and no third-party
 analytics are involved.
 
-The goal is a desktop app (Tauri 2). This repository currently contains a Rust
-library and the `openwraith` command line tool. It shows the keyboard's
-settings, makes lossless backups of one or all four onboard profiles,
-restores them, and changes triggers and the main light.
+This repository contains a Rust library, the `openwraith` command line tool
+and the **OpenWraith desktop app** (Tauri 2, Windows first). They show the
+keyboard's settings, make lossless backups of one or all four onboard
+profiles, restore them, and change the actuation point, Rapid Trigger and
+the main light.
 
 > **Disclaimer.** OpenWraith is an independent project. It is **not affiliated
 > with, endorsed by, or supported by Wraith** or the keyboard's manufacturer.
@@ -18,12 +19,13 @@ restores them, and changes triggers and the main light.
 > configurator; no vendor code is included (see
 > [docs/PROTOCOL.md](docs/PROTOCOL.md)). Use at your own risk.
 
-## Status: Phase 2 (backup, restore, edits)
+## Status: Phase 3 (desktop app v0.1)
 
 | Works now | Planned |
 |---|---|
-| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros (read-only) | Desktop app (Tauri 2) |
-| `openwraith backup`: lossless backup of the active profile (read-only) | Keymap and macro editing |
+| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | Linux and macOS builds of the app |
+| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros (read-only) | Keymap and macro editing |
+| `openwraith backup`: lossless backup of the active profile (read-only) | Per-key colours, dead band |
 | `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | SOCD, switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
 | `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | Other models of the family (W60, W65, W100) |
 | `openwraith set trigger` / `set light`: actuation, Rapid Trigger, main light | |
@@ -31,12 +33,106 @@ restores them, and changes triggers and the main light.
 
 Supported hardware: Wraith W75 (product code `W75HEARGB`) connected with the
 USB cable, firmware `V3.22.07` (USB `2e3c:c368`). The read-only commands were
-checked on the maintainer's keyboard. **The commands that write (Phase 2)
-have so far only run against a device simulator; the hardware tests
-([docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)) are still to be done.** The product IDs `2e3c:c365` to `2e3c:c367` are accepted as the
-spec allows, but unverified.
+checked on the maintainer's keyboard, and so were the commands that write
+(the results log in [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
+**The desktop app has so far only run against the device simulator; its
+hardware checks (A1-A10 in the same file) are still to be done.** The
+product IDs `2e3c:c365` to `2e3c:c367` are accepted as the spec allows, but
+unverified.
+
+## Desktop app
+
+The app does what the CLI does for backups, restores, triggers and the main
+light, with a visual keyboard and a confirmation for every write. It uses
+the same library, so every rule under [Safety](#safety) applies to it too.
+
+| Page | What you can do |
+|---|---|
+| **Keyboard** | Connection, model, firmware, active profile; read again; release the keyboard. The header switches the active profile (1-4). |
+| **Actuation & Rapid Trigger** | Select keys on the W75 (click, Shift + click, drag, Ctrl + A, WASD, arrows, a row, keys with the same setting), set the actuation point (0.02 mm steps) and Rapid Trigger: off, on with one sensitivity, or separate press and release. |
+| **Lighting** | The main light's effect (the keyboard's list plus Custom), colour, brightness and speed. |
+| **Backup & Restore** | Back up all four profiles or the active one; restore a backup (all or some profiles) after a plan preview; list and restore the safety backups. |
+| **Settings** | Language (Windows' language, English, Türkçe), theme (Windows' theme, light, dark), the safety-backups folder, About. |
+
+Not in v0.1: key assignments, macros, per-key colours, side light, dead band,
+SOCD, polling rate and Win-Lock.
+
+### Install (Windows 10 and 11, x64)
+
+- **Installer.** Run `OpenWraith_0.1.0_x64-setup.exe` (installs for the
+  current user without administrator rights; English or Turkish, from
+  Windows' language) or `OpenWraith_0.1.0_x64_en-US.msi` (per machine).
+  Build them yourself as described under [Development](#development); they
+  end up in `target\release\bundle\nsis\` and `target\release\bundle\msi\`.
+- **Not signed yet.** Windows SmartScreen warns on the first start ("Windows
+  protected your PC"): choose "More info", then "Run anyway".
+- **WebView2.** Windows 11 includes it. If it is missing, the installer
+  downloads Microsoft's WebView2 installer (the only network access; the app
+  itself never uses the network).
+- **Uninstall** in Windows Settings > Apps. Your safety backups stay where
+  they are.
+
+### Use
+
+1. **Close every wraith.software tab** (a background tab still talks to the
+   keyboard), then start OpenWraith with the keyboard connected by cable.
+2. The header shows "Checking that no other program is using the keyboard"
+   for 2 seconds (OpenWraith only listens), then reads the keyboard and shows
+   "Wraith W75 · FW 3.22.07".
+3. **Back up all four profiles once** (Backup & Restore), so you can always
+   go back.
+4. Change something, press **Review and write…**, read the plan and press
+   the write button. The first write after each start asks you to confirm
+   that the vendor site is closed.
+5. The report says what was written and verified, names the **safety
+   backup** made before the change, and offers **Undo…** (a normal restore of
+   that safety backup, with its own plan and confirmation).
+
+### Safety in the app
+
+- **Nothing is written without your confirmation.** Every change is planned
+  first (read-only) and shown; the write button becomes active after half a
+  second, Enter never presses it, and one confirmation writes once. Sliders
+  and fields change nothing on the keyboard until you confirm.
+- **A safety backup comes first** for every setting change and every
+  restore, in the same folder as the CLI's
+  (`%LOCALAPPDATA%\OpenWraith\safety-backups`, or `OPENWRAITH_SAFETY_DIR`).
+  The app shows the path; safety backups are never deleted.
+- **Waiting for the keyboard to save.** The keyboard stores a change about
+  1 second after receiving it; every write waits 2 seconds before it
+  finishes and shows a countdown. Don't unplug the keyboard or switch
+  profiles on it while that is shown. A restore also checks that the
+  keyboard kept what was written (by switching away and back) and reports
+  "LOST" if it did not.
+- **Another program (the vendor site).** While idle the app only listens. If
+  another program talks to the keyboard, OpenWraith stops sending anything,
+  reads included, shows a banner and pauses writing until you close the
+  site and press "I closed it, check again".
+- **Profile changes on the keyboard** (Fn + 1-4) are noticed: the app reads
+  the keyboard again and refuses any plan made for the old profile.
+- **A keyboard reset** (Fn + Space) stops the app at once; it sends nothing
+  until you choose "Read the keyboard again".
+- **Closing during a write** is deferred: the window asks whether to keep it
+  open or to stop safely (at the next safe point, after the save wait) and
+  close.
+- **An interrupted write** (a crash or a power loss) is shown at the next
+  start, with Undo for its safety backup.
+- **Don't run the CLI while the app is open:** both would talk to the
+  keyboard. "Release keyboard" (header) closes it without quitting the app.
+- Firmware other than 3.22.07 is marked "not tested yet" on the Keyboard
+  page and in every confirmation.
+- No account, no telemetry, no network. The app shows only its own content
+  (a strict content security policy and only the app's own commands are
+  allowed to the window).
+
+Where the app keeps its files: safety backups as above; its settings in
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json`; the operation journal
+(an interrupted write) in `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`.
 
 ## Safety
+
+These rules are the library's; the CLI and the desktop app follow them
+alike.
 
 - **Read-only commands stay read-only.** `list`, `info`, `show`, `profile`
   (without `select`), `restore --dry-run` and `backup` (without
@@ -146,10 +242,23 @@ spec allows, but unverified.
 3. The program is `target\release\openwraith.exe`. No driver is needed: the
    keyboard's configuration interface is a standard HID device.
 
+`cargo build --release` builds the command-line tool and the libraries only
+(the workspace's default members); the CLI needs Rust 1.85 or newer. The
+desktop app is built with `npm --prefix app run tauri build` (see
+[Desktop app development](#desktop-app-development)); `cargo build -p
+openwraith-cli --release` names the CLI explicitly.
+
 ### Linux
 
 Install `pkg-config` and the udev development files (Debian/Ubuntu:
-`sudo apt install pkg-config libudev-dev`), then `cargo build --release`.
+`sudo apt install pkg-config libudev-dev`), then `cargo build --release`
+(the CLI only; or explicitly `cargo build -p openwraith-cli --release`).
+
+The workspace-wide commands (`cargo test --workspace`, `cargo clippy
+--workspace`) also build the desktop app, which needs Rust 1.90 and the Tauri
+Linux prerequisites (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
+`libsoup-3.0-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`). The
+desktop app is not tested on Linux yet.
 To use the keyboard without root, add a udev rule, for example
 `/etc/udev/rules.d/70-openwraith.rules`:
 
@@ -308,7 +417,9 @@ Q3).
 
 ### Trying it without a keyboard
 
-The USB captures in `captures/` can be replayed instead of a keyboard:
+The desktop app has a device simulator and a browser preview (see
+[Desktop app development](#desktop-app-development)). For the CLI, the USB
+captures in `captures/` can be replayed instead of a keyboard:
 
 ```text
 cargo run -p openwraith-hid --features mock --example mock_backup -- captures/capture_06_powercycle_W_persisted.json sample.owbackup.json
@@ -323,9 +434,12 @@ cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against 
 | `crates/openwraith-protocol` | Pure protocol library: framing, read requests, the nine confirmed write forms, response matching, decoders, W75 key table. No I/O. |
 | `crates/openwraith-hid` | Transports (read-only and writable), session, device summary, backups (one or all profiles), the guarded writer, restore, edits, safety backups, the capture-replay mock and the device simulator. |
 | `crates/openwraith-cli` | The `openwraith` command. |
+| `crates/openwraith-app-core` | The desktop app without Tauri: the device worker (one thread owns the keyboard), the operations behind the confirmation dialogs, the IPC types (TypeScript generated from them) and the simulator backend. |
+| `app/src-tauri` | The desktop app's Tauri 2 shell: commands, progress channels, file dialogs, window lifecycle. |
+| `app/src` | The desktop app's frontend (React, TypeScript); `ipc/bindings` and `preview/fixtures` are generated by `cargo test -p openwraith-app-core` (`UPDATE_BINDINGS=1`, `UPDATE_FIXTURES=1`). |
 | `docs/PROTOCOL.md` | The protocol specification, with a confidence label on every fact. |
 | `docs/ARCHITECTURE.md` | Crate layout, how read-only paths and writes are guarded, data flow, backup format, adding a model. |
-| `docs/HARDWARE_TESTS.md` | The hardware test checklist (H0-H11) for the commands that write, run by hand. |
+| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's writes, A1-A10 for the desktop app, and the results log. |
 | `captures/` | Real USB traffic of the maintainer's W75, used by the tests. |
 
 ```text
@@ -334,10 +448,73 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
+The `--workspace` commands include the desktop app's Tauri crate: they need
+Rust 1.90 or newer (and, on Linux, the Tauri prerequisites listed above).
+
 Every test runs against the captures (through a mock transport) or against a
 simulated keyboard; no test opens a HID device. Contributions must never copy
 code or data files from the vendor's site: work from
 [docs/PROTOCOL.md](docs/PROTOCOL.md) and from your own captures.
+
+### Desktop app development
+
+Prerequisites: the Rust toolchain above (the app needs Rust 1.90 or newer),
+Node 22.22.2+, 24.15+ or 26+ (the versions the pinned Vite, Vitest, jsdom and
+ESLint support), and WebView2 (part of Windows 11). Run these from the
+repository root:
+
+| Command | What it does |
+|---|---|
+| `npm --prefix app ci` | Install the exact frontend dependencies from `app/package-lock.json`. |
+| `npm --prefix app run check` | TypeScript (strict), ESLint and the frontend tests (Vitest). |
+| `npm --prefix app run dev:preview` | **Browser preview, no keyboard and no Rust:** the UI on recorded fixtures at <http://localhost:1421/?scenario=ready>. |
+| `npm --prefix app run dev` | The desktop app on the **device simulator** (a debug build with the feature `sim`; no HID code is compiled into it). |
+| `npm --prefix app run build` | Production frontend (`app/dist`), then a check that no preview code is in it. |
+| `npm --prefix app run tauri build` | The release app and the Windows installers: `target\release\bundle\msi\OpenWraith_<version>_x64_en-US.msi` and `target\release\bundle\nsis\OpenWraith_<version>_x64-setup.exe`. The first run downloads the WiX and NSIS tools. It also writes `app/src-tauri/legal/THIRD-PARTY-NOTICES.txt`, which the installers ship next to `LICENSE.txt` (a release build without it fails). |
+| `pwsh tools/release-build.ps1` | **The release command:** the same build with the builder's local paths (user name) remapped out of the executable, then a check that the executable contains no user-profile path. Use it for installers you hand out. |
+| `npm --prefix app run dev:hid` | The app with a real keyboard (maintainers only; close the wraith.software site first). |
+
+**Simulator mode** (`npm --prefix app run dev`). The window title says
+"OpenWraith [SIMULATOR]" and a purple banner says that no keyboard is used.
+The simulated W75 is the library's `DeviceSim` (seeded from a capture of the
+maintainer's keyboard) with the real firmware's delays: it takes 2 seconds
+to observe, waits for the keyboard to save, and so on. The **Simulator**
+badge in the header opens the simulator controls: unplug and plug in again,
+traffic from the vendor site, a profile switch on the keyboard (with or
+without a report), a factory reset, a slow save (a write is then LOST), a
+dropped reply, an unplug after 3 packets, and counters (the "violations"
+counter must stay 0). `OPENWRAITH_SIM_SPEED` scales the simulated time
+(default 1.0), and `OPENWRAITH_SIM_DIR` moves the simulator's safety
+backups and journal (default `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\`);
+they never go to the real safety folder. The simulator exists only in debug
+builds: a release build with the feature `sim` does not compile, the
+simulator's commands are registered and allowed only in simulator builds,
+and the simulator configuration (`app/src-tauri/tauri.sim.conf.json`) makes
+no installer.
+
+**Browser preview** (`npm --prefix app run dev:preview`). The frontend runs
+in a normal browser with a mocked IPC that replays fixtures the core's tests
+recorded from the real worker on the simulator. URLs take `scenario` (an id
+from `app/src/preview/scenarios/*.ts` or a fixture id), `lang=en|tr`,
+`theme=light|dark`, `speed=0|1|4` (progress replay speed), `freeze=1` (no
+animations, no event replay and no scenario button, for screenshots),
+`fallback=0` and a route after `#`, for example
+`http://localhost:1421/?scenario=other_program&lang=tr&theme=dark#/device`.
+Without `freeze=1`, the "Preview" button in the header picks another
+scenario.
+
+**Generated files.** The TypeScript bindings (`app/src/ipc/bindings/`), the
+W75 key list (`app/src/generated/w75Keys.ts`) and the preview fixtures
+(`app/src/preview/fixtures/`) are generated from the Rust code and checked
+by `cargo test`. After changing an IPC type or a recorded scenario, run
+`UPDATE_BINDINGS=1 cargo test -p openwraith-app-core bindings` or
+`UPDATE_FIXTURES=1 cargo test -p openwraith-app-core fixtures`.
+
+**Dependencies.** New crates and npm packages are pinned exactly, and only
+versions at least two weeks old are used (`app/.npmrc` sets npm's `before`;
+`tools/check-dep-dates.py` lists the crates in `Cargo.lock` released after
+a cutoff date). How the app is built is described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-desktop-app).
 
 ## License
 
@@ -350,11 +527,11 @@ GPL-3.0-or-later. See [LICENSE](LICENSE).
 OpenWraith, **Wraith W75** manyetik (Hall-effect) klavyenin tarayıcı tabanlı
 yapılandırma sitesinin yerine geçmeyi amaçlayan açık kaynaklı bir projedir.
 Klavyeyle doğrudan USB HID üzerinden konuşur; tarayıcı, hesap veya üçüncü
-taraf analitik betiği gerekmez. Hedef bir masaüstü uygulamasıdır (Tauri 2). Bu
-depoda şu an bir Rust kütüphanesi ve `openwraith` komut satırı aracı var. Araç
-klavyenin ayarlarını gösterir, tek profilin ya da dört onboard profilin
-hepsinin kayıpsız yedeğini alır, yedeği geri yükler, tetikleme ayarlarını ve
-ana ışığı değiştirir.
+taraf analitik betiği gerekmez. Bu depoda bir Rust kütüphanesi, `openwraith`
+komut satırı aracı ve **OpenWraith masaüstü uygulaması** (Tauri 2, önce
+Windows) var. Bunlar klavyenin ayarlarını gösterir, tek profilin ya da dört
+onboard profilin hepsinin kayıpsız yedeğini alır, yedeği geri yükler,
+aktivasyon noktasını, Rapid Trigger ayarını ve ana ışığı değiştirir.
 
 > **Uyarı.** OpenWraith bağımsız bir projedir; Wraith veya üretici ile **hiçbir
 > bağlantısı yoktur, onlar tarafından onaylanmamış veya desteklenmemektedir.**
@@ -363,19 +540,121 @@ ana ışığı değiştirir.
 > belgelenmiştir; sitenin kodu projede yer almaz. Kullanım sorumluluğu size
 > aittir.
 
-**Durum: Faz 2 (yedek, geri yükleme, ayar değiştirme).** Salt okunur
-komutlar: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
+**Durum: Faz 3 (masaüstü uygulaması v0.1).** Masaüstü uygulaması (Windows)
+yedekleme ve geri yükleme, aktivasyon ve Rapid Trigger, ana ışık ayarlarını
+kapsar; arayüz Türkçe ve İngilizcedir. Komut satırı aracının salt okunur
+komutları: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
 `backup` (aktif profil), `show` (tablo veya `--json`) ve
 `restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
 (yalnızca profil geçişi yapar), `profile select N`, `set trigger`, `set light`
-ve `restore`. Salt okunur komutlar bakımcının klavyesinde (firmware
-V3.22.07, USB `2e3c:c368`) denendi. **Yazan komutlar şimdiye kadar yalnızca
-klavye simülatörüne karşı test edildi; gerçek donanım testleri
-([docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)) henüz yapılmadı.** Tuş ataması ve makro düzenleme, SOCD, switch tipi, yan ışık,
-polling rate ve Win-Lock yazmaları ile masaüstü uygulaması sonraki aşamalarda
-gelecek.
+ve `restore`. Salt okunur ve yazan komutlar bakımcının klavyesinde
+(firmware V3.22.07, USB `2e3c:c368`) denendi; sonuçlar
+[docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md) dosyasındaki kayıtta.
+**Masaüstü uygulaması şimdiye kadar yalnızca cihaz simülatörüne karşı
+çalıştırıldı; donanım denetimleri (aynı dosyada A1-A10) henüz yapılmadı.**
+Tuş ataması ve makro düzenleme, tuş başına renkler, SOCD, switch tipi, yan
+ışık, polling rate ve Win-Lock yazmaları sonraki aşamalarda gelecek.
 
-**Güvenlik:**
+### Masaüstü uygulaması
+
+Uygulama, yedekleme, geri yükleme, tetikleme ayarları ve ana ışık için komut
+satırı aracının yaptığını görsel bir klavye ve her yazma için bir onay
+penceresiyle yapar. Aynı kütüphaneyi kullandığı için aşağıdaki güvenlik
+kurallarının hepsi uygulama için de geçerlidir.
+
+| Sayfa | Neler yapılabilir |
+|---|---|
+| **Klavye** | Bağlantı, model, firmware, etkin profil; yeniden okuma; klavyeyi bırakma. Üst çubuktaki 1-4 düğmeleri etkin profili değiştirir. |
+| **Aktivasyon ve Rapid Trigger** | W75 üzerinde tuş seçme (tıklama, Shift + tıklama, sürükleme, Ctrl + A, WASD, oklar, bir sıra, aynı ayardaki tuşlar), aktivasyon noktasını 0,02 mm adımlarla ayarlama ve Rapid Trigger: kapalı, tek hassasiyetle açık ya da basma ve bırakma ayrı. |
+| **Işık** | Ana ışığın efekti (klavyenin listesi ve Özel), rengi, parlaklığı ve hızı. |
+| **Yedekle ve geri yükle** | Dört profilin hepsini ya da yalnızca etkin profili yedekleme; planı gördükten sonra bir yedeği (tüm ya da bazı profilleriyle) geri yükleme; güvenlik yedeklerini listeleme ve geri yükleme. |
+| **Ayarlar** | Dil (Windows'un dili, English, Türkçe), tema (Windows'un teması, açık, koyu), güvenlik yedeği klasörü, hakkında. |
+
+v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, yan
+ışık, dead band, SOCD, polling rate ve Win-Lock.
+
+**Kurulum (Windows 10 ve 11, x64):**
+
+- `OpenWraith_0.1.0_x64-setup.exe` yalnızca geçerli kullanıcı için, yönetici
+  izni istemeden kurar (Windows'un diline göre Türkçe ya da İngilizce);
+  `OpenWraith_0.1.0_x64_en-US.msi` bilgisayardaki herkes için kurar. Kurulum
+  dosyalarını aşağıdaki geliştirici komutlarıyla kendiniz üretebilirsiniz;
+  `target\release\bundle\nsis\` ve `target\release\bundle\msi\` klasörlerine
+  yazılırlar.
+- Kurulum dosyaları henüz imzalı değil. Windows SmartScreen ilk açılışta
+  "Windows bilgisayarınızı korudu" uyarısı verir: "Ek bilgi" ve ardından
+  "Yine de çalıştır" seçin.
+- WebView2 Windows 11'de hazır gelir. Yoksa kurulum programı Microsoft'un
+  WebView2 kurulumunu indirir (tek ağ erişimi budur; uygulamanın kendisi ağı
+  hiç kullanmaz).
+- Kaldırmak için Windows Ayarlar > Uygulamalar. Güvenlik yedekleriniz
+  silinmez.
+
+**Kullanım:**
+
+1. **Bütün wraith.software sekmelerini kapatın** (arka plandaki bir sekme de
+   klavyeyle konuşur), sonra klavye kabloyla bağlıyken OpenWraith'i açın.
+2. Üst çubukta 2 saniye boyunca "Klavyeyi başka bir programın kullanmadığı
+   denetleniyor…" yazar (OpenWraith yalnızca dinler); ardından klavye okunur
+   ve "Wraith W75 · FW 3.22.07" görünür.
+3. Her zaman geri dönebilmek için **dört profilin hepsini bir kez yedekleyin**
+   (Yedekle ve geri yükle sayfası).
+4. Bir ayarı değiştirin, **İncele ve yaz…** düğmesine basın, planı okuyun ve
+   yazma düğmesine basın. Her açılıştaki ilk yazmada wraith.software
+   sekmelerinin kapalı olduğunu onaylamanız istenir.
+5. Rapor neyin yazılıp doğrulandığını söyler, değişiklikten önce alınan
+   **güvenlik yedeğini** gösterir ve **Geri al…** seçeneği sunar (bu, o
+   güvenlik yedeğinin kendi planı ve onayıyla yapılan olağan bir geri
+   yüklemesidir).
+
+**Uygulamada güvenlik:**
+
+- **Siz onaylamadan hiçbir şey yazılmaz.** Her değişiklik önce salt okunur
+  olarak planlanır ve gösterilir; yazma düğmesi yarım saniye sonra etkinleşir,
+  Enter tuşu ona basmaz ve bir onay tek bir yazma yapar. Kaydırıcılar ve
+  alanlar siz onaylayana kadar klavyede hiçbir şeyi değiştirmez.
+- **Önce güvenlik yedeği:** her ayar değişikliğinden ve her geri yüklemeden
+  önce, komut satırı aracıyla aynı klasöre
+  (`%LOCALAPPDATA%\OpenWraith\safety-backups` ya da `OPENWRAITH_SAFETY_DIR`)
+  bir güvenlik yedeği kaydedilir. Uygulama bu yolu gösterir; güvenlik
+  yedekleri hiçbir zaman silinmez.
+- **Klavyenin kaydetmesi beklenir.** Klavye bir değişikliği aldıktan yaklaşık
+  1 saniye sonra kaydeder; her yazma bitmeden önce 2 saniye bekler ve geri
+  sayım gösterir. Bu sırada klavyeyi çıkarmayın ve klavyeden profil
+  değiştirmeyin. Geri yükleme ayrıca klavyenin yazılanı sakladığını (başka
+  bir profile geçip geri dönerek) denetler, saklamadıysa "KAYBOLDU" diye
+  bildirir.
+- **Başka bir program (üreticinin sitesi):** Boştayken uygulama yalnızca
+  dinler. Klavyeyle başka bir program konuşursa OpenWraith okumalar dahil
+  hiçbir şey göndermez, bir uyarı gösterir ve siz siteyi kapatıp "Kapattım,
+  yeniden denetle" düğmesine basana kadar yazmayı duraklatır.
+- **Klavyeden profil değiştirme** (Fn + 1-4) fark edilir: uygulama klavyeyi
+  yeniden okur ve eski profil için yapılmış bir planı reddeder.
+- **Klavye sıfırlanırsa** (Fn + Boşluk) uygulama hemen durur ve siz "Klavyeyi
+  yeniden oku" seçeneğine basana kadar hiçbir şey göndermez.
+- **Yazma sürerken pencereyi kapatmak** ertelenir: pencere açık mı kalsın,
+  yoksa güvenli bir noktada (kaydetme beklendikten sonra) durdurulup kapatılsın
+  mı diye sorulur.
+- **Yarıda kalan bir yazma** (çökme ya da elektrik kesintisi) bir sonraki
+  açılışta, güvenlik yedeğini geri almak için bir düğmeyle gösterilir.
+- **Uygulama açıkken komut satırı aracını çalıştırmayın;** ikisi birden
+  klavyeyle konuşur. Üst çubuktaki "Klavyeyi bırak" uygulamayı kapatmadan
+  klavyeyi serbest bırakır.
+- 3.22.07 dışındaki bir firmware, Klavye sayfasında ve her onay penceresinde
+  "henüz denenmedi" olarak belirtilir.
+- Hesap, telemetri ve ağ yok. Uygulama yalnızca kendi içeriğini gösterir
+  (sıkı bir içerik güvenliği politikası; pencere yalnızca uygulamanın kendi
+  komutlarını çağırabilir).
+
+Uygulamanın dosyaları: güvenlik yedekleri yukarıdaki klasörde; ayarlar
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json` dosyasında; işlem
+günlüğü (yarıda kalan bir yazma için) `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`
+klasöründe.
+
+### Güvenlik
+
+Bu kurallar kütüphanenindir; komut satırı aracı ve masaüstü uygulaması
+ikisi de bunlara uyar.
 
 - **Salt okunur komutlar salt okunur kalır.** `list`, `info`, `show`,
   `profile` (`select` olmadan), `restore --dry-run` ve `backup`
@@ -477,11 +756,21 @@ gelecek.
   kodundan alınmıştır ve henüz USB trafiğinde doğrulanmamıştır; JSON
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.
 
+### Komut satırı aracı
+
 **Derleme (Windows):** [rustup](https://rustup.rs/) ile Rust'ı kurun (MSVC
 araç zinciri ve Visual Studio Build Tools içindeki "Desktop development with
 C++" bileşeni gerekir), sonra depo klasöründe `cargo build --release`
 çalıştırın. Program `target\release\openwraith.exe` olur; ayrıca sürücü
-gerekmez. Linux için yukarıdaki udev kuralına bakın.
+gerekmez. `cargo build --release` yalnızca komut satırı aracını ve
+kütüphaneleri derler (Rust 1.85 ve üstü yeterlidir); açıkça
+`cargo build -p openwraith-cli --release` de yazılabilir. Linux için
+yukarıdaki udev kuralına bakın. `cargo test --workspace` gibi bütün çalışma
+alanını kapsayan komutlar masaüstü uygulamasını da derler: Rust 1.90 ve
+Linux'ta Tauri ön koşulları gerekir (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`,
+`libgtk-3-dev`, `libsoup-3.0-dev`, `librsvg2-dev`,
+`libayatana-appindicator3-dev`). Masaüstü uygulaması Linux'ta henüz test
+edilmedi.
 
 **Kullanım:**
 
@@ -530,6 +819,50 @@ dosyalarını reddeder. Tetikleme ayarları, ana ışık, temel tuş tablosu ve
 makrolar profile özeldir (kayıtlarda görüldü); diğer tabloların kapsamı henüz
 bilinmiyor, bu yüzden geri yükleme böyle bir tabloyu yazmadan önce yeniden
 okur ve zaten eşleşiyorsa atlar.
+
+### Geliştirme
+
+**Masaüstü uygulaması:** Rust (1.90 veya üstü), Node (22.22.2 ve üstü,
+24.15 ve üstü ya da 26 ve üstü) ve WebView2 gerekir. Komutlar depo
+klasöründe çalıştırılır:
+
+- `npm --prefix app ci`: `app/package-lock.json` dosyasındaki bağımlılıkları
+  birebir kurar.
+- `npm --prefix app run check`: TypeScript, ESLint ve arayüz testleri.
+- `npm --prefix app run dev:preview`: **klavye ve Rust olmadan tarayıcı
+  önizlemesi.** Arayüz, kayıtlı senaryolarla
+  <http://localhost:1421/?scenario=ready&lang=tr> adresinde açılır. Adres
+  `scenario`, `lang=en|tr`, `theme=light|dark`, `speed=0|1|4`, `freeze=1`
+  (ekran görüntüsü için animasyonsuz) parametrelerini ve `#` sonrasında bir
+  sayfa alır.
+- `npm --prefix app run dev`: uygulamayı **cihaz simülatörüyle** başlatır
+  (`sim` özellikli bir hata ayıklama derlemesi; içinde HID kodu yoktur).
+  Pencere başlığında "[SIMULATOR]" yazar, mor bir şerit gerçek klavye
+  kullanılmadığını söyler. Üst çubuktaki **Simülatör** rozeti simülatör
+  denetimlerini açar: kabloyu çıkarma ve takma, üreticinin sitesinden gelen
+  trafik, klavyeden profil değiştirme, fabrika ayarlarına dönme, yavaş
+  kaydetme (yazılan KAYBOLUR), kaybolan bir yanıt ve sayaçlar ("ihlal"
+  sayacı 0 kalmalıdır). `OPENWRAITH_SIM_SPEED` simüle edilen zamanı ölçekler;
+  simülatörün güvenlik yedekleri ve günlüğü gerçek klasöre değil,
+  `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` klasörüne (ya da
+  `OPENWRAITH_SIM_DIR`) yazılır. Simülatör yalnızca hata ayıklama
+  derlemelerinde vardır: `sim` özelliğiyle bir sürüm (release) derlemesi
+  derlenmez ve simülatör yapılandırması kurulum dosyası üretmez.
+- `npm --prefix app run tauri build`: sürüm derlemesini ve Windows kurulum
+  dosyalarını (`.msi`, `.exe`) üretir. Kurulum dosyalarının `LICENSE.txt`
+  yanında taşıdığı `app/src-tauri/legal/THIRD-PARTY-NOTICES.txt` dosyasını da
+  yazar (bu dosya olmadan sürüm derlemesi başarısız olur).
+- `pwsh tools/release-build.ps1`: **dağıtılacak kurulum dosyaları için sürüm
+  komutu.** Aynı derlemeyi, derleyen kişinin yerel yollarını (kullanıcı adı)
+  çalıştırılabilir dosyadan çıkararak yapar ve sonra dosyada kullanıcı
+  profili yolu kalmadığını denetler.
+- `npm --prefix app run dev:hid`: gerçek klavyeyle (yalnızca bakımcılar için;
+  önce wraith.software sitesini kapatın).
+
+TypeScript tipleri, W75 tuş listesi ve önizleme senaryoları Rust kodundan
+üretilir ve `cargo test` bunların güncel olduğunu denetler; bir IPC tipi
+değişince `UPDATE_BINDINGS=1`, kayıtlı bir senaryo değişince
+`UPDATE_FIXTURES=1` ile `cargo test -p openwraith-app-core` çalıştırın.
 
 Protokol belgesi: [docs/PROTOCOL.md](docs/PROTOCOL.md). Mimari:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Lisans: GPL-3.0-or-later.

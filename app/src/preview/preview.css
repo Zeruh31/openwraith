@@ -1,0 +1,54 @@
+/* The browser preview's scenario panel (mock mode only). */
+
+/* In the header's empty middle (a little right of it, clear of the status
+   pill at 1024 px), so it never covers a page's apply bar. Hidden with
+   `freeze=1` (screenshots); the URL parameters still choose the scenario. */
+.ow-preview-panel__toggle {
+  position: fixed;
+  top: 14px;
+  left: calc(50% + 48px);
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: var(--space-1) var(--space-3);
+  border: 1px dashed var(--control-border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.ow-preview-panel {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 280px;
+  padding: var(--space-3);
+  border: 1px dashed var(--control-border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: var(--text-xs);
+}
+
+.ow-preview-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ow-preview-panel select {
+  min-height: 28px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.ow-freeze .ow-preview-panel__toggle {
+  display: none;
+}

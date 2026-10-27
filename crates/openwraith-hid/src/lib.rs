@@ -99,7 +99,8 @@ pub use error::{
     SessionError, TransportError, WriteError,
 };
 pub use hid::{
-    DeviceDescriptor, HidBackend, HidTransport, WritableHidTransport, is_supported_interface,
+    DeviceChoiceError, DeviceDescriptor, DeviceListing, HidBackend, HidTransport,
+    WritableHidTransport, choose_device, is_supported_interface,
 };
 #[cfg(feature = "mock")]
 pub use mock::{MockError, MockTransport};

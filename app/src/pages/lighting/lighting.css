@@ -1,0 +1,229 @@
+/* The Lighting page (prefix li-). */
+
+.li-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.li-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .li-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- effect tiles ---------- */
+
+.li-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: var(--space-2);
+}
+
+.li-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-height: 76px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+
+/* Hover never hides the selection: the chosen tile keeps its accent look. */
+.li-tile:hover:not(:disabled):not([aria-checked="true"]) {
+  border-color: var(--control-border);
+  background: var(--surface-2);
+}
+
+.li-tile[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-weak);
+}
+
+.li-tile:disabled {
+  cursor: not-allowed;
+}
+
+.li-tile:disabled:not([aria-checked="true"]) {
+  opacity: 0.6;
+}
+
+.li-tile--unknown {
+  border-style: dashed;
+  background: var(--surface-2);
+  opacity: 1;
+}
+
+.li-tile--unknown[aria-checked="true"] {
+  border-color: var(--warning-fg);
+  box-shadow: none;
+  background: var(--warning-bg);
+}
+
+.li-mode-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.li-tile--unknown .li-mode-icon {
+  color: var(--warning-fg);
+}
+
+.li-tile__name {
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.li-tile__marker {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.2;
+}
+
+.li-tile[aria-checked="true"] .li-tile__marker {
+  color: var(--text);
+}
+
+.li-hint {
+  margin-top: var(--space-3);
+  color: var(--warning-fg);
+  font-weight: 600;
+}
+
+/* ---------- controls ---------- */
+
+.li-controls .ow-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.li-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.li-level {
+  display: inline-block;
+  min-width: 64px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: end;
+  white-space: nowrap;
+}
+
+.li-note {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+}
+
+.li-off p {
+  margin-top: var(--space-1);
+}
+
+/* ---------- preview ---------- */
+
+.li-previews {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.li-preview {
+  margin: 0;
+}
+
+.li-preview__caption {
+  margin-bottom: var(--space-1);
+}
+
+/* The strip is a dark keyboard in both themes, so the light reads as light. */
+.li-preview__strip {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: #15181e;
+  border: 1px solid var(--border);
+}
+
+.li-preview__key {
+  position: relative;
+  aspect-ratio: 1;
+  min-height: 18px;
+  border-radius: 4px;
+  background: #0b0d11;
+  overflow: hidden;
+}
+
+.li-preview__glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+}
+
+.li-preview__cap {
+  position: absolute;
+  inset: 3px 3px 5px;
+  border-radius: 3px;
+  background: rgb(20 23 30 / 0.5);
+}
+
+/* ---------- apply bar summary and review ---------- */
+
+.li-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+}
+
+.li-summary__part {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.li-summary__part::before {
+  content: "·";
+  margin-inline-end: var(--space-1);
+  color: var(--text-muted);
+}
+
+.li-review__new {
+  font-weight: 600;
+}
+
+.li-review__row--changed th {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+@media (forced-colors: active) {
+  .li-tile[aria-checked="true"] {
+    outline: 3px solid Highlight;
+  }
+
+  .li-preview__strip {
+    forced-color-adjust: none;
+  }
+}

@@ -1,0 +1,36 @@
+[package]
+name = "openwraith-app"
+description = "OpenWraith desktop app: backup and restore, actuation and Rapid Trigger, and lighting for the Wraith W75 (not affiliated with Wraith)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Tauri 2.12 needs Rust 1.90.
+rust-version = "1.90"
+publish = false
+default-run = "openwraith-app"
+
+[lib]
+name = "openwraith_app_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "openwraith-app"
+path = "src/main.rs"
+
+[features]
+# The developer simulator (debug builds only; `npm run dev`).
+sim = ["openwraith-app-core/sim"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.2", features = [] }
+
+[dependencies]
+openwraith-app-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "=2.12.3", features = [] }
+tauri-plugin-dialog = "=2.8.2"
+tauri-plugin-opener = "=2.7.1"
+tauri-plugin-single-instance = "=2.5.3"
+sys-locale = "=0.3.2"

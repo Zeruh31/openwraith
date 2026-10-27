@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- OpenWraith app icon (original artwork, GPL-3.0-or-later): a keycap
+       seen from above with an open ring, the "open" of OpenWraith. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B2D3A"/>
+      <stop offset="1" stop-color="#0F1115"/>
+    </linearGradient>
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5CC4F0"/>
+      <stop offset="1" stop-color="#0A6C96"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E7F6FD"/>
+      <stop offset="1" stop-color="#B8E3F6"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="200" fill="url(#bg)"/>
+  <!-- keycap body -->
+  <rect x="192" y="208" width="640" height="640" rx="120" fill="url(#cap)"/>
+  <!-- keycap top face -->
+  <rect x="264" y="248" width="496" height="496" rx="88" fill="url(#top)"/>
+  <!-- open ring -->
+  <path d="M 512 344 A 152 152 0 1 1 404.5 388.5" fill="none" stroke="#0A6C96" stroke-width="56" stroke-linecap="round"/>
+</svg>

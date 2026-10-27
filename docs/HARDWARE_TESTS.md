@@ -350,6 +350,56 @@ keymap group that writes macro or advanced-key slots with an `18 02`):
    and the Fn keymap after it. Check with `--dry-run` that nothing is left
    to write.
 
+## Desktop app (A1-A10, Phase 3)
+
+The desktop app uses the same library, so H0-H11 stay valid. These checks
+cover what the app adds: the long-lived session, the listen-only start, the
+confirmation flow and the progress display. Use a release build of the app
+(`npm --prefix app run tauri build`, then the installed app or
+`target\release\openwraith-app.exe`); never run the CLI while the app is
+open. Same preconditions as above (vendor site closed, cable, one keyboard).
+Safety backups go to the same folder as the CLI's.
+
+- **A1. Connect, observe, read.** Start the app with the keyboard plugged
+  in. The header shows "Checking that no other program is using the
+  keyboard" for about 2 s, then reading, then ready with the firmware.
+  Compare the actuation and lighting pages with `openwraith show all`
+  (run after closing the app). Pass: identical values.
+- **A2. Trigger edit and Undo.** Select W, A, S, D; set 1.20 mm and Rapid
+  Trigger 0.30 mm; review and write. The progress shows "Waiting for the
+  keyboard to save". Then Undo from the report. Pass: the keys work as set,
+  then as before; two safety backups in the folder.
+- **A3. Separate press and release.** On one key, set Rapid Trigger with
+  separate press 0.30 mm and release 0.50 mm. Pass: written; `openwraith
+  show triggers` (app closed) shows `0D` with both values.
+- **A4. Light mode change and Undo.** Change the effect (e.g. Custom to
+  Static blue), write, check visually, Undo. Pass: both changes visible and
+  kept after a profile switch on the keyboard and back.
+- **A5. Profile switch right after an edit.** Make a trigger edit and switch
+  the profile in the header at once. Pass: the edit is kept (switch back and
+  check); the edit itself waited for the save before it finished.
+- **A6. All-profile backup.** Back up all four profiles. Pass: the lighting
+  changes briefly through profiles 2-4 and returns; the file loads in
+  `openwraith show all --from FILE --profile 3`.
+- **A7. Restore of another profile.** Change something on profile 2 with the
+  CLI or the app, then restore the A6 backup for profile 2 only from profile
+  1. Pass: the report says "kept after a profile switch" (persisted).
+- **A8. Vendor site open.** Open wraith.software and connect it while the app
+  runs. Pass: the app shows "Another program is talking to the keyboard",
+  writing is paused and nothing is sent; after closing the tab completely,
+  "I closed it, check again" returns to ready.
+- **A9. Fn + 2 while idle.** With the app idle and focused elsewhere, press
+  Fn + 2 on the keyboard. Note whether the app notices at once (a profile
+  report, PROTOCOL Q2) or only when its window gets the focus again (after
+  30 s). Pass: the header shows profile 2 in either case, and a plan made
+  before is refused as out of date.
+- **A10. Close during a restore; unplug during the save wait.** Start a
+  restore of two profiles and try to close the window: the close guard
+  appears; "Keep open" lets it finish. Then start a trigger edit and unplug
+  the cable while "Waiting for the keyboard to save" is shown. Pass: the
+  report says the change may not have been saved (MAY BE LOST), the app
+  shows the keyboard as disconnected and reconnects when plugged in again.
+
 ## Reporting
 
 For each test record: pass or fail, the full output, and for a failure the

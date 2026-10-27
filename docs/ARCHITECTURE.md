@@ -9,15 +9,19 @@ section numbers below ("spec 2.8") refer to it.
 ## Crate layout
 
 ```
-openwraith-cli  (bin "openwraith")      commands, text/JSON output, prompts
-      |
+openwraith-cli  (bin "openwraith")   openwraith-app (app/src-tauri, Tauri 2)
+      |                                    |   commands, channels, dialogs
+      |                              openwraith-app-core (no Tauri)
+      |                                    |   device worker, operations,
+      |                                    |   IPC types, simulator backend
 openwraith-hid                          transports, session, backup, writer,
       |                                 restore, edits, safety backups,
       |                                 mock + simulator (feature "mock")
 openwraith-protocol                     pure protocol: no I/O
 ```
 
-A future Tauri app will sit next to the CLI and use the same two libraries.
+The desktop app (see "The desktop app" below) sits next to the CLI and uses
+the same two libraries.
 
 ### `openwraith-protocol` (no I/O)
 
@@ -785,6 +789,407 @@ keep backups usable across versions:
   preconditions, exact commands, what to compare, pass criteria) is
   [HARDWARE_TESTS.md](HARDWARE_TESTS.md).
 
+## The desktop app
+
+### Crates
+
+| Crate | Contents |
+|---|---|
+| `crates/openwraith-app-core` | Everything but Tauri: the device worker and its connection state machine, the operations (prepare / apply), the IPC data types (`dto`; the TypeScript types are generated from them), the mappings from the library's types, the file registry, the operation journal, settings, the simulator backend (feature `sim`, or tests) and all Rust tests of the app. `#![forbid(unsafe_code)]`; `unwrap`, `expect` and `panic` are denied outside tests. |
+| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`), file dialogs from Rust (`dialogs.rs`), the close guard and the focus check (`window.rs`), paths (`paths.rs`). |
+
+`cargo test --workspace` needs no Node: the core's tests use the simulator
+under `cfg(test)`. The Tauri crate builds without a built frontend
+(`build.rs` writes a placeholder `app/dist/index.html` when it is missing,
+and, in debug builds only, a placeholder `legal/THIRD-PARTY-NOTICES.txt`).
+`cargo build` without `-p` builds the default members only (the CLI and the
+libraries, Rust 1.85); the `--workspace` commands include the Tauri crate
+(Rust 1.90).
+
+### Threads
+
+```
+WebView --invoke--> command (async) --admission--> spawn_blocking(handle.call) --mpsc--> worker thread
+        <-Channel-- ChannelProgress / ChannelEvents <------------ progress, status, notices <--+
+direct commands (status, snapshot, cancel, files) read shared state; they never wait for the worker
+```
+
+One thread (`openwraith-device`) owns the backend (hidapi is created inside
+it) and the session, and runs one operation at a time. **Admission:** an
+operation command sets the busy flag (compare-exchange) before it queues the
+request; a second operation fails at once with `operation_running` and is
+never queued. The worker clears the flag after the reply. Cancellation is a
+flag per operation that every library progress callback turns into
+`ControlFlow::Break`. A panic in a handler or a tick drops the session (the
+keyboard is closed) and enters `Fault`: writes stay blocked until a restart.
+Nothing leaves `Fault`: `reconnect`, `select_device` and `disconnect` are
+refused with `writes_blocked` (the worker's state after an unwound panic is
+not trusted). A panic releases the busy flag only when the worker took it
+itself (its own reads after a profile change or a focus check), so a
+request admitted meanwhile keeps its admission and the window can still be
+closed. "Stop safely and close" is checked wherever an operation ends:
+after every request, after the worker's own reads and after every tick; the
+exit hook runs once.
+
+### Connection state machine
+
+```
+Starting -> Searching --1--> Opening -> Observing (2 s, listen only) -quiet-> Reading -> Ready
+              |  >1 -> SeveralKeyboards -select-^      | status report / foreign ack -> OtherProgram
+              |                                        | profile reports only -> rearm, keep observing
+              +-- Lost (auto: same keyboard back, or exactly one) <- transport error / no longer listed
+              +-- OpenFailed (backoff 2/5/10/30 s)     Reading fails -> ReadFailed (manual retry)
+              +-- Unsupported (after 0D)  ResetSeen (manual reconnect only)  Released  Fault
+```
+
+- **Observing.** After opening, the worker only listens for 2 s
+  (`WriteOptions::default().gate_observation`) before its first request: the
+  vendor site acts on every `21/11` reply it sees, so nothing is sent until
+  the keyboard is known to be quiet. This also satisfies the writer's gate,
+  so later writes start at once.
+- **OtherProgram.** Status reports or acknowledgements we did not cause:
+  the worker sends **nothing**, reads included; the snapshot is marked
+  stale, the plan invalidated and writes blocked until "check again"
+  (`Session::rearm_gate`, observe again, read everything again). The gate
+  is re-armed only when profile reports are the *only* activity since the
+  gate mark: a read (connect, refresh, a re-read, the safety read) that
+  hears another program and then a profile change ends with
+  `other_program_active` and the state `OtherProgram`, never with a retry
+  that would drop the evidence. After an operation whose library call heard
+  another program, the worker refreshes nothing (no key or light re-read,
+  no full read with its `21/11`): the state becomes `OtherProgram` at once
+  and the snapshot is stale (after a profile switch it is dropped, since it
+  describes the old profile).
+- **Profile changes on the keyboard.** Only profile reports, and still only
+  profile reports 500 ms later: the gate is re-armed, the plan invalidated,
+  the settings read again and a notice sent. A silent switch (PROTOCOL Q2)
+  is caught by a single `21/11` read when the window gets the focus after
+  30 s without traffic, and in any case by the drift check of every write.
+- **ResetSeen.** The reset notification drops the session at once; nothing
+  is sent and nothing reconnects until the user asks for it.
+- Every new session increments the generation; plans and snapshots carry it.
+- Before every request and every tick the worker updates the state from
+  what the session saw (`keyboard_reset_seen`, `connection_lost`, foreign
+  activity), so nothing is ever sent on a session that saw a reset.
+
+### Keeping the keyboard open (decision)
+
+The worker keeps one session open while connected. On Windows hidapi opens
+the interface with shared access and every handle receives every input
+report (Linux hidraw allows several opens), so the open handle blocks no
+other program. While idle the app sends nothing; it only listens, which
+gives live detection of the vendor site, of resets, unplugs and profile
+switches, an input queue that never overflows, the commit-settle memory of
+the session across writers, and a gate that is already satisfied. "Release
+keyboard" closes the handle; "Connect" opens it again. macOS (later) opens
+HID devices exclusively by default: use hidapi's shared mode there, or
+release the keyboard while idle.
+
+### Prepare, confirm, apply
+
+Every write is two commands. **Prepare** reads (generic over `Transport`
+where it talks to the keyboard, so it cannot reach a writer), validates the
+intent against the snapshot the user saw (`based_on`) and stores the plan
+behind an opaque single-use token; at most one plan exists. The plan is
+invalidated by a new connection, a reset, another program, a profile change,
+any other operation, `discard_plan`, a reloaded window (`subscribe`), and
+after 10 minutes. **Apply** takes the plan (it is gone even when a check
+fails), checks the token's kind and generation and the write gate, listens
+for the rest of the 2 s observation (`CheckingOtherPrograms`), reads the
+profile again for the safety backup, compares it with the plan (**drift
+check**: another profile or other bytes give `stale_plan`, and nothing is
+saved or written), saves and verifies the safety backup, writes the
+**operation journal**, and only then calls the library. The consent
+(`WriteConsent::new(Application)`) is built in one function
+(`ops/consent.rs`) and used only by the apply steps and by the restore's
+prepare step, whose comparison switches profiles after the user confirmed
+those switches (`confirmed_switches` must equal the switches computed from a
+fresh `21/11`).
+
+| UI action | Library calls | Writes |
+|---|---|---|
+| connect / refresh / focus check | `read_all_cancellable`, `Session::read` | none |
+| trigger edit | `read_summary` (unit 0.02 mm), `plan_trigger_edit`; `apply_trigger_edit` (`WriteOptions::default()`) | W8, one key per packet |
+| light edit | `plan_light_edit`; `apply_light_edit` | W3 (+ W2 on a mode change) |
+| profile switch | `Session::writer` + `Writer::select_profile_observed` | W1 |
+| backup of the active profile | `read_all_cancellable`, `Backup::save` | none |
+| backup of all profiles | `read_all_profiles` | W1 only |
+| restore (and Undo) | `prepare_restore`; `save_safety`, `execute_restore` | as planned by the library |
+
+Nothing else may write. A source-scan test (`tests::source_rules`) checks
+that no app code uses `write_guarded`, `write_commit_trigger`,
+`write_command` (the simulator backend aside), `WritePacket`, `WriteRequest`,
+`TriggerGrouping` / `SameSetting`, `CommitSettle`, `SessionOptions`,
+`writer_with`, hand-built `WriteOptions`, `HidTransport` or `unsafe`; that
+only the profile switch creates a writer; that the consent is built once and
+used by exactly the six allowed functions; and that hidapi is opened only by
+the HID backend.
+
+### Files
+
+Paths never cross the IPC boundary. Files are known by token
+(`FileRegistry`); tokens come from the Rust file dialogs, the safety-backup
+listing, operation results and the journal. Safety backups go to the CLI's
+folder (`OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups`)
+and are never deleted; every report carries its safety backup, and Undo
+restores it through the normal restore flow. The **journal**
+(`<app local data>/state/operation-journal.json`) is written atomically
+after the safety backup and before the first write packet of a trigger
+edit, a light edit or a restore, and removed when the report is built; a
+journal left behind is shown at the next start with its safety backup. A
+journal that cannot be written stops the operation before anything is
+written.
+
+`open_safety_backup(file)` loads a safety backup, and also summarizes again
+any backup file token the app handed out (a safety backup or a file the user
+opened; not a backup destination). A summary compares the file with the
+keyboard read last (`same_model`, `same_firmware`), so the Backup & Restore
+page summarizes the chosen file again after every new read of a keyboard; a
+file opened while no keyboard was read is compared once one is. The restore
+itself checks model and firmware again when it is prepared. A backup file
+is read from disk every time it is summarized or a restore is prepared
+(there is no cache): a file overwritten after it was opened (a new backup
+under the same name, the CLI) is never planned or written from an older
+copy, and a deleted file is an error, not a plan.
+
+| What | Where (Windows) |
+|---|---|
+| Safety backups | the CLI's folder: `OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups` |
+| Operation journal | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\operation-journal.json` |
+| Settings (language, theme) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` |
+| WebView2 data | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\EBWebView\` |
+| Simulator safety backups and journal | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` |
+
+### Closing
+
+A close (or an exit asked for by the user) while an operation runs is
+deferred, and the frontend shows the close guard. "Stop safely and close"
+sets the cancel flag and exits when the operation has returned (the library
+has waited for the save and returned to the original profile by then). When
+idle, the app exits normally and the worker closes the keyboard.
+
+### Simulator and browser preview
+
+`npm --prefix app run dev` builds with the feature `sim`: the backend is the
+library's `DeviceSim` (seeded from capture c06; profiles 2-4 with factory
+triggers and light) behind a transport that can be unplugged, reset, slowed
+down and paced in real time (`OPENWRAITH_SIM_SPEED`). Its safety backups and
+journal live under `<app local data>/sim/`. A release build with `sim` does
+not compile (`compile_error!`), and a simulator build contains no HID code.
+The core's tests drive the same worker synchronously in virtual time. In the
+app, the header's "Simulator" badge opens the simulator controls (unplug,
+replug, vendor traffic, keyboard profile switches, reset, slow save, dropped
+reply, unplug after N packets) and shows the simulator's counters.
+
+The browser preview replays fixtures (`app/src/preview/fixtures/*.ts`) that
+the core's tests record from the real worker on the simulator (statuses,
+snapshots, events, and command calls with their progress). They are typed
+TypeScript literals, so `tsc` checks them against the generated bindings.
+
+`npm --prefix app run dev:preview` (`vite --mode mock`) installs
+`@tauri-apps/api/mocks`' `mockIPC` before the app starts. `preview/mockBackend.ts`
+answers each command as follows:
+
+- it uses the fixture's next recorded call of that command (the last one
+  again when they are used up);
+- it replays the recorded progress on the real `Channel` through
+  `__TAURI_INTERNALS__.runCallback`, the same ordering path as the real IPC;
+- it keeps a small status model, so that busy states, profile switches and
+  banners behave like the app's;
+- after the fixture's last call, it replays the recorded events, so the app
+  ends in the recorded final state.
+
+Commands that a fixture didn't record are answered from its state,
+synthesized (profile switch, reconnect, simulator actions), or borrowed from
+another fixture (`fallback=0` turns that off). Only `main.tsx`'s
+`MODE === "mock"` branch imports the preview. The production build drops it,
+and `npm run build` fails if `dist/` contains preview code. The "Preview"
+button in the header's middle opens the scenario picker; `freeze=1` hides it
+for screenshots.
+
+### Builds and modes
+
+| Build | How | Keyboard | Simulator commands |
+|---|---|---|---|
+| Release | `npm --prefix app run tauri build` | hidapi; opens a connected keyboard at start (listening first) | not compiled, not registered, not allowed |
+| Developer simulator | `npm --prefix app run dev` (debug, `--features sim`, `tauri.sim.conf.json`) | `DeviceSim`; no HID code compiled | registered; allowed by the `dev-sim` capability |
+| Developer, real keyboard | `npm --prefix app run dev:hid` (maintainers) | hidapi | not compiled |
+| Browser preview | `npm --prefix app run dev:preview` (Vite, no Rust) | recorded fixtures through `mockIPC` | answered by the mock |
+
+A release build cannot enter simulator mode:
+
+- `#[cfg(all(feature = "sim", not(debug_assertions)))] compile_error!` in
+  both `openwraith-app-core` and the Tauri crate, so
+  `cargo build -p openwraith-app --release --features sim` fails;
+- the simulator backend, its controls and the `dev_sim_*` handlers are
+  behind `cfg(feature = "sim")`; `OPENWRAITH_SIM_*` variables are read only
+  there;
+- `tauri.conf.json` enables only the `main` capability; only
+  `tauri.sim.conf.json` adds `dev-sim`, and it sets `bundle.active = false`;
+  `tests::commands_sync` checks both files and that only `tauri dev` scripts
+  use the simulator.
+
+The release build's Rust code contains no simulator backend, no `dev_sim_*`
+handler, no `OPENWRAITH_SIM*` variable and no capture. Two kinds of `sim`
+text remain in the executable: the tool name `openwraith-app-sim` (to
+recognize backups made by the simulator), and the names of the
+`dev_sim_*` commands inside Tauri's embedded permission manifest
+(`build.rs` declares a permission for every command, so that the
+simulator's capability can refer to them). The release build registers no
+`dev_sim_*` command and no enabled capability grants those permissions, so
+an invoke of one is refused. The embedded
+frontend (compressed inside the executable) renders the simulator panel
+only on the Vite dev server (`import.meta.env.DEV`, which `npm run dev` and
+the preview use), and its commands live in a separate `devApi`, so the
+production bundle contains neither; `npm run build` fails if `dist/`
+contains `dev_sim_`. The i18n dictionaries still hold the simulator's
+strings (the badge and the banner render only when the backend reports
+`sim`).
+
+**Runtime check.** The simulator build was started with WebView2's remote
+debugging and driven through the Chrome DevTools protocol: the window boots
+under the minimal capability set (only `allow-<command>`, no `core:`
+permission), `invoke` and the `Channel`s work (status, progress with the
+save wait), and a light edit, its Undo (a restore with the persistence
+check) and the safety-backup list ran end to end on the simulator.
+
+### Installer
+
+`tauri build` makes two installers from the release build:
+
+- **NSIS** (`OpenWraith_<version>_x64-setup.exe`): per user (no
+  administrator rights) into `%LOCALAPPDATA%\OpenWraith\`, English and
+  Turkish (chosen from Windows' language). Its uninstaller deletes only the
+  files it installed (the executable and itself) and then the folder if it
+  is empty, so the CLI's `safety-backups` folder next to it is never
+  touched; its optional "delete app data" removes only
+  `%APPDATA%` / `%LOCALAPPDATA%\io.github.zeruh31.openwraith`.
+- **MSI** (`OpenWraith_<version>_x64_en-US.msi`): per machine, English.
+
+Both download Microsoft's WebView2 bootstrapper only when WebView2 is
+missing; the VC runtime is linked statically. The installers are not signed
+yet (SmartScreen warns on the first start).
+
+- **Metadata.** `bundle.publisher` is "OpenWraith contributors" (without it
+  Tauri takes the identifier's second part, "github", as the publisher of
+  the installers, the uninstall entry and the executable's version
+  resource), `bundle.homepage` is the repository, `bundle.copyright` a
+  copyright line, the NSIS installer has the app's icon, and the MSI
+  upgrade code is pinned (`faa01cb5-c09e-5745-8cee-10ba5a17f5a6`, the value
+  Tauri derived from the product name), so renaming the product can never
+  break upgrades. `tests::commands_sync` checks all of them.
+- **Licenses.** Both installers ship `LICENSE.txt` (the GPL) and
+  `THIRD-PARTY-NOTICES.txt` in the installation folder (`bundle.resources`);
+  Settings > About shows the copyright, the no-warranty statement and a
+  button that shows both files. `app/scripts/third-party-notices.mjs` (part
+  of `npm run build:web`) writes the notices: every crate linked into the
+  app (`cargo metadata`, normal dependencies for the host target) with the
+  license files it ships, or its SPDX expression, authors and a standard
+  text when it ships none; where the source of the MPL-2.0 crates is; and
+  the frontend packages from Vite's `build.license` output. A release build
+  without the notices fails (`build.rs`); a debug build gets a placeholder.
+- **Release command.** `pwsh tools/release-build.ps1` runs `tauri build`
+  with `--remap-path-prefix` for the user profile, the Cargo home and the
+  repository (through `CARGO_ENCODED_RUSTFLAGS`, for that build only), then
+  fails if the executable still contains the user-profile path. Rust embeds
+  source paths (panic locations); without the remap every installer would
+  carry the builder's Windows user name.
+
+### The frontend
+
+`app/src` is React 19 and TypeScript (strict). It uses no UI, state, router
+or i18n library.
+
+- **IPC.** `ipc/commands.ts` is the only importer of `@tauri-apps/api/core`
+  (ESLint `no-restricted-imports`). It holds one `api.*` function per command,
+  and every rejection is an `AppError`.
+- **State.** `state/` holds small `useSyncExternalStore` stores:
+  - the status, from the `subscribe` channel (an older revision never
+    replaces a newer one);
+  - the snapshot, refetched when `snapshot_revision` changes;
+  - the settings, the toasts and the per-page drafts;
+  - the local operation lock, taken in click handlers so that a double click
+    never opens two flows;
+  - the vendor-site acknowledgement, required for the first write of a run
+    and again after any `OtherProgram` episode. A tick belongs to the
+    episode it was given in, so a dialog that stayed open across an episode
+    asks again; the restore's switch-consent dialog asks for it too (its
+    comparison switches profiles).
+- **Writes.** Every write goes through `flow/WriteFlow` (prepare, review,
+  Write, progress, result). The review's title asks the question ("Change
+  the lighting of profile 1?"); while it runs and on the result the dialog
+  has a neutral title ("Lighting change"). A page can add a line under a
+  failed apply (`errorNote`, e.g. "No backup file was saved."):
+  - Cancel has the initial focus. Write is armed after 500 ms, and Enter
+    never activates it.
+  - Each confirmation applies once.
+  - Write is disabled while `write_gate` is closed (the reasons are shown)
+    and after a `plan_invalidated` notice ("Review again" prepares anew).
+  - `WaitingForKeyboardSave` is shown as a countdown meter. Stop follows the
+    `CancelState`.
+  - Read-only operations with progress use `OperationRunner`. Edit reports
+    use the shared `EditReportView` and `ReportFooter` (safety backup, Show
+    in folder, Undo = `#/backup?restore=<token>`).
+  - The review's notes (safety backup, vendor site, the vendor tick, the
+    firmware and save-wait notes, the write-block reasons) sit in the
+    dialog's footer, between the scrolling plan and the buttons, so they are
+    always in view.
+  - A report is never lost: when a flow goes away while its operation runs
+    (a reloaded window, a page that unmounted), the shell's
+    `LastReportDialog` fetches `get_last_report` once the status shows the
+    operation ended and shows the report with its safety backup and Undo.
+    F5 / Ctrl+R are refused while a flow watches a running operation.
+- **Pages.** Pages are lazy routes (`#/device`, `#/actuation`, `#/lighting`,
+  `#/backup`, `#/settings`), each in its own error boundary. The W75 drawing
+  is `components/keyboard`:
+  - our own key-unit geometry, from PROTOCOL.md section 5;
+  - a pure selection model, where the knob is never selectable;
+  - a multi-select listbox component. Each key's accessible name is its
+    visible text (name, value, chip); longer text is its accessible
+    description. Pages mark keys through `KeyVisual.flag` (`data-flag`) and
+    `KeyVisual.tooltip`.
+- **Drafts.** Unwritten changes register with `state/drafts` (the nav dot,
+  and the profile-switch confirmation lists them): `useDraft` for a draft
+  that lives in a page component (Actuation), `registerDraft` for one kept
+  in a module store that survives leaving the page (Lighting).
+- **Layout.** `.ow-main` is the only scroll container and the containing
+  block of absolutely positioned descendants (`position: relative`), so the
+  window itself never scrolls and the header stays in place.
+- **i18n.** `i18n/en/*.ts` are the shape source. Every `i18n/tr/*.ts` is
+  typed `Messages<typeof en>`, so a missing key is a compile error. Tests
+  check that Turkish is complete and that no `.tsx` contains UI literals.
+- **Theme.** `theme/tokens.css` holds the tokens. The theme follows the
+  system unless `data-theme` overrides it. A test checks WCAG contrast
+  (4.5:1 for text, 3:1 for boundaries) in both themes.
+
+### Fitness tests
+
+| Test | Checks |
+|---|---|
+| `tests::connection`, `tests::gate` | observation, other programs (zero packets), profile changes, the focus check, unplug and replug, reset (zero packets until reconnect), several keyboards, open backoff, unsupported model, drift check, stale and single-use tokens, panic -> fault |
+| `tests::foreign` | another program heard during a read is never re-armed away (refresh and the first read); after a trigger edit, light edit, profile switch or restore that heard another program, nothing more is sent |
+| `tests::fault` | nothing leaves `Fault`; a panic in the worker's own read releases the busy flag, a panic in a tick keeps a queued request's admission; "Stop safely and close" during the worker's own read exits once |
+| `tests::trigger`, `tests::light`, `tests::profile`, `tests::backup`, `tests::restore` | the operations end to end on the simulator: one key per packet, the journal during the write, the wait for the save, persisted / lost / may be lost, cancellation (keymap group included), the consent echo, Undo |
+| `tests::admission` | a second operation is refused at once; close deferral; the interrupted-operation journal |
+| `tests::interleavings` | 150 seeded random sequences of commands and keyboard events against the write-path invariants (`INTERLEAVING_SEEDS=5000` runs more) |
+| `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, and the simulator's configuration and scripts |
+| `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
+
+### Security
+
+The window's capability (`capabilities/main.json`) allows exactly the app's
+commands (`allow-<command>`, generated by `build.rs` from
+`command_names.rs`) and no core or plugin permission: dialogs, the file
+manager and single instance are used from Rust only. The simulator's
+commands are registered only in simulator builds and allowed only by
+`capabilities/dev-sim.json`, which only `tauri.sim.conf.json` enables. The
+CSP allows nothing but the app itself and the IPC (`connect-src ipc:
+http://ipc.localhost`); `withGlobalTauri` is off and the prototype is
+frozen. No network access, no telemetry, no remote content. The VC runtime
+is linked statically into release builds only (the static variant puts an
+empty `msvcrt.lib` on the link path of the whole workspace build, which
+breaks the other crates' doctests in debug test runs).
+
 ## Deferred (library API for the desktop app)
 
 Done in Phase 2: serialisable error kinds (`ErrorKind`, `ErrorInfo`),
@@ -796,15 +1201,21 @@ Also done: `execute_restore` uses the options the restore was prepared with
 while a table is sent a second time), and a long-lived session can re-arm the
 writer's gate (`Session::rearm_gate`).
 
-Still open, to be designed with the Tauri app:
+Done for the desktop app (Phase 3): a serialisable device list
+(`DeviceListing`, `DeviceDescriptor::listing`) and the only-one-device rule
+(`choose_device`, `DeviceChoiceError`); the CLI keeps its own
+`device::choose` for its messages.
 
-- device selection in the library (only-one-device rule, open by path) and a
-  serialisable device list (`DeviceDescriptor` holds a private `CString`);
-- `Deserialize` for the intents a GUI sends (`TriggerEdit`, `LightEdit`,
-  `RtEdit`, `ProfileSet`, `RestoreOptions`, `WriteOptions`); they derive only
-  `Serialize` today, so a Tauri command needs mirror types;
+Still open:
+
+- a user-file summary command of its own: `open_safety_backup` summarizes
+  any backup file token for now (see "Files" above);
+- `Deserialize` for the library's intents (`TriggerEdit`, `LightEdit`,
+  `RtEdit`, `ProfileSet`, `RestoreOptions`, `WriteOptions`): the app uses its
+  own validated mirror intents (`openwraith_app_core::dto`);
 - an `EditError` type: `plan_*_edit` / `apply_*_edit` report problems as
-  `RestoreError` (`InvalidRequest`, `SafetyBackupMismatch`);
+  `RestoreError` (`InvalidRequest`, `SafetyBackupMismatch`); the app
+  validates intents before planning and maps the rest;
 - keymap and macro editing on top of `KeymapData::set_entry` and
   `MacroData`;
 - multi-key trigger masks (`TriggerGrouping::SameSetting`, CODE-ONLY until

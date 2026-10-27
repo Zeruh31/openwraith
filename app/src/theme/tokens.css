@@ -1,0 +1,123 @@
+/* Design tokens. Light values on :root; dark values when the system is dark
+   (unless the user chose light) and when the user chose dark. The contrast
+   test (src/test/tokensContrast.test.ts) parses this file: keep one
+   declaration per line. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #edeff3;
+  --border: #d3d8e0;
+  --control-border: #7b8494;
+  --text: #14171c;
+  --text-muted: #566070;
+  --accent: #0a6c96;
+  --accent-hover: #085a7d;
+  --accent-weak: #e1f1f8;
+  --on-accent: #ffffff;
+  --success: #1a7f37;
+  --success-bg: #edf7f0;
+  --warning-fg: #8a5a00;
+  --warning-bg: #fff4cc;
+  --danger: #c42b2b;
+  --danger-bg: #fde8e8;
+  --info-bg: #e6f0f7;
+  --focus: #0a6c96;
+  --key-bg: #ffffff;
+  --key-border: #c6ccd5;
+  --key-text: #14171c;
+  --key-selected-bg: #d4ecf7;
+  --sim: #7a3fbf;
+  --sim-bg: #f1e8fb;
+  --shadow: 0 1px 2px rgb(20 23 28 / 0.08), 0 4px 16px rgb(20 23 28 / 0.08);
+  --backdrop: rgb(15 17 21 / 0.45);
+
+  --font: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --header-height: 56px;
+  --nav-width: 232px;
+  --nav-rail-width: 64px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115;
+    --surface: #171a21;
+    --surface-2: #1f232c;
+    --border: #2e3440;
+    --control-border: #6b7487;
+    --text: #e7eaee;
+    --text-muted: #a3aab6;
+    --accent: #52b8e8;
+    --accent-hover: #7ccaf0;
+    --accent-weak: #16303f;
+    --on-accent: #0f1115;
+    --success: #4cc26e;
+    --success-bg: #14291b;
+    --warning-fg: #e6b54a;
+    --warning-bg: #2b2414;
+    --danger: #ff6b6b;
+    --danger-bg: #331a1c;
+    --info-bg: #15232e;
+    --focus: #52b8e8;
+    --key-bg: #242934;
+    --key-border: #3a4150;
+    --key-text: #e7eaee;
+    --key-selected-bg: #173a4d;
+    --sim: #b58cff;
+    --sim-bg: #261c38;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
+    --backdrop: rgb(0 0 0 / 0.6);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1f232c;
+  --border: #2e3440;
+  --control-border: #6b7487;
+  --text: #e7eaee;
+  --text-muted: #a3aab6;
+  --accent: #52b8e8;
+  --accent-hover: #7ccaf0;
+  --accent-weak: #16303f;
+  --on-accent: #0f1115;
+  --success: #4cc26e;
+  --success-bg: #14291b;
+  --warning-fg: #e6b54a;
+  --warning-bg: #2b2414;
+  --danger: #ff6b6b;
+  --danger-bg: #331a1c;
+  --info-bg: #15232e;
+  --focus: #52b8e8;
+  --key-bg: #242934;
+  --key-border: #3a4150;
+  --key-text: #e7eaee;
+  --key-selected-bg: #173a4d;
+  --sim: #b58cff;
+  --sim-bg: #261c38;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
+  --backdrop: rgb(0 0 0 / 0.6);
+
+  color-scheme: dark;
+}

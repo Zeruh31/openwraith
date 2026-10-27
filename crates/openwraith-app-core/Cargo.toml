@@ -1,0 +1,29 @@
+[package]
+name = "openwraith-app-core"
+description = "The Tauri-free core of the OpenWraith desktop app: the device worker, its operations, the IPC data types and every safety rule of the app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# The developer simulator backend (a DeviceSim instead of a keyboard). Only
+# for debug builds: a release build with it fails to compile.
+sim = ["openwraith-hid/mock"]
+
+[dependencies]
+openwraith-hid = { workspace = true }
+openwraith-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The simulator and the captures for the core's own tests.
+openwraith-hid = { workspace = true, features = ["mock"] }
+# TypeScript bindings of the IPC types (generated and checked by the tests
+# only; nothing of it is part of the app).
+ts-rs = { version = "=12.0.1", features = ["no-serde-warnings"] }

@@ -1,6 +1,22 @@
 [workspace]
 resolver = "3"
-members = ["crates/openwraith-protocol", "crates/openwraith-hid", "crates/openwraith-cli"]
+members = [
+    "crates/openwraith-protocol",
+    "crates/openwraith-hid",
+    "crates/openwraith-cli",
+    "crates/openwraith-app-core",
+    "app/src-tauri",
+]
+# `cargo build` / `cargo build --release` without `-p` builds the CLI and
+# the libraries only: the desktop app needs the Tauri prerequisites, Rust
+# 1.90 and a built frontend (`npm --prefix app run tauri build`).
+# `--workspace` commands still cover every member.
+default-members = [
+    "crates/openwraith-protocol",
+    "crates/openwraith-hid",
+    "crates/openwraith-cli",
+    "crates/openwraith-app-core",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +28,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 openwraith-protocol = { path = "crates/openwraith-protocol" }
 openwraith-hid = { path = "crates/openwraith-hid" }
+openwraith-app-core = { path = "crates/openwraith-app-core" }
 
 # Third-party crates, pinned to a minor version.
 serde = { version = "1.0", features = ["derive"] }
