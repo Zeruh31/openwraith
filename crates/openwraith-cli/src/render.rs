@@ -5,14 +5,16 @@ use std::path::Path;
 use openwraith_hid::Backup;
 use openwraith_protocol::usage::hid_usage_name;
 use openwraith_protocol::{
-    AdvancedKey, KeyAction, KeymapTable, Layer, LightDirection, LightEffect, LightModeList,
-    LinkType, MacroContent, MacroPlayMode, MacroStep, Model, Rgb, TriggerMode, switch_type_name,
+    AdvancedKey, EntryKind, KeyAction, KeyAssignment, KeyPos, KeymapEntry, KeymapTable, Layer,
+    LightDirection, LightEffect, LightModeList, LinkType, MacroContent, MacroPlayMode, MacroStep,
+    Model, Rgb, TriggerMode, switch_type_name,
 };
 
+use crate::edit_text;
 use crate::table::{Table, wrap_list};
 use crate::view::{
-    AllView, ExtrasView, InfoView, KeymapView, LightView, MacrosView, TriggersView, UndecodedNote,
-    key_name,
+    AdvancedView, AllView, Binding, ExtrasView, InfoView, KeymapView, LightView, MacrosView,
+    SocdView, TriggersView, UndecodedNote, key_name,
 };
 
 /// Wrap long lists at this width.
@@ -63,7 +65,7 @@ fn mark(label: &str) -> String {
 }
 
 /// Appends the [`LEGEND`] if `text` uses the [`MARK`].
-fn with_legend(text: String) -> String {
+pub(crate) fn with_legend(text: String) -> String {
     if text.contains(MARK) {
         format!("{text}\n{LEGEND}")
     } else {
@@ -503,7 +505,54 @@ fn keymap_body(view: &KeymapView, model: Option<&Model>) -> String {
     for layer in &view.layers {
         out.push_str(&layer_block(layer, model));
     }
+    if let Some(model) = model.filter(|_| !view.layers.is_empty()) {
+        if let Some(knob) = model.knob_index {
+            out.push_str(&format!(
+                "  The knob's entries (#{knob}-#{}) are managed by the keyboard: OpenWraith shows \
+                 them but never changes them.\n",
+                knob + 6
+            ));
+        }
+        out.push_str(&edit_text::fn_builtins_text(model).replacen(
+            "Built-in Fn functions",
+            &mark("Built-in Fn functions"),
+            1,
+        ));
+    }
     out
+}
+
+/// What an override row means for an editor: the knob and the Fn key are
+/// kept as read, an entry OpenWraith does not write is kept as read, an
+/// Fn-layer entry replaces a built-in function.
+fn entry_note(layer: Layer, entry: &KeymapEntry, model: Option<&Model>) -> String {
+    let Some(model) = model else {
+        return String::new();
+    };
+    let index = entry.index;
+    if model
+        .knob_index
+        .is_some_and(|knob| (knob..=knob + 6).contains(&index))
+    {
+        return "knob, kept as read".to_string();
+    }
+    if model.fn_index == Some(index) {
+        return "the Fn key, kept as read".to_string();
+    }
+    let (Some(pos), Ok(bytes)) = (
+        KeyPos::from_index(index),
+        <[u8; 4]>::try_from(entry.raw.0.as_slice()),
+    ) else {
+        return String::new();
+    };
+    match KeyAssignment::classify(model, pos, bytes) {
+        EntryKind::Preserved(_) => "kept as read (a kind OpenWraith does not write)".to_string(),
+        EntryKind::Assignable(_) if layer == Layer::Fn => model
+            .fn_builtin(index)
+            .map(|b| format!("replaces the built-in function \"{}\"", b.function))
+            .unwrap_or_default(),
+        EntryKind::Assignable(_) => String::new(),
+    }
 }
 
 fn layer_block(layer: &KeymapTable, model: Option<&Model>) -> String {
@@ -520,13 +569,14 @@ fn layer_block(layer: &KeymapTable, model: Option<&Model>) -> String {
         layer_name(layer.layer),
         overrides.len()
     );
-    let mut table = Table::new(&["Key", "Idx", "Action", "Raw"]).right_align(&[1]);
+    let mut table = Table::new(&["Key", "Idx", "Action", "Raw", "Note"]).right_align(&[1]);
     for entry in overrides {
         table.row(vec![
             key_name(model, entry.index),
             entry.index.to_string(),
             entry.action.to_string(),
             entry.raw.to_spaced_hex(),
+            entry_note(layer.layer, entry, model),
         ]);
     }
     out.push_str(&table.render("    "));
@@ -557,6 +607,42 @@ fn step_text(step: &MacroStep) -> String {
     }
 }
 
+/// The steps of a macro of keyboard steps in the notation of `set macro
+/// --steps` (`A+ 30, A-`); `None` when a step is not a keyboard step.
+fn steps_notation(content: &MacroContent) -> Option<String> {
+    let steps: Option<Vec<String>> = content
+        .steps
+        .iter()
+        .map(|step| {
+            if step.kind() != 0 {
+                return None;
+            }
+            let name = openwraith_protocol::usage::hid_usage_name(step.code)?;
+            let motion = if step.is_press() { '+' } else { '-' };
+            Some(if step.delay_ms > 0 {
+                format!("{name}{motion} {}", step.delay_ms)
+            } else {
+                format!("{name}{motion}")
+            })
+        })
+        .collect();
+    steps.filter(|s| !s.is_empty()).map(|s| s.join(", "))
+}
+
+/// `bound to Caps Lock (base layer)` for the bindings of `slot`.
+fn bound_text(bindings: &[Binding], slot: u8) -> String {
+    let keys: Vec<String> = bindings
+        .iter()
+        .filter(|b| b.slot == slot)
+        .map(|b| format!("{} ({})", b.key, layer_name(b.layer)))
+        .collect();
+    if keys.is_empty() {
+        "bound to no key (the keyboard keeps it)".to_string()
+    } else {
+        format!("bound to {}", keys.join(", "))
+    }
+}
+
 /// `openwraith show macros`.
 pub fn macros(view: &MacrosView) -> String {
     let used = view.slots.iter().filter(|s| !s.is_empty()).count();
@@ -570,15 +656,19 @@ pub fn macros(view: &MacrosView) -> String {
             None => out.push_str(&format!("  Slot {}: empty\n", slot.slot)),
             Some(content) => {
                 out.push_str(&format!(
-                    "  Slot {}: macro #{}{}, {}, {} step(s)\n",
+                    "  Slot {}: macro #{}{}, {}, {} step(s); {}\n",
                     slot.slot,
                     content.macro_id,
                     if content.copy { " (copy)" } else { "" },
                     play_mode(content),
-                    content.steps.len()
+                    content.steps.len(),
+                    bound_text(&view.bindings, slot.slot)
                 ));
                 for (i, step) in content.steps.iter().enumerate() {
                     out.push_str(&format!("      {}. {}\n", i + 1, step_text(step)));
+                }
+                if let Some(steps) = steps_notation(content) {
+                    out.push_str(&format!("      As steps: \"{steps}\"\n"));
                 }
             }
         }
@@ -587,7 +677,7 @@ pub fn macros(view: &MacrosView) -> String {
     out
 }
 
-fn advanced_text(key: &AdvancedKey) -> String {
+pub(crate) fn advanced_text(key: &AdvancedKey) -> String {
     match key {
         AdvancedKey::Empty => "empty".into(),
         AdvancedKey::Dks {
@@ -626,6 +716,86 @@ fn advanced_text(key: &AdvancedKey) -> String {
         AdvancedKey::Unknown { kind } => format!("unknown type {kind}"),
         other => format!("{other:?}"),
     }
+}
+
+/// `openwraith show advanced`.
+pub fn advanced(view: &AdvancedView) -> String {
+    let mut out = format!("Advanced keys{}", profile_suffix(view.active_profile));
+    let Some(keys) = view.advanced_keys else {
+        out.push_str("\n  Not read.\n");
+        return out;
+    };
+    out.push_str(&format!(
+        ": {} of {} slots used\n",
+        view.slots.len(),
+        keys.slots.len()
+    ));
+    for row in &view.slots {
+        let what = match &row.definition {
+            Some(definition) => definition.clone(),
+            None => keys
+                .slots
+                .iter()
+                .find(|s| s.slot == row.slot)
+                .map(|s| format!("{} (kept as read)", advanced_text(&s.key)))
+                .unwrap_or_default(),
+        };
+        out.push_str(&format!(
+            "  Slot {}: {what}; {}\n",
+            row.slot,
+            bound_text(&row.bound_to, row.slot)
+        ));
+    }
+    out.push_str(
+        "  Change one with `openwraith set advanced KEY dks|mod-tap|toggle ...`; clear an unbound \
+         slot with `openwraith set advanced --slot N --clear`.\n",
+    );
+    out
+}
+
+/// `openwraith show socd`.
+pub fn socd(view: &SocdView) -> String {
+    let mut out = format!("SOCD{}\n", profile_suffix(view.active_profile));
+    let Some(settings) = view.socd_settings else {
+        out.push_str("  Not read (the keyboard does not report SOCD support).\n");
+        return out;
+    };
+    out.push_str(&format!(
+        "  Power: {} (Fn + Right Shift also switches it on the keyboard)\n",
+        if settings.enabled { "on" } else { "off" }
+    ));
+    match &view.state {
+        Some(state) => match &state.pairs {
+            Some(pairs) if pairs.is_empty() => out.push_str("  Pairs: none\n"),
+            Some(pairs) => {
+                out.push_str("  Pairs (key 1 / key 2, what happens while both are held):\n");
+                for (i, pair) in pairs.iter().enumerate() {
+                    out.push_str(&format!(
+                        "    {}. {}\n",
+                        i + 1,
+                        edit_text::socd_pair_text(pair)
+                    ));
+                }
+            }
+            None => out.push_str(&format!(
+                "  Pairs: not in the form OpenWraith writes ({}); raw {}\n",
+                state.unwritable.unwrap_or("unreadable"),
+                state.raw_pairs
+            )),
+        },
+        None => out.push_str("  Pairs: not read.\n"),
+    }
+    let [b1, b2] = settings.hotkey;
+    out.push_str(&format!(
+        "  {}: bytes {b1:02x} {b2:02x} (never written)\n",
+        mark("Hotkey")
+    ));
+    out.push_str(
+        "  SOCD may apply to every profile (its profile scope is not known yet). OpenWraith \
+         writes the power and the pairs together, as the vendor site does: `openwraith set socd \
+         --on --pair A/D`.\n",
+    );
+    out
 }
 
 /// Advanced keys, SOCD and switch types.

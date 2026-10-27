@@ -186,6 +186,7 @@ impl<B: DeviceBackend> Worker<B> {
                     allow_firmware_mismatch: intent.allow_firmware_mismatch,
                     backup: w.config.backup_options(w.sim),
                     write: WriteOptions::default(),
+                    import: None,
                 };
                 let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
                 let prepared =

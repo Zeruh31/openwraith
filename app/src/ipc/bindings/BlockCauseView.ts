@@ -6,4 +6,4 @@ import type { TableRef } from "./TableRef";
 /**
  * Why the keymap group is not restored.
  */
-export type BlockCauseView = { "code": "non_empty_advanced_key", slot: number, } | { "code": "non_canonical_macro", slot: number, rule: string, } | { "code": "malformed_reference", layer: LayerView, index: number, } | { "code": "incomplete", table: TableRef, } | { "code": "fn_keymap_not_writable", reason: CommitTriggerReasonView, };
+export type BlockCauseView = { "code": "unwritable_advanced_key", slot: number, reason: string, } | { "code": "non_canonical_macro", slot: number, rule: string, } | { "code": "malformed_reference", layer: LayerView, index: number, } | { "code": "incomplete", table: TableRef, } | { "code": "fn_keymap_not_writable", reason: CommitTriggerReasonView, } | { "code": "critical_fn_override", index: number, } | { "code": "unwritable_imported_entry", layer: LayerView, index: number, entry: string, };

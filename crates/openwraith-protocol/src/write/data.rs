@@ -6,12 +6,9 @@
 //! bytes written are the bytes that were read, apart from the edits a caller
 //! makes explicitly with the `set_*` methods.
 
-use std::fmt;
-
 use super::ids::AdvancedSlotId;
 use crate::decode::Rgb;
 use crate::error::WriteBuildError;
-use crate::hex;
 use crate::layout::{KeyPos, MATRIX_SIZE};
 use crate::model::{Model, known_model};
 use crate::request::{CustomTable, Layer, MacroSlotId, ReadRequest};
@@ -70,28 +67,6 @@ fn store_at<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
     if let Some(dst) = bytes.get_mut(offset..offset + N) {
         dst.copy_from_slice(&value);
     }
-}
-
-/// Implements hex `Debug` and hex-string `Serialize` for a boxed-array newtype.
-macro_rules! hex_table {
-    ($ty:ident) => {
-        impl fmt::Debug for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(
-                    f,
-                    concat!(stringify!($ty), "({})"),
-                    hex::to_spaced_hex(&self.0[..])
-                )
-            }
-        }
-
-        #[cfg(feature = "serde")]
-        impl serde::Serialize for $ty {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&hex::to_hex(&self.0[..]))
-            }
-        }
-    };
 }
 
 /// A complete keymap layer (528 bytes = 132 entries x 4; spec section 4.8),
@@ -236,6 +211,14 @@ impl CanonicalMacro {
     /// Byte 3: step data length in bytes (4 per step).
     pub fn step_bytes(&self) -> u8 {
         self.0[3]
+    }
+
+    /// Wraps slot bytes built by
+    /// [`MacroProgram::encode`](super::MacroProgram::encode), which are
+    /// canonical by construction (play mode 0-3, at most 160 step bytes of
+    /// keyboard steps, zeros elsewhere; a unit test checks every form).
+    pub(super) fn encoded(bytes: Box<[u8; MACRO_SLOT_LEN]>) -> CanonicalMacro {
+        CanonicalMacro(bytes)
     }
 }
 
@@ -384,6 +367,33 @@ impl ColorTableData {
             usize::from(pos.index()) * 3,
             [color.r, color.g, color.b],
         );
+    }
+
+    /// Sets the colours of keys of the model of [`MODELS`](crate::MODELS)
+    /// with `model`'s product code. Every other slot keeps its bytes: the
+    /// knob (15), positions outside the layout (103 and 126 were lit in the
+    /// factory table, spec section 4.7.6) and keys not listed. Fails, and
+    /// changes nothing, if a position is the knob or not a key. The main
+    /// light record (`07`, its foreground colour) is a separate write and is
+    /// never touched here.
+    pub fn set_key_colors(
+        &mut self,
+        model: &Model,
+        colors: &[(KeyPos, Rgb)],
+    ) -> Result<(), WriteBuildError> {
+        let known = known_model(model).ok_or(WriteBuildError::UnknownModel {
+            product: model.product_code,
+        })?;
+        for (pos, _) in colors {
+            let index = pos.index();
+            if known.key(index).is_none() || known.knob_index == Some(index) {
+                return Err(WriteBuildError::KeyNotColourable { index });
+            }
+        }
+        for (pos, color) in colors {
+            self.set_color(*pos, *color);
+        }
+        Ok(())
     }
 }
 
@@ -677,6 +687,45 @@ mod tests {
         assert_eq!(&data.as_bytes()[138..141], &[1, 2, 3]);
         // A slot outside the layout keeps its colour.
         assert_eq!(data.as_bytes()[309], 0xFF);
+    }
+
+    #[test]
+    fn key_colours_keep_every_other_slot() {
+        let mut bytes = vec![0x11u8; 396];
+        bytes[103 * 3..103 * 3 + 3].copy_from_slice(&[0xff, 0, 0]);
+        let mut data = ColorTableData::from_response(&table(
+            ReadRequest::CustomColors(CustomTable::Custom1),
+            &bytes,
+        ))
+        .unwrap();
+        let up = KeyPos::from_index(102).unwrap();
+        let fn_key = KeyPos::from_index(121).unwrap();
+        let blue = Rgb::new(0, 0, 0xff);
+        data.set_key_colors(&W75, &[(up, blue), (fn_key, blue)])
+            .unwrap();
+        let changed: Vec<usize> = (0..396)
+            .filter(|i| data.as_bytes()[*i] != bytes[*i])
+            .collect();
+        assert_eq!(changed, vec![306, 307, 308, 363, 364, 365]);
+        // The knob and positions outside the layout are refused, and a
+        // refused call changes nothing.
+        let before = data.clone();
+        for index in [15u8, 103, 126] {
+            let pos = KeyPos::from_index(index).unwrap();
+            assert_eq!(
+                data.set_key_colors(&W75, &[(up, Rgb::new(1, 1, 1)), (pos, blue)]),
+                Err(WriteBuildError::KeyNotColourable { index })
+            );
+        }
+        assert_eq!(data, before);
+        let unknown = Model {
+            product_code: "AP61HEARGB",
+            ..W75
+        };
+        assert!(matches!(
+            data.set_key_colors(&unknown, &[(up, blue)]),
+            Err(WriteBuildError::UnknownModel { .. })
+        ));
     }
 
     #[test]

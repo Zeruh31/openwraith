@@ -211,8 +211,14 @@ impl fmt::Display for KeyAction {
                     0x01 => "left",
                     0x02 => "right",
                     0x04 => "middle",
-                    0x08 => "forward",
-                    0x10 => "back",
+                    // Named by value until a hardware test shows which
+                    // button they are (spec 4.8.3, Q37).
+                    0x08 | 0x10 => {
+                        return write!(
+                            f,
+                            "Mouse button {value:#04x} (direction not verified, Q37)"
+                        );
+                    }
                     _ => return write!(f, "Mouse buttons {value:#04x}"),
                 };
                 write!(f, "Mouse {name} button")
@@ -407,6 +413,14 @@ mod tests {
         assert_eq!(
             KeyAction::decode([0x12, 0x00, 0x04, 0]).to_string(),
             "Mouse middle button"
+        );
+        assert_eq!(
+            KeyAction::decode([0x12, 0x00, 0x08, 0]).to_string(),
+            "Mouse button 0x08 (direction not verified, Q37)"
+        );
+        assert_eq!(
+            KeyAction::decode([0x12, 0x00, 0x10, 0]).to_string(),
+            "Mouse button 0x10 (direction not verified, Q37)"
         );
         assert_eq!(
             KeyAction::decode([0x03, 0x01, 0, 0]).to_string(),

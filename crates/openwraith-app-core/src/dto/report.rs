@@ -210,16 +210,40 @@ pub enum MismatchKindView {
 #[serde(tag = "code", rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum WriteWarningView {
-    AckTimeout { packet: u16, of: u16, send: u8 },
-    OptionalAckMissing { packet: u16 },
+    AckTimeout {
+        packet: u16,
+        of: u16,
+        send: u8,
+    },
+    OptionalAckMissing {
+        packet: u16,
+    },
     VerifyReread,
     Retried,
-    SelectAckMissing { profile: u8 },
-    ProfilePushMissing { profile: u8 },
-    SelectRetried { profile: u8 },
+    SelectAckMissing {
+        profile: u8,
+    },
+    ProfilePushMissing {
+        profile: u8,
+    },
+    SelectRetried {
+        profile: u8,
+    },
     WaitedForLateAck,
-    WaitedForCommit { waited_ms: u32 },
+    WaitedForCommit {
+        waited_ms: u32,
+    },
     BaseKeymapNotSaved,
+    /// The keyboard acknowledged a packet whose ack is not expected (SOCD
+    /// power).
+    UnexpectedAck {
+        packet: u16,
+    },
+    /// SOCD was switched on the keyboard during the write, or before the
+    /// persistence check read it again (`power`: on now).
+    SocdToggledOnKeyboard {
+        power: bool,
+    },
 }
 
 /// The persistence check of a restore.

@@ -71,6 +71,7 @@ export function tableName(table: TableRef, dict: Dict): string {
     case "dead_band":
     case "socd_pairs":
     case "socd_settings":
+    case "socd":
     case "switch_types":
     case "poll_rate":
     case "win_lock_and_rollover":
@@ -102,6 +103,10 @@ export function warningText(warning: WriteWarningView, dict: Dict, format: Forma
       return w.waited_for_commit({ seconds: format.seconds(warning.waited_ms) });
     case "base_keymap_not_saved":
       return w.base_keymap_not_saved;
+    case "unexpected_ack":
+      return w.unexpected_ack({ packet: warning.packet });
+    case "socd_toggled_on_keyboard":
+      return w.socd_toggled_on_keyboard({ on: warning.power });
   }
 }
 

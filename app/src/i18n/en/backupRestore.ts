@@ -312,17 +312,24 @@ export const backupRestore = {
       `Key assignments, macros and advanced keys can only be restored together, and that isn't safe here: ${p.cause}`,
     not_in_keyboard: "The keyboard doesn't have this setting.",
     unusable: "This part of the backup can't be used.",
+    read_only_bytes: "Only values that OpenWraith never writes differ (the SOCD shortcut).",
+    unwritable_socd_pairs: "The SOCD pairs in the backup aren't in a form OpenWraith can write.",
+    not_imported: "This setting isn't part of the import.",
   } satisfies Record<SkipReasonView["code"], unknown>,
   /** Why the key assignments can't be restored (completes `keymap_group_blocked`). */
   blockCauses: {
-    non_empty_advanced_key: (p: { slot: number }) =>
-      `advanced key ${p.slot} in the backup is in use, and writing advanced keys hasn't been confirmed on the keyboard yet.`,
+    unwritable_advanced_key: (p: { slot: number }) =>
+      `advanced key ${p.slot} in the backup isn't a DKS, tap-or-hold or toggle key that OpenWraith can write.`,
     non_canonical_macro: (p: { slot: number }) => `macro ${p.slot} in the backup has an unusual format.`,
     malformed_reference: (p: { layer: string; index: number }) =>
       `${p.layer} in the backup has a broken entry (number ${p.index}).`,
     incomplete: (p: { table: string }) => `this part wasn't read completely: ${p.table}.`,
     fn_keymap_not_writable:
       "the Fn layer key assignments can't be written, so the keyboard wouldn't save the key assignments.",
+    critical_fn_override: (p: { index: number }) =>
+      `the imported Fn layer replaces one of the keyboard's own shortcuts (a profile switch or the reset, key number ${p.index}), and that wasn't allowed.`,
+    unwritable_imported_entry: (p: { layer: string; index: number }) =>
+      `${p.layer} in the file have an entry OpenWraith doesn't write (key number ${p.index}). Only keys, media keys, mouse buttons, key combinations, macros and advanced keys are imported.`,
   } satisfies Record<BlockCauseView["code"], unknown>,
   /** Keymap layers inside a sentence. */
   layers: {
@@ -339,6 +346,15 @@ export const backupRestore = {
       `These settings may be shared between profiles: ${p.tables}. Restoring them can also change profiles ${p.profiles}.`,
     likely_shared_table_differs: (p: { table: string }) =>
       `This setting is probably shared between profiles and differs from the backup: ${p.table}.`,
+    imported: (p: { from: number; into: number }) =>
+      `Profile ${p.from} of the file is written to profile ${p.into} of the keyboard.`,
+    imported_macros: (p: { slots: string }) => `Macros from the file are written: ${p.slots}.`,
+    fn_builtin_overridden: (p: { index: number }) =>
+      `The Fn layer replaces one of the keyboard's own Fn shortcuts (key number ${p.index}).`,
+    import_kept_as_read: (p: { layer: string; keys: string }) =>
+      `In the file, ${p.layer} differ at positions that are never imported (the knob, the Fn key, keys the keyboard locks): ${p.keys}. The keyboard's entries are kept.`,
+    unverified: (p: { layer: string; index: number }) =>
+      `An imported entry in ${p.layer} (key number ${p.index}) isn't verified on a W75 yet. The Wraith website sends the same bytes.`,
   } satisfies Record<PlanWarningView["code"], unknown>,
   /** Why a safety backup was made. */
   safetyReasons: {

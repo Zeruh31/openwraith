@@ -375,25 +375,31 @@ fn device_constants_that_differ_are_warnings() {
 
 #[test]
 fn writing_a_table_of_unknown_scope_warns_about_the_other_profiles() {
-    // A single-profile backup that changes custom colour table 1 (slot 0 =
-    // report byte 5 of chunk 0).
+    // A single-profile backup that changes the dead band, whose profile
+    // scope is unknown (key index 0 top = report byte 5 of chunk 0).
+    let target = edited(&c06_backup(), ReadRequest::DeadBand, 0, |b| b[5] = 0x05);
+    let plan = plan_for(&target);
+    assert!(
+        plan.warnings
+            .contains(&PlanWarning::SharedTablesMayChangeOtherProfiles {
+                tables: vec![TableId::DeadBand],
+                profiles: vec![2, 3, 4],
+            }),
+        "{:?}",
+        plan.warnings
+    );
+    // Custom colour table 1 is per profile (OBSERVED, spec 7.3): no warning.
     let target = edited(
         &c06_backup(),
         ReadRequest::CustomColors(CustomTable::Custom1),
         0,
         |b| b[5] ^= 0xff,
     );
-    let plan = plan_for(&target);
     assert!(
-        plan.warnings
-            .contains(&PlanWarning::SharedTablesMayChangeOtherProfiles {
-                tables: vec![TableId::CustomColors {
-                    table: CustomTable::Custom1
-                }],
-                profiles: vec![2, 3, 4],
-            }),
-        "{:?}",
-        plan.warnings
+        plan_for(&target)
+            .warnings
+            .iter()
+            .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. }))
     );
     // A change of a per-profile table only (the main light) does not warn.
     let target = edited(&c06_backup(), ReadRequest::MainLight, 0, |b| b[6] = 1);
@@ -536,7 +542,9 @@ fn the_fn_keymap_follows_the_base_keymap_changed_or_not() {
         .expect("Fn write");
     assert_eq!(fn_write.summary, "Fn keymap (18 02)");
     assert_eq!(fn_write.changes.len(), 1);
-    assert!(plan.warnings.iter().any(|w| matches!(
+    // The Fn keymap is per profile (OBSERVED, spec 7.4): no warning about
+    // the other profiles.
+    assert!(plan.warnings.iter().all(|w| !matches!(
         w,
         PlanWarning::SharedTablesMayChangeOtherProfiles { tables, .. } if tables.contains(&fn_layer)
     )));

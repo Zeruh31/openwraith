@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use openwraith_hid::{BlockCause, PlanAction, PlanItem, PlanWarning, RestorePlan, SkipReason};
 
 use super::change::change_view;
-use super::{clean, commit_reason, key_ref, layer_view, sat16, table_ref};
+use super::{clean, commit_reason, hex, key_ref, layer_view, sat16, table_ref};
 use crate::dto::{
     BlockCauseView, PlanActionView, PlanItemView, PlanTotals, PlanWarningView, ProfilePlanView,
     ProfileTotals, RestorePlanView, SkipReasonView,
@@ -16,8 +16,11 @@ const MAX_CHANGES: usize = 200;
 
 fn block_cause(cause: &BlockCause) -> BlockCauseView {
     match cause {
-        BlockCause::NonEmptyAdvancedKey { slot } => {
-            BlockCauseView::NonEmptyAdvancedKey { slot: *slot }
+        BlockCause::UnwritableAdvancedKey { slot, reason } => {
+            BlockCauseView::UnwritableAdvancedKey {
+                slot: *slot,
+                reason: clean(reason),
+            }
         }
         BlockCause::NonCanonicalMacro { slot, reason } => BlockCauseView::NonCanonicalMacro {
             slot: *slot,
@@ -32,6 +35,18 @@ fn block_cause(cause: &BlockCause) -> BlockCauseView {
         },
         BlockCause::FnKeymapNotWritable { reason } => BlockCauseView::FnKeymapNotWritable {
             reason: commit_reason(*reason),
+        },
+        BlockCause::CriticalFnOverride { index } => {
+            BlockCauseView::CriticalFnOverride { index: *index }
+        }
+        BlockCause::UnwritableImportedEntry {
+            layer,
+            index,
+            entry,
+        } => BlockCauseView::UnwritableImportedEntry {
+            layer: layer_view(*layer),
+            index: *index,
+            entry: hex(entry),
         },
     }
 }
@@ -69,6 +84,11 @@ pub(crate) fn skip_reason(reason: &SkipReason) -> SkipReasonView {
         },
         SkipReason::NotInKeyboard => SkipReasonView::NotInKeyboard,
         SkipReason::Unusable => SkipReasonView::Unusable,
+        SkipReason::ReadOnlyBytes => SkipReasonView::ReadOnlyBytes,
+        SkipReason::UnwritableSocdPairs { rule } => SkipReasonView::UnwritableSocdPairs {
+            rule: (*rule).to_string(),
+        },
+        SkipReason::NotImported => SkipReasonView::NotImported,
     }
 }
 
@@ -93,6 +113,29 @@ fn warning(warning: &PlanWarning) -> PlanWarningView {
                 table: table_ref(*table),
             }
         }
+        PlanWarning::Imported { from, into } => PlanWarningView::Imported {
+            from: *from,
+            into: *into,
+        },
+        PlanWarning::ImportedMacros { slots } => PlanWarningView::ImportedMacros {
+            slots: slots.clone(),
+        },
+        PlanWarning::FnBuiltinOverridden { index, critical } => {
+            PlanWarningView::FnBuiltinOverridden {
+                index: *index,
+                critical: *critical,
+            }
+        }
+        PlanWarning::ImportKeptAsRead { layer, indices } => PlanWarningView::ImportKeptAsRead {
+            layer: layer_view(*layer),
+            indices: indices.clone(),
+        },
+        PlanWarning::Unverified { layer, index, note } => PlanWarningView::Unverified {
+            layer: layer_view(*layer),
+            index: *index,
+            what: note.what.to_string(),
+            question: note.question.to_string(),
+        },
     }
 }
 

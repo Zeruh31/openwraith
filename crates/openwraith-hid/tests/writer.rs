@@ -1440,3 +1440,78 @@ fn a_switch_after_a_base_keymap_without_its_trigger_is_reported() {
         sim.assert_clean();
     }
 }
+
+#[test]
+fn a_round_trip_to_another_profile_on_the_keyboard_is_a_profile_change() {
+    // Fn + 2, then Fn + 1, after we read profile 1: the keyboard pushes
+    // both (byte 7 = 00). The profile is 1 again, but it was reloaded.
+    let mut sim = sim();
+    sim.switch_profile_at(Duration::from_millis(100), profile(2), true);
+    sim.switch_profile_at(Duration::from_millis(400), profile(1), true);
+    let mut session = Session::new(&mut sim);
+    let now: openwraith_hid::protocol::ActiveProfile =
+        session.read(ReadRequest::ActiveProfile).expect("21/11");
+    assert_eq!(now.profile, 1);
+    let err = session.writer(consent()).err().expect("refused");
+    assert!(
+        matches!(
+            err,
+            WriteError::ProfileChanged {
+                expected: Some(1),
+                reported: 1
+            }
+        ),
+        "{err}"
+    );
+    assert_eq!(err.kind(), ErrorKind::ProfileChanged);
+    assert!(
+        err.to_string().contains("switched on the keyboard"),
+        "{err}"
+    );
+    drop(session);
+    assert_eq!(sim.writes_sent(), 0);
+
+    // A push of the active profile alone (the push form, byte 7 = 00): a
+    // switch on the keyboard too, not another program.
+    let mut sim = self::sim();
+    sim.push_input_at(
+        Duration::from_millis(500),
+        report(&[0x21, 0, 0, 0, 0x03, 0x11, 0x01, 0x00]),
+    );
+    let mut session = Session::new(&mut sim);
+    session.read_raw_active_profile();
+    let err = session.writer(consent()).err().expect("refused");
+    assert!(matches!(err, WriteError::ProfileChanged { .. }), "{err}");
+
+    // Another program's select: its acknowledgement and push. Its ack is
+    // a foreign write acknowledgement: another program.
+    let mut sim = self::sim();
+    sim.push_input_at(
+        Duration::from_millis(500),
+        report(&[0x21, 0, 0, 0, 0x02, 0x12, 0x01]),
+    );
+    sim.push_input_at(
+        Duration::from_millis(510),
+        report(&[0x21, 0, 0, 0, 0x03, 0x11, 0x02, 0x00]),
+    );
+    let mut session = Session::new(&mut sim);
+    session.read_raw_active_profile();
+    let err = session.writer(consent()).err().expect("refused");
+    assert!(
+        matches!(err, WriteError::OtherProgramActive { .. }),
+        "{err}"
+    );
+}
+
+/// Reads `21/11` (the profile the gate compares with).
+trait ReadActive {
+    fn read_raw_active_profile(&mut self);
+}
+
+impl<T: openwraith_hid::Transport> ReadActive for Session<T> {
+    fn read_raw_active_profile(&mut self) {
+        let now: openwraith_hid::protocol::ActiveProfile =
+            self.read(ReadRequest::ActiveProfile).expect("21/11");
+        assert_eq!(now.profile, 1);
+    }
+}

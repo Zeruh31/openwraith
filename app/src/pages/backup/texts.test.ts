@@ -33,11 +33,13 @@ import {
 const LANGS = ["en", "tr"] as const;
 
 const CAUSES: BlockCauseView[] = [
-  { code: "non_empty_advanced_key", slot: 0 },
+  { code: "unwritable_advanced_key", slot: 0, reason: "type other than DKS, MT or TGL" },
   { code: "non_canonical_macro", slot: 2, rule: "trailing bytes" },
   { code: "malformed_reference", layer: "base", index: 7 },
   { code: "incomplete", table: { table: "macro", slot: 4 } },
   { code: "fn_keymap_not_writable", reason: "base_keymap" },
+  { code: "critical_fn_override", index: 24 },
+  { code: "unwritable_imported_entry", layer: "base", index: 116, entry: "11000000" },
 ];
 
 const SKIPS: SkipReasonView[] = [
@@ -57,6 +59,9 @@ const SKIPS: SkipReasonView[] = [
   ...CAUSES.map((cause): SkipReasonView => ({ code: "keymap_group_blocked", cause })),
   { code: "not_in_keyboard" },
   { code: "unusable" },
+  { code: "read_only_bytes" },
+  { code: "unwritable_socd_pairs", rule: "a gap between pairs" },
+  { code: "not_imported" },
 ];
 
 const WARNINGS: PlanWarningView[] = [
@@ -65,6 +70,11 @@ const WARNINGS: PlanWarningView[] = [
   { code: "capability_flags_differ" },
   { code: "shared_tables_may_change_other_profiles", tables: [{ table: "side_light" }], profiles: [2, 3] },
   { code: "likely_shared_table_differs", table: { table: "poll_rate" } },
+  { code: "imported", from: 1, into: 3 },
+  { code: "imported_macros", slots: [0, 4] },
+  { code: "fn_builtin_overridden", index: 24, critical: true },
+  { code: "import_kept_as_read", layer: "base", indices: [16, 121] },
+  { code: "unverified", layer: "fn", index: 3, what: "mouse button 0x10", question: "Q37" },
 ];
 
 function report(fixtureId: string): RestoreReportView {
@@ -84,7 +94,7 @@ describe.each(LANGS)("restore texts (%s)", (lang) => {
       expect(text).not.toContain("undefined");
     }
     // Slots are shown 1-based; the index of a broken entry is not a slot.
-    expect(blockCauseText({ code: "non_empty_advanced_key", slot: 0 }, dict)).toContain("1");
+    expect(blockCauseText({ code: "unwritable_advanced_key", slot: 0, reason: "x" }, dict)).toContain("1");
     expect(blockCauseText({ code: "non_canonical_macro", slot: 2, rule: "x" }, dict)).toContain("3");
     expect(blockCauseText({ code: "malformed_reference", layer: "fn", index: 7 }, dict)).toContain("7");
   });
@@ -93,7 +103,8 @@ describe.each(LANGS)("restore texts (%s)", (lang) => {
     for (const warning of WARNINGS) {
       const view = planWarningView(warning, dict, format);
       expect(view.text.trim().length, warning.code).toBeGreaterThan(10);
-      expect(view.tone).toBe(warning.code.includes("shared") ? "warning" : "info");
+      const amber = warning.code.includes("shared") || warning.code === "fn_builtin_overridden";
+      expect(view.tone).toBe(amber ? "warning" : "info");
     }
     expect(planWarningView(WARNINGS[1] as PlanWarningView, dict, format).technical).toBe("21/04 distance unit");
   });

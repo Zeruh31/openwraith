@@ -1,6 +1,6 @@
 //! Unit tests of the write module: every constructible request (a bounded
-//! sample) is checked against an independent description of the nine write
-//! forms, plus step, ack and read-back details.
+//! sample) is checked against an independent description of the write
+//! forms (W1-W11, T1, T2), plus step, ack and read-back details.
 
 use super::*;
 use crate::decode::test_util::{report, single, table};
@@ -19,6 +19,110 @@ const SELECTABLE: [u8; 22] = [
     0x3f, 0x26, 0x3f, 0x1f, 0x1f, 0x1f, 0x3f, 0x1f, 0x1f, 0x1f, 0x3f, 0x3f, 0x2f, 0x31, 0x3f, 0x2e,
     0, 0, 0, 0, 0, 0,
 ];
+
+/// W75 mask of all 82 positions, knob included: the only travel-test open
+/// mask (spec section 2.9, c14 #981), spelled out.
+const LAYOUT: [u8; 22] = [
+    0x3f, 0x26, 0x3f, 0x1f, 0x1f, 0x1f, 0x3f, 0x1f, 0x1f, 0x1f, 0x3f, 0x3f, 0x2f, 0x31, 0x3f, 0x2f,
+    0, 0, 0, 0, 0, 0,
+];
+
+/// The HID usages the vendor configurator offers (spec section 4.8.3),
+/// spelled out group by group.
+fn offered(u: u8) -> bool {
+    matches!(
+        u,
+        0x04..=0x1D // A-Z
+            | 0x1E..=0x27 // 1-0
+            | 0x28..=0x2C // Enter Esc Backspace Tab Space
+            | 0x2D..=0x31 // - = [ ] \
+            | 0x33..=0x38 // ; ' ` , . /
+            | 0x39 // Caps Lock
+            | 0x3A..=0x45 // F1-F12
+            | 0x46..=0x4E // PrtSc .. PgDn
+            | 0x4F..=0x52 // arrows
+            | 0x53..=0x63 // Num Lock, keypad
+            | 0x64 // Intl backslash
+            | 0x65 // Menu
+            | 0x68..=0x73 // F13-F24
+            | 0x87..=0x8B // JIS keys
+            | 0xE0..=0xE7 // modifiers
+    )
+}
+
+/// Whether `s` (write bytes 5-44) is a non-empty advanced-key slot in the
+/// DKS, MT or TGL layout of spec section 4.14.
+fn is_allowed_slot(s: &[u8]) -> bool {
+    let zero = |from: usize, to: usize| s.get(from..to).is_some_and(|r| r.iter().all(|b| *b == 0));
+    let key = |at: usize| {
+        s.get(at..at + 4)
+            .is_some_and(|a| a[0] == 0 && offered(a[1]) && a[2] == 0 && a[3] == 0)
+    };
+    if s.len() != 40 {
+        return false;
+    }
+    match s[0] {
+        // DKS: routes r1 r2 r3 r4, four rows of action + steps.
+        1 => {
+            let (r1, r2, r3, r4) = (s[1], s[2], s[3], s[4]);
+            if !(1 <= r1 && r1 <= r2 && r2 == r3 && r2 <= 30 && r4 == r1) {
+                return false;
+            }
+            let mut used = 0;
+            for k in 0..4 {
+                let at = 5 + 8 * k;
+                if zero(at, at + 8) {
+                    continue;
+                }
+                used += 1;
+                let st = &s[at + 4..at + 8];
+                let grammar = st[0] <= 2
+                    && st[1] <= 3
+                    && (st[1] != 3 || st[0] == 2)
+                    && st[2] <= 3
+                    && (st[2] != 3 || st[1] >= 2)
+                    && st[3] <= 1
+                    && st.iter().any(|v| *v != 0);
+                if !(key(at) && grammar) {
+                    return false;
+                }
+            }
+            used > 0 && zero(37, 40)
+        }
+        // MT: hold, tap, threshold 15..=100.
+        2 => key(1) && key(5) && (15..=100).contains(&s[9]) && zero(10, 40),
+        // TGL: one key.
+        3 => key(1) && zero(5, 40),
+        _ => false,
+    }
+}
+
+/// Whether the 10 SOCD entries of a chunk are in the site's form: used
+/// entries `01 mode k1 k2` (mode 0-3, offered, k1 != k2) packed first, then
+/// zeros. Returns the usages of the used entries.
+fn socd_chunk(entries: &[u8]) -> Option<Vec<u8>> {
+    let mut usages = Vec::new();
+    let mut ended = false;
+    for e in entries.chunks_exact(4) {
+        if e.iter().all(|b| *b == 0) {
+            ended = true;
+            continue;
+        }
+        if ended || e[0] != 1 || e[1] > 3 || !offered(e[2]) || !offered(e[3]) || e[2] == e[3] {
+            return None;
+        }
+        usages.extend_from_slice(&e[2..4]);
+    }
+    Some(usages)
+}
+
+/// Whether `usages` holds no value twice.
+fn distinct(usages: &[u8]) -> bool {
+    usages
+        .iter()
+        .enumerate()
+        .all(|(i, u)| !usages[..i].contains(u))
+}
 
 /// The W75 `0x0A` mode list (c01).
 const W75_MODES: [u8; 14] = [
@@ -48,6 +152,17 @@ fn is_allowed_write(p: &[u8; 63], previous: Option<&[u8; 63]>) -> bool {
                 && (1..=4).contains(&p[6])
                 && zero_from(7)
                 && previous.is_none()
+        }
+        // T1: travel test open, only with the full layout mask.
+        0x21 if p[4] == 0x18 && p[5] == 0x02 => {
+            p[..6] == [0x21, 0, 0, 0, 0x18, 0x02]
+                && p[6..28] == LAYOUT
+                && zero_from(28)
+                && previous.is_none()
+        }
+        // T2: travel test close.
+        0x21 if p[4] == 0x18 && p[5] == 0x03 => {
+            p[..6] == [0x21, 0, 0, 0, 0x18, 0x03] && zero_from(6) && previous.is_none()
         }
         // W8: trigger.
         0x21 => {
@@ -90,8 +205,36 @@ fn is_allowed_write(p: &[u8; 63], previous: Option<&[u8; 63]>) -> bool {
         0x18 => matches!(p[1], 0x00 | 0x02) && chunk(10, 0x38, 0x18) && same_table(),
         // W6: macro slot.
         0x19 => p[1] <= 9 && chunk(5, 0x3A, 0x18) && same_table(),
-        // W7: advanced-key clear.
-        0x22 => p[1] <= 0x27 && p[2..5] == [0, 0, 0x32] && zero_from(5) && previous.is_none(),
+        // W7: advanced-key clear; W10: a DKS, MT or TGL slot.
+        0x22 => {
+            p[1] <= 0x27
+                && p[2..5] == [0, 0, 0x32]
+                && (zero_from(5) || (is_allowed_slot(&p[5..45]) && zero_from(45)))
+                && previous.is_none()
+        }
+        // W11: SOCD power first, then pair chunk 0, then chunk 1.
+        0x24 => match p[1] {
+            0x03 => p[2..5] == [0, 0, 0x01] && p[5] <= 1 && zero_from(6) && previous.is_none(),
+            0x00 => {
+                let Some(mine) = socd_chunk(&p[5..45]) else {
+                    return false;
+                };
+                let order = match (p[3], previous) {
+                    (0, Some(q)) => q[..5] == [0x24, 0x03, 0, 0, 0x01],
+                    (1, Some(q)) => match socd_chunk(&q[5..45]) {
+                        // Chunk 1 holds pairs only when chunk 0 is full.
+                        Some(first) if q[..5] == [0x24, 0, 0, 0, 0x28] => {
+                            (mine.is_empty() || first.len() == 20)
+                                && distinct(&[first, mine.clone()].concat())
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                p[2] == 0 && p[4] == 0x28 && zero_from(45) && distinct(&mine) && order
+            }
+            _ => false,
+        },
         // W9: dead band, values within 0..=50.
         0x26 => {
             p[1] == 0x01
@@ -106,8 +249,9 @@ fn is_allowed_write(p: &[u8; 63], previous: Option<&[u8; 63]>) -> bool {
 
 /// Explicit checks for the forms that must never appear.
 fn assert_not_forbidden(p: &[u8; 63], what: &str) {
+    let zero_from = |i: usize| p[i..].iter().all(|b| *b == 0);
     assert!(
-        !matches!(p[0], 0x14 | 0x08 | 0x24 | 0x25),
+        !matches!(p[0], 0x14 | 0x08 | 0x25),
         "{what}: forbidden command {:#04x}",
         p[0]
     );
@@ -115,23 +259,53 @@ fn assert_not_forbidden(p: &[u8; 63], what: &str) {
         assert_eq!(p[5], 0, "{what}: music-rhythm enter");
     }
     assert!(p[..2] != [0x09, 0x01], "{what}: custom table 2");
-    if p[0] == 0x21 {
+    if p[0] == 0x24 {
         assert!(
-            !matches!(
-                p[5],
-                0x02 | 0x03 | 0x04 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0F | 0x10 | 0x11
-            ),
-            "{what}: forbidden 0x21 selector {:#04x}",
-            p[5]
+            matches!(p[1], 0x00 | 0x03),
+            "{what}: SOCD sub-command {:#04x} written",
+            p[1]
         );
-        if p[4] == 0x18 {
-            assert!(p[6..28].iter().any(|b| *b != 0), "{what}: empty mask");
+        if p[1] == 0x03 {
+            assert!(
+                p[4] == 0x01 && p[5] <= 1 && zero_from(6),
+                "{what}: SOCD power"
+            );
+        } else {
+            assert!(
+                p[2] == 0 && p[3] <= 1 && p[4] == 0x28 && zero_from(45),
+                "{what}: SOCD pair chunk"
+            );
+        }
+    }
+    if p[0] == 0x21 {
+        let travel = p[4] == 0x18 && matches!(p[5], 0x02 | 0x03);
+        if travel && p[5] == 0x02 {
+            assert_eq!(p[6..28], LAYOUT, "{what}: travel open with another mask");
+            assert!(zero_from(28), "{what}: travel open");
+        } else if travel {
+            assert!(zero_from(6), "{what}: travel close");
+        } else {
+            assert!(
+                !matches!(
+                    p[5],
+                    0x02 | 0x03 | 0x04 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0F | 0x10 | 0x11
+                ),
+                "{what}: forbidden 0x21 selector {:#04x}",
+                p[5]
+            );
+            if p[4] == 0x18 {
+                assert!(p[6..28].iter().any(|b| *b != 0), "{what}: empty mask");
+            }
         }
     }
     if p[0] == 0x22 {
-        assert!(p[5..].iter().all(|b| *b == 0), "{what}: non-empty slot");
+        assert!(p[5] <= 3, "{what}: advanced-key type {} written", p[5]);
+        if p[5] == 1 {
+            assert!(p[6] <= p[7], "{what}: DKS first point below the deep point");
+        }
+        assert!(zero_from(45), "{what}: bytes after the 40-byte slot");
     }
-    if matches!(p[0], 0x09 | 0x18 | 0x19 | 0x22 | 0x26) {
+    if matches!(p[0], 0x09 | 0x18 | 0x19 | 0x22 | 0x24 | 0x26) {
         assert!(p[1] < 0x80, "{what}: read sub-command in a write");
     }
     assert_eq!(
@@ -156,6 +330,11 @@ fn check_request(request: &WriteRequest, current_mode: Option<u8>) -> usize {
             "{what} is not an allowed write"
         );
         assert_not_forbidden(p, &what);
+        assert!(is_permitted_packet(&step.packet), "{what}: not permitted");
+        assert!(
+            !(p[0] == 0x21 && p[4] == 0x18 && matches!(p[5], 0x02 | 0x03)),
+            "{what}: a table write produced a travel-test packet"
+        );
         previous = Some(p);
     }
     let leaves: Vec<usize> = steps
@@ -428,10 +607,17 @@ fn every_sampled_request_produces_only_allowed_writes() {
             | WriteRequest::Macro(..)
             | WriteRequest::AdvancedKeyClear(_)
             | WriteRequest::Trigger(_)
-            | WriteRequest::DeadBand(_) => {}
+            | WriteRequest::DeadBand(_)
+            | WriteRequest::AdvancedKey(..)
+            | WriteRequest::Socd(_) => {}
         }
     }
-    assert_eq!(kinds.len(), 8, "every variant is sampled: {kinds:?}");
+    // The v0.2 variants are sampled by `sample_v02`.
+    assert_eq!(
+        kinds.len(),
+        8,
+        "every Phase 2 variant is sampled: {kinds:?}"
+    );
     assert_eq!(kinds["select_profile"], 4);
     assert_eq!(kinds["advanced_key_clear"], 40);
     assert_eq!(kinds["trigger"], 81 * 7 + 1);
@@ -472,27 +658,97 @@ fn the_predicate_rejects_the_forbidden_forms() {
     w_mask.resize(28, 0);
     w_mask.extend_from_slice(&[0x32, 0x32, 0x0f, 0x0f]);
     assert!(is_allowed_write(&packet(&w_mask), None), "c03 W write");
-    let forbidden: [&[u8]; 16] = [
-        &[0x14, 0, 0, 0, 0x01, 0x01],          // reset
-        &[0x14, 0x03, 0, 0, 0x01, 0x01],       // gamepad
-        &[0x17, 0, 0, 0, 0x02, 0x01, 0x01],    // music-rhythm enter
-        &[0x08, 0, 0, 0, 0x0E, 0x02],          // side light
-        &[0x09, 0x01, 0, 0, 0x36],             // custom table 2
-        &[0x24, 0x03, 0, 0, 0x01, 0x01],       // SOCD power
-        &[0x24, 0x00, 0, 0, 0x28],             // SOCD pairs
-        &[0x25, 0x01, 0, 0, 0x3A],             // switch types
-        &[0x21, 0, 0, 0, 0x18, 0x06],          // reset triggers
-        &[0x21, 0, 0, 0, 0x18, 0x0F, 0x00],    // calibration start
-        &[0x21, 0, 0, 0, 0x18, 0x10, 0x00],    // calibration stop
-        &[0x21, 0, 0, 0, 0x18, 0x03],          // travel test close
-        &[0x21, 0, 0, 0, 0x00, 0x09, 0x01, 8], // set poll rate
-        &[0x21, 0, 0, 0, 0x18, 0x00],          // empty-mask trigger write
-        &[0x22, 0x00, 0, 0, 0x32, 0x01],       // non-empty advanced key
-        &[0x07, 0, 0, 0, 0x0E, 0x64],          // music-rhythm mode
+    let mut select_all_open = vec![0x21, 0, 0, 0, 0x18, 0x02];
+    select_all_open.extend_from_slice(&SELECTABLE);
+    let mut layout_open = vec![0x21, 0, 0, 0, 0x18, 0x02];
+    layout_open.extend_from_slice(&LAYOUT);
+    let forbidden: [&[u8]; 25] = [
+        &[0x14, 0, 0, 0, 0x01, 0x01],                         // reset
+        &[0x14, 0x03, 0, 0, 0x01, 0x01],                      // gamepad
+        &[0x17, 0, 0, 0, 0x02, 0x01, 0x01],                   // music-rhythm enter
+        &[0x08, 0, 0, 0, 0x0E, 0x02],                         // side light
+        &[0x09, 0x01, 0, 0, 0x36],                            // custom table 2
+        &[0x24, 0x03, 0, 0, 0x01, 0x02],                      // SOCD power value other than 0/1
+        &[0x24, 0x03, 0, 0, 0x01, 0x01, 0x01],                // SOCD power with extra bytes
+        &[0x24, 0x00, 0, 0, 0x28],                            // SOCD pairs without the power write
+        &[0x24, 0x01, 0, 0, 0x28],                            // SOCD pairs read as a write
+        &[0x24, 0x02, 0, 0, 0x06, 0x01],                      // SOCD settings read as a write
+        &[0x25, 0x01, 0, 0, 0x3A],                            // switch types
+        &[0x21, 0, 0, 0, 0x18, 0x06],                         // reset triggers
+        &[0x21, 0, 0, 0, 0x18, 0x0F, 0x00],                   // calibration start
+        &[0x21, 0, 0, 0, 0x18, 0x10, 0x00],                   // calibration stop
+        &[0x21, 0, 0, 0, 0x18, 0x07, 2, 2],                   // single-key calibration
+        &[0x21, 0, 0, 0, 0x18, 0x08, 0x00],                   // calibration (other devices)
+        &[0x21, 0, 0, 0, 0x18, 0x03, 0x01],                   // travel test close with data
+        &select_all_open,                                     // travel test open, knob left out
+        &[0x21, 0, 0, 0, 0x00, 0x09, 0x01, 8],                // set poll rate
+        &[0x21, 0, 0, 0, 0x18, 0x00],                         // empty-mask trigger write
+        &[0x22, 0x00, 0, 0, 0x32, 0x01],                      // DKS without points or rows
+        &[0x22, 0x00, 0, 0, 0x32, 0x04, 0, 0x04, 0, 0],       // RS
+        &[0x22, 0x00, 0, 0, 0x32, 0x06, 0, 0x64, 0, 1, 0x04], // MDS
+        &[0x22, 0x28, 0, 0, 0x32],                            // slot 40
+        &[0x07, 0, 0, 0, 0x0E, 0x64],                         // music-rhythm mode
     ];
     for prefix in forbidden {
         assert!(!is_allowed_write(&packet(prefix), None), "{prefix:02x?}");
     }
+    // The travel test: only the 82-position layout mask, only alone.
+    assert!(is_allowed_write(&packet(&layout_open), None));
+    let close = packet(&[0x21, 0, 0, 0, 0x18, 0x03]);
+    assert!(is_allowed_write(&close, None));
+    assert!(!is_allowed_write(&close, Some(&close)));
+    // SOCD: power, chunk 0, chunk 1 in this order.
+    let power = packet(&[0x24, 0x03, 0, 0, 0x01, 0x01]);
+    let chunk0 = packet(&[0x24, 0x00, 0, 0, 0x28, 0x01, 0x00, 0x04, 0x07]);
+    let chunk1 = packet(&[0x24, 0x00, 0, 1, 0x28]);
+    assert!(is_allowed_write(&power, None));
+    assert!(is_allowed_write(&chunk0, Some(&power)));
+    assert!(is_allowed_write(&chunk1, Some(&chunk0)));
+    assert!(!is_allowed_write(&chunk1, Some(&power)));
+    assert!(!is_allowed_write(&chunk0, Some(&chunk0)));
+    assert!(!is_allowed_write(&power, Some(&chunk1)));
+    // Chunk 1 with pairs while chunk 0 is not full: a gap.
+    let pair1 = packet(&[0x24, 0x00, 0, 1, 0x28, 0x01, 0x00, 0x1A, 0x16]);
+    assert!(!is_allowed_write(&pair1, Some(&chunk0)));
+    // A pair with the same key twice, a duplicate key, a mode above 3, a gap.
+    for entries in [
+        &[0x01, 0x00, 0x04, 0x04][..],
+        &[0x01, 0x00, 0x04, 0x07, 0x01, 0x00, 0x07, 0x1A],
+        &[0x01, 0x04, 0x04, 0x07],
+        &[0, 0, 0, 0, 0x01, 0x00, 0x04, 0x07],
+        &[0x07, 0xFF, 0xFF, 0xFF],
+    ] {
+        let mut bytes = vec![0x24, 0x00, 0, 0, 0x28];
+        bytes.extend_from_slice(entries);
+        assert!(
+            !is_allowed_write(&packet(&bytes), Some(&power)),
+            "{entries:02x?}"
+        );
+    }
+    // The c16 DKS, MT and TGL slots; a DKS with r1 above r2, a stray byte
+    // after the slot.
+    let dks = [
+        0x22, 0x00, 0, 0, 0x32, 0x01, 0x0f, 0x1e, 0x1e, 0x0f, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x01,
+    ];
+    assert!(is_allowed_write(&packet(&dks), None));
+    assert!(is_allowed_write(
+        &packet(&[
+            0x22, 1, 0, 0, 0x32, 0x02, 0, 0xe0, 0, 0, 0, 0x0a, 0, 0, 0x1e
+        ]),
+        None
+    ));
+    assert!(is_allowed_write(
+        &packet(&[0x22, 2, 0, 0, 0x32, 0x03, 0, 0x0b]),
+        None
+    ));
+    let mut deep = dks;
+    deep[6] = 0x1f;
+    deep[9] = 0x1f;
+    assert!(!is_allowed_write(&packet(&deep), None));
+    let mut tail = packet(&dks);
+    tail[45] = 0x01;
+    assert!(!is_allowed_write(&tail, None));
     // A leave is only allowed first; a light write only after a leave.
     let leave = packet(&LEAVE);
     let light = packet(&[0x07, 0, 0, 0, 0x0E, 0x02, 4, 3]);
@@ -745,6 +1001,7 @@ fn write_ack_shapes() {
         &[0x19, 0, 0, 0, 0],
         &[0x22, 0, 0, 0, 0],
         &[0x26, 0x01, 0, 0, 0],
+        &[0x24, 0, 0, 0, 0],
     ] {
         assert!(is_write_ack(&report(prefix)), "{prefix:02x?}");
     }
@@ -756,6 +1013,9 @@ fn write_ack_shapes() {
         &[0x18, 0x80, 0, 0, 0x38],                    // keymap chunk
         &[0x26, 0x00, 0, 0, 0x3A],                    // dead-band chunk
         &[0x14, 0, 0, 0, 0x01, 0x01],                 // reset notification
+        &[0x24, 0x02, 0, 0, 0x06, 0, 0, 0, 0, 0xfa],  // SOCD settings / push
+        &[0x24, 0x01, 0, 0, 0x28],                    // SOCD pairs chunk
+        &[0x21, 0, 0, 0, 0x05, 0x01, 0, 0, 0x10],     // travel stream
     ] {
         assert!(!is_write_ack(&report(prefix)), "{prefix:02x?}");
     }
@@ -1076,4 +1336,586 @@ fn serialization() {
     assert_eq!(json["kind"], "missing_reply");
     assert_eq!(json["table"], "profile");
     assert_eq!(json["expected"], "02");
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 writes: advanced-key slots (W10), SOCD (W11), keymap assignments,
+// macro programs, key colours and the travel test (T1, T2).
+// ---------------------------------------------------------------------------
+
+fn w75_advanced_limits() -> AdvancedLimits {
+    let global = TriggerGlobal::from_response(&single(
+        ReadRequest::TriggerGlobal,
+        0x21,
+        0,
+        &[0x04, 0xaa, 0x02, 0x02, 0x00, 0x05],
+    ))
+    .unwrap();
+    AdvancedLimits::new(&W75, &global, 20).unwrap()
+}
+
+fn hid(u: u8) -> HidUsage {
+    HidUsage::new(u).unwrap()
+}
+
+/// c16 slot 0: DKS on E, E tap at stage 1, R tap at stage 2, 1.5 mm.
+fn c16_dks() -> AdvancedKeyDef {
+    let row = |key, steps: [DksStep; 4]| {
+        Some(DksRow {
+            key: hid(key),
+            steps,
+        })
+    };
+    let (n, t) = (DksStep::None, DksStep::Tap);
+    AdvancedKeyDef::Dks(Dks {
+        first_point: 15,
+        rows: [row(0x08, [t, n, n, n]), row(0x15, [n, t, n, n]), None, None],
+    })
+}
+
+/// c16 slot 1: Mod-Tap, hold L-Ctrl, tap G, 300 ms.
+fn c16_mt() -> AdvancedKeyDef {
+    AdvancedKeyDef::ModTap(ModTap {
+        hold: hid(0xE0),
+        tap: hid(0x0A),
+        threshold_10ms: 30,
+    })
+}
+
+/// c16 slot 2: Toggle H.
+fn c16_tgl() -> AdvancedKeyDef {
+    AdvancedKeyDef::Toggle(Toggle { key: hid(0x0B) })
+}
+
+fn pick<T: Copy>(rng: &mut Rng, items: &[T]) -> T {
+    items[usize::try_from(rng.next() % u64::try_from(items.len()).unwrap()).unwrap()]
+}
+
+fn random_dks_steps(rng: &mut Rng) -> [DksStep; 4] {
+    let s0 = rng.below(3);
+    let s1 = if s0 == 2 { rng.below(4) } else { rng.below(3) };
+    let s2 = if s1 >= 2 { rng.below(4) } else { rng.below(3) };
+    let s3 = rng.below(2);
+    let mut steps = [s0, s1, s2, s3];
+    if steps == [0; 4] {
+        steps[0] = 1;
+    }
+    steps.map(|s| DksStep::from_byte(s).unwrap())
+}
+
+fn random_def(rng: &mut Rng, usages: &[HidUsage]) -> AdvancedKeyDef {
+    match rng.below(3) {
+        0 => {
+            let mut rows = [None; 4];
+            for row in rows.iter_mut() {
+                if rng.below(2) == 0 {
+                    *row = Some(DksRow {
+                        key: pick(rng, usages),
+                        steps: random_dks_steps(rng),
+                    });
+                }
+            }
+            if rows.iter().all(Option::is_none) {
+                rows[usize::from(rng.below(4))] = Some(DksRow {
+                    key: pick(rng, usages),
+                    steps: random_dks_steps(rng),
+                });
+            }
+            AdvancedKeyDef::Dks(Dks {
+                first_point: 1 + rng.below(30),
+                rows,
+            })
+        }
+        1 => AdvancedKeyDef::ModTap(ModTap {
+            hold: pick(rng, usages),
+            tap: pick(rng, usages),
+            threshold_10ms: 15 + rng.below(86),
+        }),
+        _ => AdvancedKeyDef::Toggle(Toggle {
+            key: pick(rng, usages),
+        }),
+    }
+}
+
+fn random_assignment(rng: &mut Rng, usages: &[HidUsage]) -> KeyAssignment {
+    let modifiers: Vec<HidUsage> = usages.iter().copied().filter(|u| u.is_modifier()).collect();
+    let keys: Vec<HidUsage> = usages
+        .iter()
+        .copied()
+        .filter(|u| !u.is_modifier())
+        .collect();
+    let mouse = [
+        MouseAction::Button(MouseButton::Left),
+        MouseAction::Button(MouseButton::Right),
+        MouseAction::Button(MouseButton::Middle),
+        MouseAction::Button(MouseButton::Mask08),
+        MouseAction::Button(MouseButton::Mask10),
+        MouseAction::WheelUp,
+        MouseAction::WheelDown,
+    ];
+    match rng.below(7) {
+        0 => KeyAssignment::Default,
+        1 => KeyAssignment::Key(pick(rng, usages)),
+        2 => KeyAssignment::Media(MediaKey::new(pick(rng, &MediaKey::ALL)).unwrap()),
+        3 => KeyAssignment::Mouse(pick(rng, &mouse)),
+        4 => {
+            let first = pick(rng, &modifiers);
+            let key = pick(rng, &keys);
+            let combo = if rng.below(2) == 0 {
+                Combo::new(&[first], key)
+            } else {
+                let others: Vec<HidUsage> =
+                    modifiers.iter().copied().filter(|m| *m != first).collect();
+                Combo::new(&[first, pick(rng, &others)], key)
+            };
+            KeyAssignment::Combo(combo.unwrap())
+        }
+        5 => KeyAssignment::Macro(MacroSlotId::new(rng.below(10)).unwrap()),
+        _ => KeyAssignment::Advanced(AdvancedSlotId::new(rng.below(40)).unwrap()),
+    }
+}
+
+fn random_program(rng: &mut Rng, usages: &[HidUsage]) -> MacroProgram {
+    let pairs = 1 + usize::from(rng.below(20));
+    let mut steps = Vec::new();
+    for k in 0..pairs {
+        let usage = pick(rng, usages);
+        let delay = u16::from_le_bytes([rng.byte(), rng.byte()]);
+        steps.push(MacroStep::press(usage, delay));
+        let last = if k + 1 == pairs { 0 } else { delay };
+        steps.push(MacroStep::release(usage, last));
+    }
+    let play = match rng.below(4) {
+        0 => MacroPlay::Once,
+        1 => MacroPlay::Times(1 + rng.below(255)),
+        2 => MacroPlay::Toggle,
+        _ => MacroPlay::WhileHeld,
+    };
+    MacroProgram::new(play, steps).unwrap()
+}
+
+/// `n` SOCD pairs of distinct W75 keys with random modes.
+fn random_socd(rng: &mut Rng, n: usize) -> SocdPairsData {
+    let mut keys: Vec<u8> = W75.keys.iter().filter_map(|k| k.hid_usage).collect();
+    // Fisher-Yates with the test generator.
+    for i in (1..keys.len()).rev() {
+        let j = usize::try_from(rng.next() % u64::try_from(i + 1).unwrap()).unwrap();
+        keys.swap(i, j);
+    }
+    let pairs: Vec<SocdPair> = (0..n)
+        .map(|i| SocdPair {
+            mode: pick(rng, &SocdMode::ALL),
+            key1: hid(keys[2 * i]),
+            key2: hid(keys[2 * i + 1]),
+        })
+        .collect();
+    SocdPairsData::from_pairs(&W75, &pairs).unwrap()
+}
+
+/// Positions of the W75 keys that have a HID usage (every key but the knob
+/// and Fn).
+fn usage_keys() -> Vec<KeyPos> {
+    W75.keys
+        .iter()
+        .filter(|k| k.hid_usage.is_some())
+        .filter_map(|k| k.pos())
+        .collect()
+}
+
+/// A bounded sample of every kind of v0.2 request.
+fn sample_v02() -> Vec<WriteRequest> {
+    let mut rng = Rng(0x5632_5352_4F54_4F31);
+    let usages: Vec<HidUsage> = HidUsage::all().collect();
+    let limits = w75_advanced_limits();
+    let mut out = Vec::new();
+
+    // W10: the captured DKS, MT and TGL in every slot, plus 3 random ones.
+    for slot in AdvancedSlotId::all() {
+        let mut defs = vec![c16_dks(), c16_mt(), c16_tgl()];
+        defs.extend((0..3).map(|_| random_def(&mut rng, &usages)));
+        for def in defs {
+            let data = AdvancedSlotData::from_def(&def, &limits).unwrap();
+            out.push(WriteRequest::AdvancedKey(slot, data));
+        }
+    }
+
+    // W11: both powers x 0-20 pairs (chunk boundaries), plus random tables.
+    for power in [false, true] {
+        for n in [0, 1, 2, 9, 10, 11, 19, 20] {
+            let pairs = random_socd(&mut rng, n);
+            out.push(WriteRequest::Socd(SocdWrite::new(power, pairs)));
+        }
+    }
+    for _ in 0..10 {
+        let n = usize::from(rng.below(21));
+        let power = rng.below(2) == 1;
+        let pairs = random_socd(&mut rng, n);
+        out.push(WriteRequest::Socd(SocdWrite::new(power, pairs)));
+    }
+
+    // W5: assignments of every kind on random keys of both layers.
+    let positions = usage_keys();
+    for layer in Layer::ALL {
+        for _ in 0..20 {
+            let mut data = keymap(layer, &[0u8; 528]);
+            for _ in 0..8 {
+                let pos = pick(&mut rng, &positions);
+                let assignment = random_assignment(&mut rng, &usages);
+                data.set_entry(pos, assignment.entry(&W75, pos).unwrap());
+            }
+            out.push(WriteRequest::Keymap(layer, data));
+        }
+    }
+
+    // W6: random programs in every slot.
+    for slot in MacroSlotId::all() {
+        for _ in 0..5 {
+            let program = random_program(&mut rng, &usages);
+            out.push(WriteRequest::Macro(slot, program.encode(slot)));
+        }
+    }
+
+    // W4: random key colours on a table with a lit non-layout slot.
+    for _ in 0..3 {
+        let mut table: Vec<u8> = (0..396).map(|_| rng.byte()).collect();
+        table[103 * 3] = 0xff;
+        let mut data = colors(&table);
+        let mut paint: Vec<(KeyPos, Rgb)> = Vec::new();
+        for pos in &positions {
+            if rng.below(2) == 0 {
+                paint.push((*pos, Rgb::new(rng.byte(), rng.byte(), rng.byte())));
+            }
+        }
+        data.set_key_colors(&W75, &paint).unwrap();
+        assert_eq!(data.as_bytes()[103 * 3], 0xff);
+        out.push(WriteRequest::CustomColors1(data));
+    }
+    out
+}
+
+#[test]
+fn every_sampled_v02_request_produces_only_allowed_writes() {
+    let mut packets = 0;
+    let mut kinds = std::collections::BTreeMap::new();
+    for request in sample_v02() {
+        packets += check_request(&request, None);
+        for step in request.steps() {
+            assert_eq!(
+                ReadRequest::from_packet(step.packet.as_bytes()),
+                None,
+                "{request}"
+            );
+        }
+        *kinds.entry(request.kind()).or_insert(0) += 1;
+    }
+    assert_eq!(kinds["advanced_key"], 240);
+    assert_eq!(kinds["socd"], 26);
+    assert_eq!(kinds["keymap"], 40);
+    assert_eq!(kinds["macro"], 50);
+    assert_eq!(kinds["custom_colors1"], 3);
+    // 240 + 26 x 3 + 40 x 10 + 50 x 5 + 3 x 8.
+    assert_eq!(packets, 992);
+    // Together with the Phase 2 sample, every variant is sampled.
+    let mut all: std::collections::BTreeSet<&str> = kinds.keys().copied().collect();
+    all.extend(sample().iter().map(|(r, _)| r.kind()));
+    assert_eq!(all.len(), 10, "{all:?}");
+}
+
+#[test]
+fn travel_test_requests() {
+    let open = TravelTestRequest::Open(TravelTestMask::full_layout(&W75).unwrap());
+    for request in [open, TravelTestRequest::Close] {
+        let step = request.step();
+        let p = step.packet.as_bytes();
+        let what = request.to_string();
+        assert!(is_allowed_write(p, None), "{what}");
+        assert_not_forbidden(p, &what);
+        assert!(is_permitted_packet(&step.packet), "{what}");
+        assert_eq!(ReadRequest::from_packet(p), None, "{what}");
+        assert_eq!(
+            step.ack,
+            AckSpec::Report {
+                header: [0x21, 0, 0, 0, 0x01],
+                selector: Some(0x00),
+                required: true
+            }
+        );
+        assert!(step.gap_after.is_zero());
+    }
+    let mut expected = [0u8; 63];
+    expected[..6].copy_from_slice(&[0x21, 0, 0, 0, 0x18, 0x02]);
+    expected[6..28].copy_from_slice(&LAYOUT);
+    assert_eq!(*open.step().packet.as_bytes(), expected);
+}
+
+#[test]
+fn assignments_only_produce_confirmed_categories() {
+    let mut rng = Rng(0x4B45_594D_4150_3032);
+    let usages: Vec<HidUsage> = HidUsage::all().collect();
+    let positions = usage_keys();
+    for _ in 0..5000 {
+        let pos = pick(&mut rng, &positions);
+        let assignment = random_assignment(&mut rng, &usages);
+        let entry = assignment.entry(&W75, pos).unwrap();
+        assert!(
+            matches!(entry[0], 0x00 | 0x07 | 0x10 | 0x12 | 0x13 | 0x17),
+            "{assignment:?}: {entry:02x?}"
+        );
+        assert_eq!(
+            KeyAssignment::classify(&W75, pos, entry),
+            EntryKind::Assignable(assignment)
+        );
+        // Arbitrary bytes are classified without panicking, and an
+        // assignable entry is exactly what its assignment writes.
+        let bytes = [rng.byte(), rng.byte(), rng.byte(), rng.byte()];
+        if let EntryKind::Assignable(a) = KeyAssignment::classify(&W75, pos, bytes) {
+            assert_eq!(a.entry(&W75, pos), Ok(bytes));
+        }
+    }
+}
+
+#[test]
+fn the_egress_allowlist_refuses_other_headers() {
+    let packet = |prefix: &[u8]| {
+        let header: [u8; 5] = prefix[..5].try_into().unwrap();
+        WritePacket::new(header, &prefix[5..])
+    };
+    for prefix in [
+        &[0x14, 0, 0, 0, 0x01, 0x01][..],   // reset
+        &[0x14, 0x03, 0, 0, 0x01, 0x01],    // gamepad
+        &[0x08, 0, 0, 0, 0x0E, 0x02],       // side light
+        &[0x09, 0x01, 0, 0, 0x36],          // custom table 2
+        &[0x24, 0x01, 0, 0, 0x28],          // SOCD pairs read
+        &[0x24, 0x02, 0, 0, 0x06],          // SOCD settings read
+        &[0x24, 0x00, 0, 0x02, 0x28],       // SOCD chunk 2
+        &[0x24, 0x00, 0, 0, 0x27],          // SOCD chunk of another length
+        &[0x24, 0x03, 0, 0, 0x02],          // SOCD power of another length
+        &[0x24, 0x03, 0, 0, 0x01, 0x02],    // SOCD power value 2
+        &[0x25, 0x01, 0, 0, 0x3A],          // switch types
+        &[0x21, 0, 0, 0, 0x18, 0x06],       // reset triggers
+        &[0x21, 0, 0, 0, 0x18, 0x07, 2, 2], // single-key calibration
+        &[0x21, 0, 0, 0, 0x18, 0x08],       // calibration
+        &[0x21, 0, 0, 0, 0x18, 0x0F],       // calibration start
+        &[0x21, 0, 0, 0, 0x18, 0x10],       // calibration stop
+        &[0x21, 0, 0, 0, 0x00, 0x09, 1, 8], // set poll rate
+        &[0x21, 0, 0, 1, 0x18, 0x00],       // byte 3 set
+        &[0x17, 0, 0, 0, 0x02, 0x01, 0x01], // music-rhythm enter
+        &[0x07, 0, 0, 0, 0x0E, 0x64],       // music-rhythm mode
+        &[0x18, 0x01, 0, 0, 0x38],          // keymap sub 01
+        &[0x19, 0x0A, 0, 0, 0x3A],          // macro slot 10
+        &[0x22, 0x28, 0, 0, 0x32],          // advanced slot 40
+        &[0x22, 0x00, 0, 0, 0x28],          // advanced write of another length
+        &[0x22, 0x00, 0, 0, 0x32, 0x04],    // advanced key type 4
+        &[0x26, 0x02, 0, 0, 0x3A],          // dead band sub 02
+        &[0x0D, 0, 0, 0, 0],                // anything else
+    ] {
+        assert!(!is_permitted_packet(&packet(prefix)), "{prefix:02x?}");
+    }
+    // No read request passes the allowlist either.
+    for read in ReadRequest::all() {
+        assert!(
+            !is_permitted_packet(&packet(read.packet().as_bytes())),
+            "{read}"
+        );
+    }
+}
+
+#[test]
+fn v02_steps_acks_and_gaps() {
+    let report_ack = |h: [u8; 5]| AckSpec::Report {
+        header: h,
+        selector: None,
+        required: true,
+    };
+    let limits = w75_advanced_limits();
+    let slot = AdvancedSlotId::new(39).unwrap();
+    let w10 = WriteRequest::AdvancedKey(
+        slot,
+        AdvancedSlotData::from_def(&c16_tgl(), &limits).unwrap(),
+    );
+    let steps = w10.steps();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].packet.summary(), "22 27 00 00 32 03 00 0b");
+    assert_eq!(steps[0].ack, report_ack([0x22, 0, 0, 0, 0]));
+    assert!(steps[0].gap_after.is_zero());
+
+    let ad = SocdPair {
+        mode: SocdMode::M1,
+        key1: hid(0x04),
+        key2: hid(0x07),
+    };
+    let pairs = SocdPairsData::from_pairs(&W75, &[ad]).unwrap();
+    let steps = WriteRequest::Socd(SocdWrite::new(true, pairs)).steps();
+    let summaries: Vec<String> = steps.iter().map(|s| s.packet.summary()).collect();
+    assert_eq!(
+        summaries,
+        [
+            "24 03 00 00 01 01",
+            "24 00 00 00 28 01 00 04 07",
+            "24 00 00 01 28"
+        ]
+    );
+    let possible = AckSpec::Possible {
+        header: [0x24, 0, 0, 0, 0],
+    };
+    assert_eq!(steps[0].ack, possible);
+    assert!(!possible.is_required());
+    assert!(!possible.expects_reply());
+    assert_eq!(steps[0].gap_after, SOCD_POWER_SETTLE);
+    for step in &steps[1..] {
+        assert_eq!(step.ack, report_ack([0x24, 0, 0, 0, 0]));
+        assert!(step.gap_after.is_zero());
+    }
+    // A possible ack is complete without a reply and takes one matching
+    // report if it comes.
+    let mut tracker = possible.tracker();
+    assert!(tracker.is_complete());
+    assert_eq!(
+        tracker.offer(&report(&[0x24, 0x01, 0, 0, 0x28])),
+        AckOffer::Ignored
+    );
+    assert!(!tracker.ack_received());
+    assert_eq!(tracker.offer(&report(&[0x24, 0, 0, 0, 0])), AckOffer::Ack);
+    assert!(tracker.ack_received());
+    assert_eq!(
+        tracker.offer(&report(&[0x24, 0, 0, 0, 0])),
+        AckOffer::Ignored
+    );
+}
+
+#[test]
+fn check_advanced_slot_and_socd() {
+    let limits = w75_advanced_limits();
+    let slot = AdvancedSlotId::new(5).unwrap();
+    let data = AdvancedSlotData::from_def(&c16_mt(), &limits).unwrap();
+    let request = WriteRequest::AdvancedKey(slot, data.clone());
+    assert_eq!(request.verify_reads(), vec![ReadRequest::AdvancedKeys]);
+    let mut bytes = vec![0u8; 1600];
+    bytes[200..240].copy_from_slice(data.as_bytes());
+    // Another slot may hold anything.
+    bytes[6 * 40] = 0x03;
+    assert_eq!(
+        request.check(&[table(ReadRequest::AdvancedKeys, &bytes)]),
+        Ok(())
+    );
+    bytes[200 + 9] = 31;
+    let err = request
+        .check(&[table(ReadRequest::AdvancedKeys, &bytes)])
+        .unwrap_err();
+    assert_eq!(err.table, TableId::AdvancedKey { slot });
+    assert_eq!(err.differing_offsets(), vec![9]);
+    // A clear of the same slot does not match the content.
+    bytes[200 + 9] = 30;
+    assert!(
+        WriteRequest::AdvancedKeyClear(slot)
+            .check(&[table(ReadRequest::AdvancedKeys, &bytes)])
+            .is_err()
+    );
+
+    let ad = SocdPair {
+        mode: SocdMode::M2,
+        key1: hid(0x04),
+        key2: hid(0x07),
+    };
+    let pairs = SocdPairsData::from_pairs(&W75, &[ad]).unwrap();
+    let request = WriteRequest::Socd(SocdWrite::new(true, pairs.clone()));
+    assert_eq!(
+        request.verify_reads(),
+        vec![ReadRequest::SocdSettings, ReadRequest::SocdPairs]
+    );
+    let settings = |payload: &[u8]| single(ReadRequest::SocdSettings, 0x24, 0x02, payload);
+    let on = settings(&[1, 0, 0, 0, 0xfa, 0xe5]);
+    let pair_reply = table(ReadRequest::SocdPairs, pairs.as_bytes());
+    assert_eq!(request.check(&[on.clone(), pair_reply.clone()]), Ok(()));
+    // Bytes 1-5 (unknown, hotkey) are not compared.
+    assert_eq!(
+        request.check(&[settings(&[1, 9, 9, 9, 0, 0]), pair_reply.clone()]),
+        Ok(())
+    );
+    let err = request
+        .check(&[settings(&[0, 0, 0, 0, 0xfa, 0xe5]), pair_reply.clone()])
+        .unwrap_err();
+    assert_eq!(err.read, ReadRequest::SocdSettings);
+    assert_eq!(err.table, TableId::Socd);
+    assert_eq!(
+        (err.expected.0.clone(), err.got.0.clone()),
+        (vec![1], vec![0])
+    );
+    let err = request
+        .check(&[on.clone(), table(ReadRequest::SocdPairs, &[0u8; 80])])
+        .unwrap_err();
+    assert_eq!(err.read, ReadRequest::SocdPairs);
+    assert_eq!(err.differing_offsets(), vec![0, 1, 2, 3]);
+    assert_eq!(
+        request.check(std::slice::from_ref(&on)).unwrap_err().kind,
+        MismatchKind::MissingReply
+    );
+    assert_eq!(
+        request
+            .check(&[settings(&[]), pair_reply])
+            .unwrap_err()
+            .kind,
+        MismatchKind::InvalidReply
+    );
+    // The compared bytes are available to callers.
+    assert_eq!(request.expected_bytes(ReadRequest::SocdSettings), vec![1]);
+    assert_eq!(request.observed_bytes(&on), Some(vec![1]));
+    assert_eq!(
+        request.expected_bytes(ReadRequest::DeadBand),
+        Vec::<u8>::new()
+    );
+}
+
+#[test]
+fn v02_tables_and_names() {
+    let limits = w75_advanced_limits();
+    let slot = AdvancedSlotId::new(3).unwrap();
+    let w10 = WriteRequest::AdvancedKey(
+        slot,
+        AdvancedSlotData::from_def(&c16_dks(), &limits).unwrap(),
+    );
+    assert_eq!(w10.table(), TableId::AdvancedKey { slot });
+    assert_eq!(w10.kind(), "advanced_key");
+    assert_eq!(w10.to_string(), "advanced-key slot 3 (22 03)");
+    for (power, text) in [(true, "on"), (false, "off")] {
+        let w11 = WriteRequest::Socd(SocdWrite::new(
+            power,
+            SocdPairsData::from_pairs(&W75, &[]).unwrap(),
+        ));
+        assert_eq!(w11.table(), TableId::Socd);
+        assert_eq!(w11.kind(), "socd");
+        assert_eq!(
+            w11.to_string(),
+            format!("SOCD power {text} and pairs (24 03, 24 00)")
+        );
+    }
+    assert_eq!(TableId::Socd.to_string(), "SOCD");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn v02_serialization() {
+    let pairs = SocdPairsData::from_pairs(&W75, &[]).unwrap();
+    let request = WriteRequest::Socd(SocdWrite::new(true, pairs));
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["socd"]["power"], true);
+    assert_eq!(json["socd"]["pairs"].as_str().map(str::len), Some(160));
+    let steps = serde_json::to_value(request.steps()).unwrap();
+    assert_eq!(
+        steps[0]["ack"],
+        serde_json::json!({"possible": {"header": [36, 0, 0, 0, 0]}})
+    );
+    assert_eq!(steps[0]["gap_after_ms"], 50);
+    let json = serde_json::to_string(&TableId::Socd).unwrap();
+    assert_eq!(json, r#""socd""#);
+    assert_eq!(
+        serde_json::from_str::<TableId>(&json).unwrap(),
+        TableId::Socd
+    );
+    let open = TravelTestRequest::Open(TravelTestMask::full_layout(&W75).unwrap());
+    assert!(serde_json::to_value(open).unwrap()["open"].is_array());
+    assert_eq!(
+        serde_json::to_string(&TravelTestRequest::Close).unwrap(),
+        r#""close""#
+    );
 }

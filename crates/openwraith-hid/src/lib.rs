@@ -35,8 +35,26 @@
 //! * [`read_profiles`]: an all-profile backup (schema 2).
 //! * [`safety`]: safety backups saved and verified before any write
 //!   ([`SavedBackup`]).
-//! * [`restore`]: plan, prepare and execute a restore.
-//! * [`edit`]: trigger and main-light edits of the active profile.
+//! * [`restore`]: plan, prepare and execute a restore (also importing one
+//!   exported profile into another, [`Backup::export_profile`]).
+//! * [`edit`]: edits of the active profile: triggers (and
+//!   [`presets`]), the main light, key assignments on both layers, macros
+//!   and advanced keys (one keymap-group write, in the vendor site's order),
+//!   per-key colours, the dead band and SOCD. Each plans read-only, then
+//!   writes through the writer, waits for the save and, where the keyboard's
+//!   keeping a table is not proven on hardware, checks it by switching
+//!   profiles away and back.
+//! * [`travel`]: the live key-depth view (travel test) behind a guard that
+//!   always closes it.
+//! * [`ProfileSwitcher`] ([`Session::profile_switcher`]): profile selects
+//!   for standing rules (an automatic profile per game), nothing else.
+//!
+//! Reports the keyboard sends on its own (the SOCD switch on Fn + Right
+//! Shift, the key-depth stream) are never taken for another program; a
+//! key-depth stream that no test of the session opened refuses every table
+//! write until it is closed. Every write packet passes an egress allowlist
+//! ([`is_permitted_packet`](protocol::is_permitted_packet)) right before it
+//! is sent.
 //!
 //! # Read-only paths stay read-only
 //!
@@ -44,8 +62,9 @@
 //! builds those only from read requests. [`read_all`], [`read_summary`] and
 //! [`dry_run_restore`] are generic over `Transport`, so they **cannot** write:
 //! sending a write needs [`WriteTransport`], whose only packet type
-//! (`WritePacket`) has no public constructor and is built only for the nine
-//! write forms confirmed on hardware. [`HidTransport`] does not implement
+//! (`WritePacket`) has no public constructor and is built only for the
+//! write forms confirmed by captures and on hardware (W1-W11 and the
+//! travel-test open and close). [`HidTransport`] does not implement
 //! `WriteTransport`. There is no API in this crate that accepts raw bytes for
 //! sending, and the hidapi handle is private. A session never answers the
 //! keyboard's reset notification, and after one nothing more is written.
@@ -69,9 +88,12 @@
 pub mod backup;
 pub mod edit;
 mod error;
+mod group;
 mod hid;
 #[cfg(feature = "mock")]
 pub mod mock;
+mod persist;
+pub mod presets;
 pub mod profiles;
 pub mod restore;
 pub mod safety;
@@ -79,47 +101,64 @@ mod session;
 #[cfg(feature = "mock")]
 pub mod sim;
 mod summary;
+mod switcher;
 mod transport;
+pub mod travel;
 pub mod writer;
 
 pub use openwraith_protocol as protocol;
 
 pub use backup::{
-    BACKUP_EXTENSION, BACKUP_FORMAT, BACKUP_SCHEMA_MAX, BACKUP_SCHEMA_VERSION,
-    BACKUP_SCHEMA_VERSION_PROFILES, BACKUP_SCOPE, BACKUP_SCOPE_PROFILES, Backup, BackupEntry,
-    BackupOptions, DeviceIdentity, ProfileSnapshot, Progress, SnapshotView, ToolInfo, read_all,
-    read_all_cancellable, read_all_observed, read_all_with, rfc3339_utc,
+    BACKUP_EXTENSION, BACKUP_FORMAT, BACKUP_MAX_FILE_BYTES, BACKUP_SCHEMA_MAX,
+    BACKUP_SCHEMA_VERSION, BACKUP_SCHEMA_VERSION_PROFILES, BACKUP_SCOPE, BACKUP_SCOPE_EXPORT,
+    BACKUP_SCOPE_PROFILES, Backup, BackupEntry, BackupOptions, DeviceIdentity, ProfileSnapshot,
+    Progress, SnapshotView, ToolInfo, read_all, read_all_cancellable, read_all_observed,
+    read_all_with, rfc3339_utc,
 };
 pub use edit::{
-    EditReport, KeyEdit, LightEdit, LightEditPlan, RtEdit, TriggerEdit, TriggerEditPlan,
-    apply_light_edit, apply_trigger_edit, plan_light_edit, plan_trigger_edit,
+    AdvancedSlotView, ColorChange, ColorEdit, ColorEditPlan, CommitTriggerMode, DeadBandChange,
+    DeadBandEdit, DeadBandEditPlan, EditError, EditOptions, EditReport, EditWarning,
+    EntryChangeView, KeyEdit, KeymapChange, KeymapEdit, KeymapEditPlan, KeymapGroupState,
+    LightEdit, LightEditPlan, MacroSlotView, PersistenceCheckMode, PlannedEditWrite, RtEdit,
+    SlotChangeView, SlotKind, SocdEdit, SocdEditPlan, SocdState, TriggerEdit, TriggerEditPlan,
+    apply_color_edit, apply_dead_band_edit, apply_keymap_edit, apply_light_edit, apply_socd_edit,
+    apply_trigger_edit, persistence_check_tables, plan_color_edit, plan_dead_band_edit,
+    plan_keymap_edit, plan_keymap_edit_on, plan_light_edit, plan_socd_edit, plan_trigger_edit,
 };
 pub use error::{
     BackupError, ErrorInfo, ErrorKind, ListenError, ProfilesError, ProfilesFailure, RestoreError,
     SessionError, TransportError, WriteError,
 };
+pub use group::{DanglingBinding, SlotRef};
 pub use hid::{
     DeviceChoiceError, DeviceDescriptor, DeviceListing, HidBackend, HidTransport,
     WritableHidTransport, choose_device, is_supported_interface,
 };
 #[cfg(feature = "mock")]
 pub use mock::{MockError, MockTransport};
+pub use presets::{TRIGGER_PRESETS, TriggerPreset, preset_edit, trigger_preset};
 pub use profiles::{
     ProfileSet, ProfilesOptions, ProfilesProgress, read_all_profiles, read_profiles,
 };
 pub use restore::{
-    BlockCause, CommitTriggerReason, EntryChange, FinalCheck, FinalMismatch, ItemReport,
-    ItemResult, Outcome, Persistence, PersistenceCheck, PlanAction, PlanItem, PlanWarning,
-    PlannedWrite, PreparedRestore, ProfilePlan, ProfileReport, RestoreOptions, RestorePlan,
-    RestoreReport, SkipReason, WriteProgress, dry_run_restore, execute_restore, plan_restore,
-    prepare_restore,
+    BlockCause, CommitTriggerReason, EntryChange, FinalCheck, FinalMismatch, ImportOptions,
+    ImportSelection, ItemReport, ItemResult, Outcome, Persistence, PersistenceCheck, PlanAction,
+    PlanItem, PlanWarning, PlannedWrite, PreparedRestore, ProfilePlan, ProfileReport,
+    RestoreOptions, RestorePlan, RestoreReport, SkipReason, WriteProgress, dry_run_restore,
+    execute_restore, plan_restore, prepare_restore,
 };
 pub use safety::SavedBackup;
-pub use session::{ForeignActivity, ListenSummary, Session, SessionOptions, SessionStats};
+pub use session::{
+    ForeignActivity, ListenSummary, Session, SessionOptions, SessionStats, TravelState,
+};
 #[cfg(feature = "mock")]
 pub use sim::{DeviceSim, KeymapCommit, Scope, ScopeConfig, SimPacket, SimTable, Violation};
 pub use summary::{DeviceSummary, read_summary};
+pub use switcher::ProfileSwitcher;
 pub use transport::{Transport, UsbInfo, WriteTransport};
+pub use travel::{
+    CloseResult, TravelFrame, TravelOptions, TravelOutcome, TravelStop, TravelTest, live_travel,
+};
 pub use writer::{
     CommitSettle, CommitTrigger, CommitWait, ConsentOrigin, GuardedWrite, PacketProgress,
     SelectOutcome, WriteConsent, WriteOptions, WriteOutcome, WriteWarning, Writer,

@@ -220,6 +220,8 @@ pub enum TableRef {
     DeadBand,
     SocdPairs,
     SocdSettings,
+    /// SOCD power and pairs, written together.
+    Socd,
     SwitchTypes,
     PollRate,
     WinLockAndRollover,

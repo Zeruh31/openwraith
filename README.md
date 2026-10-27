@@ -9,7 +9,10 @@ This repository contains a Rust library, the `openwraith` command line tool
 and the **OpenWraith desktop app** (Tauri 2, Windows first). They show the
 keyboard's settings, make lossless backups of one or all four onboard
 profiles, restore them, and change the actuation point, Rapid Trigger and
-the main light.
+the main light. The command line tool also edits key assignments (base and
+Fn layer), macros, advanced keys (DKS, Mod-Tap, Toggle), per-key colours,
+the dead band and SOCD, shares one profile as a file, and shows live key
+depths.
 
 > **Disclaimer.** OpenWraith is an independent project. It is **not affiliated
 > with, endorsed by, or supported by Wraith** or the keyboard's manufacturer.
@@ -23,22 +26,28 @@ the main light.
 
 | Works now | Planned |
 |---|---|
-| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | Linux and macOS builds of the app |
-| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros (read-only) | Keymap and macro editing |
-| `openwraith backup`: lossless backup of the active profile (read-only) | Per-key colours, dead band |
-| `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | SOCD, switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
-| `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | Other models of the family (W60, W65, W100) |
-| `openwraith set trigger` / `set light`: actuation, Rapid Trigger, main light | |
+| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | v0.2 of the app: editors for keys, macros, advanced keys, colours, dead band, SOCD; live key depth; tray agent; profile per game |
+| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros, advanced keys, SOCD (read-only) | Linux and macOS builds of the app |
+| `openwraith backup`: lossless backup of the active profile (read-only) | Switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
+| `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | Other models of the family (W60, W65, W100) |
+| `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | |
+| `openwraith set trigger` / `set light`: actuation, Rapid Trigger (also presets), main light | |
 | `openwraith profile [select N]`: show or switch the active profile | |
+| **v0.2, simulator-tested:** `set key` / `set macro` / `set advanced` / `set colors` / `set deadband` / `set socd`, `travel` (live key depth), `monitor`, `profile export` / `profile import` | |
 
 Supported hardware: Wraith W75 (product code `W75HEARGB`) connected with the
 USB cable, firmware `V3.22.07` (USB `2e3c:c368`). The read-only commands were
 checked on the maintainer's keyboard, and so were the commands that write
 (the results log in [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
-**The desktop app has so far only run against the device simulator; its
-hardware checks (A1-A10 in the same file) are still to be done.** The
-product IDs `2e3c:c365` to `2e3c:c367` are accepted as the spec allows, but
-unverified.
+The desktop app's hardware checks (A1-A10 in the same file) were run on
+2026-10-27. **The v0.2 editors of the CLI (the last row) have so far only
+run against the device simulator; their hardware checks (H12-H25) are still
+to be done.** Their packets use the command forms the vendor site sent and
+the keyboard accepted in the captures, built the way the site's code builds
+them; the cases captured in sessions 2-3 match byte for byte (tests compare
+them), and values never seen on the wire are marked "not yet verified on a
+W75" in the plan. The product IDs `2e3c:c365`
+to `2e3c:c367` are accepted as the spec allows, but unverified.
 
 ## Desktop app
 
@@ -135,16 +144,24 @@ Where the app keeps its files: safety backups as above; its settings in
 These rules are the library's; the CLI and the desktop app follow them
 alike.
 
-- **Read-only commands stay read-only.** `list`, `info`, `show`, `profile`
-  (without `select`), `restore --dry-run` and `backup` (without
-  `--all-profiles`) open the keyboard through a transport type that cannot
-  send a write at all (checked by the compiler, see
+- **Read-only commands stay read-only.** `list`, `info`, `show`, `monitor`,
+  `profile` (without `select`), `restore --dry-run`, `profile import
+  --dry-run`, every `set ... --dry-run`, `backup` (without
+  `--all-profiles`) and `profile export` of the active profile open the
+  keyboard through a transport type that cannot send a write at all
+  (checked by the compiler, see
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
-- **These commands write:** `profile select`, `set`, `restore`, and
-  `backup --all-profiles` (profile switches only). They can only send the nine
-  write commands that were confirmed on real hardware (docs/PROTOCOL.md
-  section 3). Reset, calibration, travel test, SOCD, switch types, side light,
-  polling rate and Win-Lock writes cannot even be built.
+- **These commands write:** `profile select`, `set`, `restore`, `profile
+  import`, `backup --all-profiles` and `profile export` of a profile that is
+  not active (profile switches only), and `travel` (only the key-depth
+  test's open and close). They can only send the write commands that the
+  vendor site sent and the keyboard accepted in the captures
+  (docs/PROTOCOL.md section 3), in the captured command form (table
+  contents the captures did not show are marked "not yet verified on a W75"
+  in the plan); every packet also passes an allowlist right before it is
+  sent. Reset,
+  calibration, switch types, side light, custom colour table 2, polling rate,
+  gamepad and Win-Lock writes cannot even be built.
 - **A safety backup comes first.** Before changing any setting (`set`,
   `restore`), OpenWraith reads the keyboard, saves a safety backup, reads the
   saved file back to check it, and only then shows what will change and asks
@@ -174,16 +191,16 @@ alike.
   answers it with a reset command of its own; OpenWraith stops at once and
   sends nothing more, not even a switch back to the original profile.
 - **What a restore writes.** Exactly the backup's bytes, table by table:
-  triggers (one key per packet), dead band, keymaps, macros, cleared
-  advanced keys, custom colour table 1 and the main light. Tables without a
-  confirmed write command (side light, custom colour table 2, SOCD, switch
-  types, polling rate, Win-Lock / 6-key) are compared and listed as "not
-  written". Restore never adds defaults that are not in the backup (the
-  vendor site writes its own knob defaults into the keymap; OpenWraith does
-  not). If the keymaps, macros or advanced keys cannot be restored as a whole
-  (for example because a non-empty advanced key would need an unconfirmed
-  write format), that whole group is skipped and the plan says why. The
-  group is written in the vendor site's order (macros, base keymap, Fn
+  triggers (one key per packet), dead band, SOCD, keymaps, macros, advanced
+  keys, custom colour table 1 and the main light. Tables without a
+  confirmed write command (side light, custom colour table 2, switch types,
+  polling rate, Win-Lock / 6-key) are compared and listed as "not written".
+  Restore never adds defaults that are not in the backup (the vendor site
+  writes its own knob defaults into the keymap; OpenWraith does not). If the
+  keymaps, macros or advanced keys cannot be restored as a whole (for
+  example because an advanced key is not a DKS, Mod-Tap or Toggle in the
+  vendor site's form), that whole group is skipped and the plan says why.
+  The group is written in the vendor site's order (macros, base keymap, Fn
   keymap, advanced keys). The keyboard keeps a changed base keymap only when
   the Fn keymap is written after it (found on real hardware, docs/PROTOCOL.md
   4.8.2), so the Fn keymap is then written right after it, unchanged if
@@ -191,9 +208,9 @@ alike.
   Change column ("unchanged, re-sent: the keyboard keeps the base keymap only
   when the Fn keymap is written after it"); the report lists it as "Fn keymap
   (18 02) re-sent unchanged to make the keyboard save the base keymap", and
-  every one of its packets must be acknowledged. As a precaution (an untested
-  guess), a restore that writes only macro or advanced-key slots ends with
-  the unchanged Fn keymap as well.
+  every one of its packets must be acknowledged. A restore or an edit that
+  writes only macro or advanced-key slots sends the unchanged Fn keymap
+  between them, as the vendor site does.
 - **The keyboard saves a change about 1 second after it is written.** Until
   then it keeps it only in memory: a profile switch (or unplugging the cable)
   in that second loses it, and reading it back cannot tell (found on real
@@ -203,8 +220,11 @@ alike.
   ..."). A restore then proves it: it switches away from every profile it
   wrote and back, reads the written tables again and reports them as
   "persisted"; a write the keyboard did not keep is reported as LOST and the
-  restore fails (run it again, or undo it). `set trigger` / `set light` only
-  wait, so that the lighting does not change for a small edit.
+  restore fails (run it again, or undo it). `set` does the same only for
+  tables whose keeping is not proven on hardware yet (macro slots, SOCD,
+  advanced-key slots written without the Fn keymap before them; change it
+  with `--check-persistence auto|always|never`); for the others it only
+  waits, so that the lighting does not change for a small edit.
 - **Do not switch profiles on the keyboard while OpenWraith runs.** It checks
   the active profile before every table and stops if it changed. Also do not
   switch profiles or unplug the keyboard while a command is still waiting for
@@ -213,18 +233,37 @@ alike.
   "MAY BE LOST" with exit code 1, never as done. Check the values, then run
   the command again or undo it. Ctrl+C during that wait stops a restore
   before it selects the next profile.
-- **Shared tables are checked at the end.** For custom colour table 1, the
-  dead band, the Fn keymap and the advanced keys it is not known yet whether
-  each profile has its own copy. When a restore writes one of them and covers
-  several profiles, it reads every profile again at the end and fails if a
-  table no longer holds the backup's values (the "final check"). A restore
-  limited to some profiles warns that such a write may change the others.
+- **Shared tables are checked at the end.** For the dead band and SOCD it is
+  not known yet whether each profile has its own copy (the other tables
+  OpenWraith writes were seen per profile). When a restore writes one of
+  them and covers several profiles, it reads every profile again at the end
+  and fails if a table no longer holds the backup's values (the "final
+  check"). A restore limited to some profiles, and `set deadband` / `set
+  socd`, warn that such a write may change the other profiles.
+- **Key assignments are guarded.** The knob's entries and the Fn key are
+  never changed; an Fn-layer entry that would hide one of the keyboard's
+  built-in Fn functions (`openwraith show keymap` lists them) needs
+  `--allow-builtin KEY`, and one that would hide a profile switch (Fn +
+  1..4) or the reset (Fn + Space) needs `--allow-critical-builtin KEY`.
+  Only the entry kinds the vendor site writes can be set; any other entry
+  the keyboard holds is kept as read. A key never refers to an empty macro
+  or advanced-key slot, and one slot belongs to one key.
+- **The live key-depth view is always closed.** `openwraith travel` closes
+  the keyboard's travel test at the end, on Ctrl+C (which only asks to stop;
+  the third Ctrl+C exits at once), on a profile switch, on another program
+  and on errors. If the keyboard still streams key depths from a test left
+  open (after a crash), commands that write refuse until `openwraith travel
+  --close`.
 - Press **Ctrl+C** to stop: OpenWraith finishes the current table, switches
   back to the original profile and reports what was written. Inside the
   keymap group (macros, keymaps, advanced keys) it skips the group's other
   tables but still writes the Fn keymap, without which the keyboard would
-  not keep what was already written, and stops after it. A second Ctrl+C
-  stops immediately. The final check of a restore is not interrupted.
+  not keep what was already written, and any macro or advanced-key slot
+  that an already written key refers to (or a keymap that moves a key away
+  from a slot already rewritten), then stops. When those were the last
+  planned writes, everything planned was written: the report says
+  "Ctrl+C received" and the exit code stays 0. A second Ctrl+C stops
+  immediately. The final check of a restore is not interrupted.
 
 ## Build (Windows)
 
@@ -283,15 +322,19 @@ openwraith backup                       # active profile -> openwraith-W75HEARGB
 openwraith backup -o my-w75.owbackup.json
 openwraith show triggers                # actuation / Rapid Trigger / dead band per key
 openwraith show light                   # light effect and per-key colour tables
-openwraith show keymap                  # remapped keys on the base and Fn layers
-openwraith show macros                  # the ten macro slots
+openwraith show keymap                  # remapped keys on both layers, built-in Fn functions
+openwraith show macros                  # the ten macro slots, as steps, with their keys
+openwraith show advanced                # DKS / Mod-Tap / Toggle slots and their keys
+openwraith show socd                    # SOCD power and key pairs
 openwraith show all --from my-w75.owbackup.json   # read a backup instead of the keyboard
 openwraith show triggers --json         # machine-readable output
 openwraith restore my-w75.owbackup.json --dry-run # compare a backup with the keyboard
+openwraith monitor --duration 30s       # what the keyboard sends on its own (sends nothing)
 ```
 
-Writing. `set` and `restore` save a safety backup, show the plan and ask
-before they change a setting (unless `--yes`); `profile select` and
+Writing. `set`, `restore` and `profile import` save a safety backup, show
+the plan and ask before they change a setting (unless `--yes`; with
+`--dry-run` they only read and show the plan); `profile select` and
 `backup --all-profiles` only switch profiles and do not ask:
 
 ```text
@@ -301,16 +344,83 @@ openwraith set trigger W --actuation 1.20                # actuation point
 openwraith set trigger W A S D --rapid-trigger 0.30      # Rapid Trigger, same press / release
 openwraith set trigger W --rapid-trigger 0.30/0.50       # separate press / release
 openwraith set trigger "Caps Lock" --no-rapid-trigger
+openwraith set trigger --all --preset fast               # presets: typing, balanced, fast, competitive, factory
 openwraith set light --mode static --color 0000ff --brightness 4
 openwraith restore all.owbackup.json                     # every profile in the backup
 openwraith restore all.owbackup.json --profile 2         # only profile 2
 ```
 
+Key assignments, macros and advanced keys (the keymap group; written in
+the vendor site's order, with the Fn keymap after the base keymap):
+
+```text
+openwraith set key Caps=L-Ctrl L-Ctrl=Caps               # swap two keys (base layer)
+openwraith set key F12=media:mute "Right"=mouse:wheel-down
+openwraith set key --layer fn Q=combo:L-Ctrl+C           # Fn + Q copies
+openwraith set key --layer fn F1=media:play-pause --allow-builtin F1
+openwraith set key Caps=default                          # back to the keyboard's default
+openwraith set macro Caps --steps "A+ 100, A- 100, B+ 100, B-"
+openwraith set macro Caps --steps "L-Ctrl+, C+, C-, L-Ctrl-" --play times:2
+openwraith set macro Caps --unbind                       # key back to default, slot cleared
+openwraith set advanced E dks --point 1.5 --row E:t... --row R:.t..
+openwraith set advanced G mod-tap --hold L-Ctrl --time 300ms
+openwraith set advanced H toggle
+openwraith set advanced H --unbind
+```
+
+Colours, dead band, SOCD:
+
+```text
+openwraith set colors W=ff0000 A=ff0000 S=ff0000 D=ff0000 --custom-mode
+openwraith set colors --all 00ffff Esc=ff0000
+openwraith set deadband W A S D --top 0.10 --bottom 0.20
+openwraith set socd --on --pair A/D --pair Left/Right:2
+openwraith set socd --remove-pair A/D
+openwraith set socd --off
+```
+
+Live key depth, and sharing a profile:
+
+```text
+openwraith travel --duration 60s                 # bars per key; Ctrl+C stops (the test is always closed)
+openwraith travel --keys W,A,S,D --json          # one JSON object per depth report
+openwraith travel --close                        # close a test a crashed run left open
+openwraith profile export 1 -o fps.owprofile.json --label FPS   # no USB serial in the file
+openwraith profile import fps.owprofile.json --into 3           # triggers and lighting
+openwraith profile import fps.owprofile.json --into 3 --include triggers,lighting,keys
+```
+
 Keys are given as `openwraith show triggers` prints them (case-insensitive:
-`W`, `"Caps Lock"`, `L-Shift`), as an index (`#46`) or a position (`r2c2`).
-Distances are millimetres in steps of 0.02 mm. Light modes are the ones the
-keyboard lists (`static`, `breath`, `wave`, ...) and `custom` (the per-key
-colour table).
+`W`, `"Caps Lock"`, `L-Shift`; short forms such as `caps`, `equal`,
+`slash`), as an index (`#46`) or a position (`r2c2`). Distances are
+millimetres in steps of 0.02 mm (a DKS press point in steps of 0.1 mm).
+Light modes are the ones the keyboard lists (`static`, `breath`, `wave`,
+...) and `custom` (the per-key colour table).
+
+`set key` actions: `default`, a key name (`A`, `L-Ctrl`, `F13`, `"KP 1"`),
+`usage:0xNN`, `media:NAME` (`mute`, `volume-up`, `volume-down`,
+`play-pause`, `next`, `previous`, `stop`, `calculator`, ...; `0x24` and
+`0x25`: browser back and forward in some order, which is which is not
+verified, Q14),
+`mouse:left|right|middle|0x08|0x10|wheel-up|wheel-down`,
+`combo:MOD[+MOD]+KEY`, `macro:N` and `advanced:N` (bind an existing slot). Several `KEY=ACTION` pairs are written
+together. Macro steps: `KEY+` presses, `KEY-` releases, then the delay
+after the step in ms (the last step has none); at most 40 steps, every
+pressed key released; `--play once|times:N|toggle|while-held`. DKS rows:
+`KEY:STAGES`, four characters for press, bottom-out, lift and release:
+`.` nothing, `t` tap, `h` hold to the next stage, `r` release and press
+again. SOCD modes (what happens while both keys are held): 1 the last input
+wins (default), 2 key 1 wins, 3 key 2 wins, 4 the later key only
+interrupts the first. Values the plan marks "not yet verified on a W75"
+are the vendor site's bytes whose effect OpenWraith has not tested yet.
+
+`set` options: `--dry-run` (plan only, read-only), `--packets` (the hex of
+every packet), `--json`, `--yes`; for the v0.2 editors also
+`--check-persistence auto|always|never` (switch to another profile and back
+after writing to check that the keyboard kept it; `auto`, the default, only
+for tables not proven on hardware yet) and, for `set macro` / `set
+advanced`, `--layer base|fn`, `--slot N` and `--commit-trigger skip` (a
+hardware test: slots without the Fn keymap after them; always checked).
 
 `restore` options: `--dry-run` only compares (it reads the active profile and
 never writes; add `--against FILE` to compare with another backup instead of
@@ -320,13 +430,27 @@ as JSON (when it asks, the plan is shown on stderr before the question),
 `--allow-firmware-mismatch` is needed when the keyboard runs other firmware
 than the backup was made with.
 
+`profile import` takes the same options (except `--against`) and
+`--into N` (the keyboard's profile to write), `--profile N` (the file's
+profile, for an all-profile backup), `--include
+triggers,lighting,keys,deadband,socd` (default: triggers and lighting) and
+`--allow-critical-fn-overrides` (an imported Fn layer may then replace Fn +
+1..4 or Fn + Space). Its `--dry-run` reads only the active profile: to see
+the plan of an import into another profile, select that profile first
+(`openwraith profile select N`), or run it without `--dry-run` (the plan is
+shown before the question). `profile export N -o FILE` reads profile N (a profile
+that is not active after a question, by switching to it and back), or takes
+it from a backup with `--from FILE`; `--label TEXT` is stored in the file.
+
 Global options: `--device <PATH>` picks a keyboard when several are connected
 (paths come from `openwraith list`), `--verbose` prints session statistics,
 `--safety-dir DIR` chooses where safety backups go. `backup` refuses to
 overwrite an existing file unless `--force` is given. Exit codes: 0 when
 everything planned was written and verified (or there was nothing to do), 1
-on a failure or when the change was not confirmed (the output says whether
-anything was written), 2 for a usage error.
+on a failure, when the change was not confirmed (the output says whether
+anything was written) or when `profile import` left out a category chosen
+with `--include` (for example the keys, blocked by a critical Fn override:
+the plan names the option that allows it), 2 for a usage error.
 
 **How sure are the values?** Decoded fields follow the confidence labels of
 [docs/PROTOCOL.md](docs/PROTOCOL.md). In the text output, a `*` marks values
@@ -409,12 +533,17 @@ There are two kinds:
   active; `profiles` holds the others. `show` and `info` show the active one;
   add `--profile N` for another (`openwraith show triggers --from all.owbackup.json
   --profile 2`). Older OpenWraith versions refuse these files.
+- **Profile exports** (`openwraith profile export`, e.g. `*.owprofile.json`):
+  schema 1 with the scope `profile_export`: one profile, without the USB
+  serial number, to share; `openwraith profile import` writes it into any
+  profile. Files above 8 MiB are refused.
 
-Triggers, the main light, the base keymap and the macros are per profile
-(seen in the captures); for the other tables the scope is not known yet, so
-restore re-reads such a table before writing it, skips it when it already
-matches, and checks every profile again at the end (PROTOCOL.md open question
-Q3).
+Triggers, the main light, both keymap layers, the macros, the advanced keys
+and custom colour table 1 are per profile (seen in the captures); for the
+dead band, SOCD and the tables OpenWraith does not write the scope is not
+known yet, so restore re-reads such a table before writing it, skips it when
+it already matches, and checks every profile again at the end (PROTOCOL.md
+open question Q3).
 
 ### Trying it without a keyboard
 
@@ -432,7 +561,7 @@ cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against 
 
 | Path | What |
 |---|---|
-| `crates/openwraith-protocol` | Pure protocol library: framing, read requests, the nine confirmed write forms, response matching, decoders, W75 key table. No I/O. |
+| `crates/openwraith-protocol` | Pure protocol library: framing, read requests, the confirmed write forms (W1-W11 and the travel test), response matching, decoders, W75 key table. No I/O. |
 | `crates/openwraith-hid` | Transports (read-only and writable), session, device summary, backups (one or all profiles), the guarded writer, restore, edits, safety backups, the capture-replay mock and the device simulator. |
 | `crates/openwraith-cli` | The `openwraith` command. |
 | `crates/openwraith-app-core` | The desktop app without Tauri: the device worker (one thread owns the keyboard), the operations behind the confirmation dialogs, the IPC types (TypeScript generated from them) and the simulator backend. |
@@ -440,7 +569,7 @@ cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against 
 | `app/src` | The desktop app's frontend (React, TypeScript); `ipc/bindings` and `preview/fixtures` are generated by `cargo test -p openwraith-app-core` (`UPDATE_BINDINGS=1`, `UPDATE_FIXTURES=1`). |
 | `docs/PROTOCOL.md` | The protocol specification, with a confidence label on every fact. |
 | `docs/ARCHITECTURE.md` | Crate layout, how read-only paths and writes are guarded, data flow, backup format, adding a model. |
-| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's writes, A1-A10 for the desktop app, and the results log. |
+| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's Phase 2 writes, H12-H25 for its v0.2 editors, A1-A10 for the desktop app, and the results log. |
 | `captures/` | Real USB traffic of the maintainer's W75, used by the tests. |
 
 ```text
@@ -532,7 +661,11 @@ taraf analitik betiği gerekmez. Bu depoda bir Rust kütüphanesi, `openwraith`
 komut satırı aracı ve **OpenWraith masaüstü uygulaması** (Tauri 2, önce
 Windows) var. Bunlar klavyenin ayarlarını gösterir, tek profilin ya da dört
 onboard profilin hepsinin kayıpsız yedeğini alır, yedeği geri yükler,
-aktivasyon noktasını, Rapid Trigger ayarını ve ana ışığı değiştirir.
+aktivasyon noktasını, Rapid Trigger ayarını ve ana ışığı değiştirir. Komut
+satırı aracı ayrıca tuş atamalarını (ana ve Fn katmanı), makroları,
+gelişmiş tuşları (DKS, Mod-Tap, Toggle), tuş başına renkleri, ölü bölgeyi
+(dead band) ve SOCD'yi düzenler, bir profili dosya olarak paylaşır ve
+tuşların ne kadar basıldığını canlı gösterir.
 
 > **Uyarı.** OpenWraith bağımsız bir projedir; Wraith veya üretici ile **hiçbir
 > bağlantısı yoktur, onlar tarafından onaylanmamış veya desteklenmemektedir.**
@@ -545,16 +678,23 @@ aktivasyon noktasını, Rapid Trigger ayarını ve ana ışığı değiştirir.
 yedekleme ve geri yükleme, aktivasyon ve Rapid Trigger, ana ışık ayarlarını
 kapsar; arayüz Türkçe ve İngilizcedir. Komut satırı aracının salt okunur
 komutları: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
-`backup` (aktif profil), `show` (tablo veya `--json`) ve
+`backup` (aktif profil), `show` (tablo veya `--json`), `monitor` ve
 `restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
 (yalnızca profil geçişi yapar), `profile select N`, `set trigger`, `set light`
 ve `restore`. Salt okunur ve yazan komutlar bakımcının klavyesinde
 (firmware V3.22.07, USB `2e3c:c368`) denendi; sonuçlar
 [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md) dosyasındaki kayıtta.
-**Masaüstü uygulaması şimdiye kadar yalnızca cihaz simülatörüne karşı
-çalıştırıldı; donanım denetimleri (aynı dosyada A1-A10) henüz yapılmadı.**
-Tuş ataması ve makro düzenleme, tuş başına renkler, SOCD, switch tipi, yan
-ışık, polling rate ve Win-Lock yazmaları sonraki aşamalarda gelecek.
+v0.2 ile gelen yazan komutlar (`set key`, `set macro`, `set advanced`,
+`set colors`, `set deadband`, `set socd`, tetikleme hazır ayarları,
+`travel`, `profile export` ve `profile import`) sitenin gönderip klavyenin
+kabul ettiği komut biçimlerini, sitenin kodunun kurduğu gibi kullanır;
+kayıt oturumları 2-3'te görülen durumlar bayt bayt aynıdır (testler
+karşılaştırır), kabloda hiç görülmemiş değerler ise planda "not yet verified
+on a W75" diye işaretlenir. Bu komutlar
+**şimdiye kadar yalnızca cihaz simülatörüne karşı çalıştırıldı; donanım
+denetimleri (aynı dosyada H12-H25) henüz yapılmadı.** Masaüstü uygulamasının
+donanım denetimleri (A1-A10) 2026-10-27'de yapıldı. Switch tipi, yan ışık,
+polling rate ve Win-Lock yazmaları için doğrulanmış bir komut henüz yok.
 
 ### Masaüstü uygulaması
 
@@ -660,14 +800,20 @@ Bu kurallar kütüphanenindir; komut satırı aracı ve masaüstü uygulaması
 ikisi de bunlara uyar.
 
 - **Salt okunur komutlar salt okunur kalır.** `list`, `info`, `show`,
-  `profile` (`select` olmadan), `restore --dry-run` ve `backup`
-  (`--all-profiles` olmadan), klavyeyi yazma gönderemeyen bir aktarım tipiyle
-  açar; bunu derleyici denetler.
-- **Yazan komutlar:** `profile select`, `set`, `restore` ve
-  `backup --all-profiles` (yalnızca profil geçişi). Bu komutlar yalnızca
-  gerçek donanımda doğrulanmış dokuz yazma komutunu gönderebilir. Sıfırlama,
-  kalibrasyon, tuş yolu testi, SOCD, switch tipi, yan ışık, polling rate ve
-  Win-Lock yazmaları kodda oluşturulamaz bile.
+  `monitor`, `profile` (`select` olmadan), `restore --dry-run`, `profile
+  import --dry-run`, her `set ... --dry-run`, `backup` (`--all-profiles`
+  olmadan) ve etkin profilin `profile export`'u, klavyeyi yazma
+  gönderemeyen bir aktarım tipiyle açar; bunu derleyici denetler.
+- **Yazan komutlar:** `profile select`, `set`, `restore`, `profile import`,
+  `backup --all-profiles` ve etkin olmayan bir profilin `profile export`'u
+  (yalnızca profil geçişi) ve `travel` (yalnızca tuş yolu testinin açılması
+  ve kapanması). Bu komutlar yalnızca sitenin gönderip klavyenin kabul
+  ettiği, kayıtlarda görülen yazma komutlarını, kayıttaki komut biçimiyle
+  gönderebilir (kayıtlarda görülmemiş tablo içerikleri planda "not yet
+  verified on a W75" diye işaretlenir); her paket gönderilmeden hemen önce
+  bir izin listesinden de geçer. Sıfırlama, kalibrasyon, switch tipi, yan ışık, 2 numaralı renk
+  tablosu, polling rate, gamepad ve Win-Lock yazmaları kodda oluşturulamaz
+  bile.
 - **Önce güvenlik yedeği.** OpenWraith bir ayarı değiştirmeden önce (`set`,
   `restore`) klavyeyi okur, bir güvenlik yedeği kaydeder, kaydedilen dosyayı
   geri okuyup denetler; ancak ondan sonra neyin değişeceğini gösterir ve
@@ -701,15 +847,15 @@ ikisi de bunlara uyar.
   hemen durur ve bir daha hiçbir şey göndermez, eski profile geri geçmeyi
   bile denemez.
 - **Geri yükleme ne yazar?** Yedekteki baytların aynısını, tablo tablo:
-  tetikleme ayarları (her pakette tek tuş), dead band, tuş atamaları,
-  makrolar, boşaltılan gelişmiş tuşlar, 1 numaralı özel renk tablosu ve ana
-  ışık. Doğrulanmış yazma komutu olmayan tablolar (yan ışık, 2 numaralı renk
-  tablosu, SOCD, switch tipleri, polling rate, Win-Lock / 6 tuş) yalnızca
+  tetikleme ayarları (her pakette tek tuş), dead band, SOCD, tuş atamaları,
+  makrolar, gelişmiş tuşlar, 1 numaralı özel renk tablosu ve ana ışık.
+  Doğrulanmış yazma komutu olmayan tablolar (yan ışık, 2 numaralı renk
+  tablosu, switch tipleri, polling rate, Win-Lock / 6 tuş) yalnızca
   karşılaştırılır ve "not written" (yazılmadı) olarak listelenir. Geri yükleme
   yedekte olmayan varsayılanları asla eklemez (site tuş tablosuna kendi düğme
   varsayılanlarını yazar; OpenWraith yazmaz). Tuş atamaları, makrolar ve
-  gelişmiş tuşlar bir bütün olarak geri yüklenemiyorsa (örneğin boş olmayan
-  bir gelişmiş tuş, doğrulanmamış bir yazma biçimi gerektirdiği için) bu grup
+  gelişmiş tuşlar bir bütün olarak geri yüklenemiyorsa (örneğin bir gelişmiş
+  tuş sitenin biçiminde bir DKS, Mod-Tap ya da Toggle değilse) bu grup
   tümüyle atlanır ve plan nedenini söyler. Grup, sitenin sırasıyla yazılır
   (makrolar, ana tuş tablosu, Fn tuş tablosu, gelişmiş tuşlar). Klavye
   değişen ana tuş tablosunu yalnızca ardından Fn tuş tablosu yazılırsa tutar
@@ -718,9 +864,9 @@ ikisi de bunlara uyar.
   "Fn keymap (18 02)" olarak, nedenini Change sütununda gösterir
   ("unchanged, re-sent: ..."); rapor "Fn keymap (18 02) re-sent unchanged to
   make the keyboard save the base keymap" olarak listeler ve paketlerinin her
-  birinin onaylanmasını şart koşar. Önlem olarak (denenmemiş bir tahmin),
-  yalnızca makro ya da gelişmiş tuş yazan bir geri yükleme de değişmemiş Fn
-  tuş tablosuyla biter.
+  birinin onaylanmasını şart koşar. Yalnızca makro ya da gelişmiş tuş yazan
+  bir geri yükleme ya da düzenleme, site gibi, değişmemiş Fn tuş tablosunu
+  bunların arasına yazar.
 - **Klavye bir değişikliği yazıldıktan yaklaşık 1 saniye sonra kaydeder.**
   O ana kadar değişiklik yalnızca bellektedir: bu bir saniye içinde profil
   değiştirmek (ya da kabloyu çıkarmak) değişikliği kaybettirir ve geri okuma
@@ -731,8 +877,11 @@ ikisi de bunlara uyar.
   yazdığı her profilden başka bir profile geçip geri döner, yazılan tabloları
   yeniden okur ve "persisted" (kalıcı) olarak bildirir; klavyenin tutmadığı
   bir yazma LOST (kayboldu) olarak bildirilir ve geri yükleme başarısız olur
-  (yeniden çalıştırın ya da geri alın). `set trigger` / `set light` yalnızca
-  bekler; küçük bir değişiklik için ışıklar değişmesin diye profil
+  (yeniden çalıştırın ya da geri alın). `set` bunu yalnızca saklandığı
+  donanımda henüz kanıtlanmamış tablolar için yapar (makro yuvaları, SOCD,
+  Fn tuş tablosundan önce yazılmayan gelişmiş tuş yuvaları;
+  `--check-persistence auto|always|never` ile değiştirilir); diğerleri için
+  yalnızca bekler, küçük bir değişiklik için ışıklar değişmesin diye profil
   değiştirmez.
 - OpenWraith çalışırken klavyeden profil değiştirmeyin; her tablodan önce
   aktif profili denetler ve değiştiyse durur. Bir komut klavyenin kaydetmesini
@@ -742,19 +891,37 @@ ikisi de bunlara uyar.
   kodu 1 ile bildirilir, asla tamamlandı denmez. Değerleri denetleyin, sonra
   komutu yeniden çalıştırın ya da geri alın. Bu bekleme sırasında Ctrl+C,
   geri yüklemeyi bir sonraki profil seçilmeden önce durdurur.
-- **Paylaşılan tablolar sonda denetlenir.** 1 numaralı özel renk tablosu,
-  dead band, Fn tuş tablosu ve gelişmiş tuşlar için her profilin kendi kopyası
-  olup olmadığı henüz bilinmiyor. Geri yükleme bunlardan birini yazar ve
-  birden fazla profili kapsarsa, sonunda bütün profilleri yeniden okur ve bir
-  tablo artık yedekteki değerleri taşımıyorsa hata verir ("final check").
-  Yalnızca bazı profillerle sınırlı bir geri yükleme, böyle bir yazmanın diğer
+- **Paylaşılan tablolar sonda denetlenir.** Dead band ve SOCD için her
+  profilin kendi kopyası olup olmadığı henüz bilinmiyor (OpenWraith'in
+  yazdığı diğer tabloların profile özel olduğu görüldü). Geri yükleme
+  bunlardan birini yazar ve birden fazla profili kapsarsa, sonunda bütün
+  profilleri yeniden okur ve bir tablo artık yedekteki değerleri taşımıyorsa
+  hata verir ("final check"). Yalnızca bazı profillerle sınırlı bir geri
+  yükleme ile `set deadband` / `set socd`, böyle bir yazmanın diğer
   profilleri de değiştirebileceği konusunda uyarır.
+- **Tuş atamaları korunur.** Döner düğmenin girdileri ve Fn tuşu asla
+  değiştirilmez; klavyenin yerleşik bir Fn işlevini (`openwraith show
+  keymap` listeler) gizleyecek bir Fn katmanı girdisi `--allow-builtin TUŞ`,
+  profil geçişini (Fn + 1..4) ya da sıfırlamayı (Fn + Boşluk) gizleyecek
+  olanı `--allow-critical-builtin TUŞ` ister. Yalnızca sitenin yazdığı girdi
+  türleri ayarlanabilir; klavyedeki başka her girdi okunduğu gibi korunur.
+  Bir tuş asla boş bir makro ya da gelişmiş tuş yuvasını göstermez ve bir
+  yuva tek bir tuşa aittir.
+- **Canlı tuş yolu görünümü her zaman kapatılır.** `openwraith travel`
+  klavyenin tuş yolu testini sonunda, Ctrl+C'de (yalnızca durmayı ister;
+  üçüncü Ctrl+C hemen çıkar), profil değişikliğinde, başka bir programda ve
+  hatalarda kapatır. Klavye açık kalmış bir testten (bir çökmeden sonra)
+  tuş derinliği göndermeyi sürdürürse yazan komutlar `openwraith travel
+  --close` çalıştırılana kadar reddeder.
 - **Ctrl+C** ile durdurabilirsiniz: OpenWraith o anki tabloyu bitirir, eski
   profile geri geçer ve neyin yazıldığını bildirir. Tuş grubunun (makrolar,
   tuş tabloları, gelişmiş tuşlar) içindeyse grubun diğer tablolarını atlar,
-  ama Fn tuş tablosunu yine de yazar (o olmadan klavye yazılmış olanları
-  tutmaz) ve ondan sonra durur. İkinci Ctrl+C hemen durdurur. Geri
-  yüklemenin son denetimi yarıda kesilmez.
+  ama Fn tuş tablosunu (o olmadan klavye yazılmış olanları tutmaz) ve zaten
+  yazılmış bir tuşun başvurduğu makro ya da gelişmiş tuş yuvasını (veya bir
+  tuşu yeniden yazılmış bir yuvadan ayıran tuş tablosunu) yine de yazar,
+  sonra durur. Bunlar planın son yazmalarıysa planlanan her şey yazılmıştır:
+  rapor "Ctrl+C received" der ve çıkış kodu 0 kalır. İkinci Ctrl+C hemen
+  durdurur. Geri yüklemenin son denetimi yarıda kesilmez.
 - Metin çıktısında `*` ile işaretlenen değerlerin anlamı üreticinin sitesinin
   kodundan alınmıştır ve henüz USB trafiğinde doğrulanmamıştır; JSON
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.
@@ -790,15 +957,75 @@ openwraith restore tum.owbackup.json --profile 2    # yalnızca 2. profil
 openwraith profile select 2
 openwraith set trigger W --actuation 1.20
 openwraith set trigger W --rapid-trigger 0.30/0.50
+openwraith set trigger --all --preset fast          # hazır ayarlar: typing, balanced, fast, competitive, factory
 openwraith set light --mode static --color 0000ff
+openwraith show keymap                              # iki katman ve yerleşik Fn işlevleri
+openwraith show macros                              # makrolar adım olarak, bağlı tuşlarıyla
+openwraith show advanced                            # DKS / Mod-Tap / Toggle yuvaları
+openwraith show socd
+openwraith monitor --duration 30s                   # klavyenin kendiliğinden gönderdikleri (hiçbir şey göndermez)
+openwraith set key Caps=L-Ctrl L-Ctrl=Caps          # iki tuşu değiştir (ana katman)
+openwraith set key --layer fn Q=combo:L-Ctrl+C      # Fn + Q kopyalar
+openwraith set key --layer fn F1=media:mute --allow-builtin F1
+openwraith set macro Caps --steps "A+ 100, A- 100, B+ 100, B-"
+openwraith set macro Caps --unbind
+openwraith set advanced E dks --point 1.5 --row E:t... --row R:.t..
+openwraith set advanced G mod-tap --hold L-Ctrl --time 300ms
+openwraith set advanced H toggle
+openwraith set colors W=ff0000 A=ff0000 --custom-mode
+openwraith set deadband W A S D --top 0.10 --bottom 0.20
+openwraith set socd --on --pair A/D
+openwraith set key Caps=L-Ctrl --dry-run --packets  # yalnızca plan ve paketler, yazmaz
+openwraith travel --duration 60s                    # canlı tuş derinliği; Ctrl+C durdurur, test hep kapatılır
+openwraith travel --close                           # çökmeden açık kalan testi kapatır
+openwraith profile export 1 -o fps.owprofile.json   # USB seri numarası dosyaya girmez
+openwraith profile import fps.owprofile.json --into 3 --include triggers,lighting,keys
 ```
 
 Tuşlar `openwraith show triggers` çıktısındaki adlarıyla (büyük/küçük harf
-fark etmez: `W`, `"Caps Lock"`, `L-Shift`), indeksle (`#46`) ya da konumla
-(`r2c2`) verilir. Mesafeler milimetredir ve 0,02 mm'nin katı olmalıdır.
+fark etmez: `W`, `"Caps Lock"`, `L-Shift`; `caps`, `equal`, `slash` gibi
+kısa adlar da olur), indeksle (`#46`) ya da konumla (`r2c2`) verilir.
+Mesafeler milimetredir ve 0,02 mm'nin katı olmalıdır (DKS basma noktası
+0,1 mm'nin katı). Komut satırına ondalık sayılar noktayla yazılır (`1.20`).
+
+`set key` eylemleri: `default`, bir tuş adı (`A`, `L-Ctrl`, `F13`,
+`"KP 1"`), `usage:0xNN`, `media:AD` (`mute`, `volume-up`, `volume-down`,
+`play-pause`, `next`, `previous`, `stop`, `calculator`, ...; `0x24` ve
+`0x25`: tarayıcıda geri ve ileri, hangisinin hangisi olduğu doğrulanmadı,
+Q14),
+`mouse:left|right|middle|0x08|0x10|wheel-up|wheel-down`,
+`combo:DEĞİŞTİRİCİ[+DEĞİŞTİRİCİ]+TUŞ`, `macro:N` ve `advanced:N` (var olan
+bir yuvayı bağlar). Birden çok `TUŞ=EYLEM` birlikte yazılır. Makro
+adımları: `TUŞ+` basar, `TUŞ-` bırakır, ardından adımdan sonraki bekleme
+ms cinsinden gelir (son adımda bekleme olmaz); en çok 40 adım, basılan her
+tuş bırakılmalı; `--play once|times:N|toggle|while-held`. DKS satırları
+`TUŞ:AŞAMALAR` biçimindedir; dört karakter sırayla basma, dibe vurma,
+dipten kalkma ve bırakma içindir: `.` hiçbir şey, `t` dokunma, `h` sonraki
+aşamaya kadar basılı tut, `r` bırakıp yeniden bas. SOCD kipleri (iki tuş
+birden basılıyken): 1 son basılan kazanır (varsayılan), 2 birinci tuş
+kazanır, 3 ikinci tuş kazanır, 4 sonraki tuş yalnızca ilkini keser. Planda
+"not yet verified on a W75" diye işaretlenen değerler, sitenin de
+gönderdiği ama OpenWraith'in etkisini henüz denemediği baytlardır.
+
+`set` seçenekleri: `--dry-run` (yalnızca plan, salt okunur), `--packets`
+(her paketin hex'i), `--json`, `--yes`; v0.2 düzenleyicilerinde ayrıca
+`--check-persistence auto|always|never` (yazdıktan sonra başka bir profile
+geçip geri dönerek klavyenin sakladığını denetler; varsayılan `auto`
+yalnızca donanımda henüz kanıtlanmamış tabloları denetler) ve `set macro` /
+`set advanced` için `--layer base|fn`, `--slot N` ile `--commit-trigger
+skip` (bir donanım testi: ardından Fn tuş tablosu yazılmayan yuvalar; her
+zaman denetlenir). `profile import` için `--into N`, `--profile N`
+(dosyanın profili), `--include` (varsayılan: triggers,lighting) ve
+`--allow-critical-fn-overrides`. `profile import --dry-run` yalnızca etkin
+profili okur: başka bir profile içe aktarmanın planını görmek için önce o
+profili seçin (`openwraith profile select N`) ya da `--dry-run` olmadan
+çalıştırın (plan sorudan önce gösterilir).
 Çıkış kodları: her şey yazılıp doğrulandıysa (ya da yapılacak bir şey yoksa)
-0, bir hata olduysa ya da değişiklik onaylanmadıysa 1 (çıktı bir şey yazılıp
-yazılmadığını söyler), hatalı kullanımda 2.
+0, bir hata olduysa, değişiklik onaylanmadıysa (çıktı bir şey yazılıp
+yazılmadığını söyler) ya da `profile import` `--include` ile seçilen bir
+kategoriyi dışarıda bıraktıysa (örneğin kritik bir Fn kısayolu yüzünden
+engellenen tuşlar; plan buna izin veren seçeneği söyler) 1, hatalı kullanımda
+2.
 
 **Firmware güncellemesinden sonra:** Güncellemeden önce siteyi kapatıp
 `openwraith backup --all-profiles -o guncelleme-oncesi.owbackup.json`
@@ -818,10 +1045,14 @@ görünümler, cihaz bilgisi ve aktif profil ham veriden yeniden üretilir.
 okuyabilir). `openwraith backup --all-profiles` şema 2 dosyası yazar: dört
 profilin her biri eksiksiz okunur; `show` ve `info` aktif olanı gösterir,
 başka bir profil için `--profile N` ekleyin. Eski OpenWraith sürümleri şema 2
-dosyalarını reddeder. Tetikleme ayarları, ana ışık, temel tuş tablosu ve
-makrolar profile özeldir (kayıtlarda görüldü); diğer tabloların kapsamı henüz
-bilinmiyor, bu yüzden geri yükleme böyle bir tabloyu yazmadan önce yeniden
-okur ve zaten eşleşiyorsa atlar.
+dosyalarını reddeder. `openwraith profile export` bir profili paylaşmak için
+`profile_export` kapsamlı bir şema 1 dosyasına yazar (USB seri numarası
+olmadan); `openwraith profile import` onu herhangi bir profile yazar. 8
+MiB'den büyük dosyalar reddedilir. Tetikleme ayarları, ana ışık, iki tuş
+tablosu, makrolar, gelişmiş tuşlar ve 1 numaralı özel renk tablosu profile
+özeldir (kayıtlarda görüldü); dead band, SOCD ve OpenWraith'in yazmadığı
+tabloların kapsamı henüz bilinmiyor, bu yüzden geri yükleme böyle bir
+tabloyu yazmadan önce yeniden okur ve zaten eşleşiyorsa atlar.
 
 ### Geliştirme
 

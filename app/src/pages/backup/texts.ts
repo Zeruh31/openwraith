@@ -101,8 +101,8 @@ function unitText(um: number | null, dict: Dict, format: Format): string {
 export function blockCauseText(cause: BlockCauseView, dict: Dict): string {
   const b = dict.backupRestore.blockCauses;
   switch (cause.code) {
-    case "non_empty_advanced_key":
-      return b.non_empty_advanced_key({ slot: cause.slot + 1 });
+    case "unwritable_advanced_key":
+      return b.unwritable_advanced_key({ slot: cause.slot + 1 });
     case "non_canonical_macro":
       return b.non_canonical_macro({ slot: cause.slot + 1 });
     case "malformed_reference":
@@ -111,12 +111,25 @@ export function blockCauseText(cause: BlockCauseView, dict: Dict): string {
       return b.incomplete({ table: tableName(cause.table, dict) });
     case "fn_keymap_not_writable":
       return b.fn_keymap_not_writable;
+    case "critical_fn_override":
+      return b.critical_fn_override({ index: cause.index });
+    case "unwritable_imported_entry":
+      return b.unwritable_imported_entry({ layer: dict.backupRestore.layers[cause.layer], index: cause.index });
   }
 }
 
 /** Technical detail of a block cause (English rule names), or `null`. */
 export function blockCauseTechnical(cause: BlockCauseView): string | null {
-  return cause.code === "non_canonical_macro" ? cause.rule : null;
+  switch (cause.code) {
+    case "non_canonical_macro":
+      return cause.rule;
+    case "unwritable_advanced_key":
+      return cause.reason;
+    case "unwritable_imported_entry":
+      return cause.entry;
+    default:
+      return null;
+  }
 }
 
 /** Why a differing table isn't restored. */
@@ -148,6 +161,9 @@ export function skipReasonText(reason: SkipReasonView, dict: Dict, format: Forma
     case "dead_band_unit_unknown":
     case "not_in_keyboard":
     case "unusable":
+    case "read_only_bytes":
+    case "unwritable_socd_pairs":
+    case "not_imported":
       return s[reason.code];
   }
 }
@@ -188,6 +204,31 @@ export function planWarningView(warning: PlanWarningView, dict: Dict, format: Fo
         text: w.likely_shared_table_differs({ table: tableName(warning.table, dict) }),
         tone: "warning",
         technical: null,
+      };
+    case "imported":
+      return { text: w.imported({ from: warning.from, into: warning.into }), tone: "info", technical: null };
+    case "imported_macros":
+      return {
+        text: w.imported_macros({ slots: numberList(warning.slots.map((slot) => slot + 1), format) }),
+        tone: "info",
+        technical: null,
+      };
+    case "fn_builtin_overridden":
+      return { text: w.fn_builtin_overridden({ index: warning.index }), tone: "warning", technical: null };
+    case "import_kept_as_read":
+      return {
+        text: w.import_kept_as_read({
+          layer: dict.backupRestore.layers[warning.layer],
+          keys: numberList(warning.indices, format),
+        }),
+        tone: "info",
+        technical: null,
+      };
+    case "unverified":
+      return {
+        text: w.unverified({ layer: dict.backupRestore.layers[warning.layer], index: warning.index }),
+        tone: "info",
+        technical: `${warning.what} (${warning.question})`,
       };
   }
 }

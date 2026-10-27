@@ -29,6 +29,7 @@ pub(crate) fn app_kind(kind: ErrorKind) -> AppErrorKind {
         ErrorKind::Io => AppErrorKind::Io,
         ErrorKind::UnexpectedReply => AppErrorKind::UnexpectedReply,
         ErrorKind::InvalidRequest => AppErrorKind::InvalidRequest,
+        ErrorKind::TravelTestOpen => AppErrorKind::TravelTestOpen,
     }
 }
 
@@ -62,7 +63,8 @@ impl From<&TransportError> for AppError {
             | TransportError::Write(_)
             | TransportError::Read(_)
             | TransportError::Malformed(_)
-            | TransportError::Interrupted => None,
+            | TransportError::Interrupted
+            | TransportError::Refused(_) => None,
         };
         make(error.kind(), detail, error)
     }
@@ -120,6 +122,9 @@ impl From<&BackupError> for AppError {
             | BackupError::NotABackup { .. }
             | BackupError::Cancelled
             | BackupError::InvalidSnapshot { .. } => None,
+            BackupError::TooLarge { path, .. } => Some(ErrorDetail::Io {
+                file_name: file_name(path),
+            }),
         };
         make(error.kind(), detail, error)
     }
@@ -168,7 +173,17 @@ impl From<&WriteError> for AppError {
             | WriteError::RepeatedWrite { .. }
             | WriteError::InvalidProfile { .. }
             | WriteError::Build(_)
-            | WriteError::NotBackedUp { .. } => None,
+            | WriteError::NotBackedUp { .. }
+            | WriteError::EgressRefused { .. }
+            | WriteError::TravelTestMaybeOpen
+            | WriteError::TravelTestOpen { .. }
+            | WriteError::TravelOpenNotAcked
+            | WriteError::BaseKeymapUnsaved
+            | WriteError::ConsentOnlyForSelects => None,
+            WriteError::ChangedOnKeyboard { table } => Some(ErrorDetail::VerifyFailed {
+                table: table_ref(*table),
+                sends: 1,
+            }),
         };
         make(error.kind(), detail, error)
     }

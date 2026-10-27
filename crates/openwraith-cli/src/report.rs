@@ -4,13 +4,14 @@
 use std::collections::BTreeMap;
 
 use openwraith_hid::{
-    CommitTriggerReason, EditReport, EntryChange, ItemReport, ItemResult, LightEditPlan, Outcome,
-    Persistence, PersistenceCheck, PlanAction, PlanItem, PlanWarning, PlannedWrite, RestorePlan,
-    RestoreReport, TriggerEditPlan, WriteWarning,
+    BlockCause, CommitTriggerReason, DanglingBinding, EditReport, EntryChange, ImportSelection,
+    ItemReport, ItemResult, LightEditPlan, Outcome, Persistence, PersistenceCheck,
+    PersistenceCheckMode, PlanAction, PlanItem, PlanWarning, PlannedWrite, RestorePlan,
+    RestoreReport, SkipReason, TriggerEditPlan, WriteWarning,
 };
 use openwraith_protocol::{
-    Distance, LightMode, LightRecord, Model, ProfileId, ReadRequest, Rgb, TableId, TriggerSetting,
-    TriggerWriteMode,
+    AdvancedSlotData, Distance, HidUsage, KeyAction, LightMode, LightRecord, Model, ProfileId,
+    ReadRequest, Rgb, SocdMode, TableId, TriggerSetting, TriggerWriteMode,
 };
 
 use crate::table::{Table, wrap_list};
@@ -142,6 +143,52 @@ fn macro_text(bytes: &[u8]) -> String {
     }
 }
 
+/// The contents of an advanced-key slot in words.
+fn advanced_text(bytes: &[u8]) -> String {
+    if bytes.iter().all(|b| *b == 0) {
+        return "empty".to_string();
+    }
+    match AdvancedSlotData::from_read_slot(bytes) {
+        Ok(Some(data)) => match data.def() {
+            Some(def) => def.to_string(),
+            None => format!("in use (type {})", data.type_byte()),
+        },
+        _ => format!("in use (type {})", bytes.first().copied().unwrap_or(0)),
+    }
+}
+
+/// One SOCD pair entry (`01 mode key1 key2`) in words.
+fn socd_entry_text(bytes: &[u8]) -> String {
+    let key = |u: u8| HidUsage::new(u).map_or_else(|| format!("{u:#04x}"), |u| u.to_string());
+    match *bytes {
+        [] | [0, 0, 0, 0] => "no pair".to_string(),
+        [0x01, mode, key1, key2] => match SocdMode::from_wire(mode) {
+            Some(mode) => format!("{} / {} mode {}", key(key1), key(key2), mode.number()),
+            None => format!("{} / {} mode {mode:#04x}", key(key1), key(key2)),
+        },
+        _ => spaced(bytes),
+    }
+}
+
+/// One changed entry of a SOCD write: index 0 is the power, 1-20 the
+/// pairs.
+fn socd_change_text(change: &EntryChange) -> String {
+    if change.index == 0 {
+        let power = |b: &[u8]| match b {
+            [0] => "off".to_string(),
+            [1] => "on".to_string(),
+            other => spaced(other),
+        };
+        return format!("power {} -> {}", power(&change.old), power(&change.new));
+    }
+    format!(
+        "pair {}: {} -> {}",
+        change.index,
+        socd_entry_text(&change.old),
+        socd_entry_text(&change.new)
+    )
+}
+
 /// One changed entry of a planned write, in words.
 fn change_text(table: TableId, change: &EntryChange, model: Option<&Model>) -> String {
     let (old, new) = (&change.old, &change.new);
@@ -151,8 +198,8 @@ fn change_text(table: TableId, change: &EntryChange, model: Option<&Model>) -> S
         TableId::Keymap { .. } => format!(
             "{}: {} -> {}",
             key_label(model, change.index),
-            spaced(old),
-            spaced(new)
+            keymap_entry_text(old),
+            keymap_entry_text(new)
         ),
         TableId::DeadBand => {
             let pair = |b: &[u8]| match b {
@@ -183,32 +230,39 @@ fn change_text(table: TableId, change: &EntryChange, model: Option<&Model>) -> S
             )
         }
         TableId::Macro { .. } => format!("{} -> {}", macro_text(old), macro_text(new)),
-        TableId::AdvancedKey { .. } => {
-            let slot = |b: &[u8]| {
-                if b.is_empty() {
-                    "empty".to_string()
-                } else {
-                    format!("in use (type {})", b.first().copied().unwrap_or(0))
-                }
-            };
-            format!("{} -> {}", slot(old), slot(new))
-        }
+        TableId::AdvancedKey { .. } => format!("{} -> {}", advanced_text(old), advanced_text(new)),
+        TableId::Socd => socd_change_text(change),
         _ => format!("{} -> {}", spaced(old), spaced(new)),
     }
 }
 
-/// The changed entries of a planned write, at most [`MAX_CHANGES`].
-fn changes_text(table: TableId, write: &PlannedWrite, model: Option<&Model>) -> Vec<String> {
+/// A keymap entry in words, with its bytes: `A (00 04 00 00)`.
+fn keymap_entry_text(bytes: &[u8]) -> String {
+    match <[u8; 4]>::try_from(bytes) {
+        Ok(entry) => format!("{} ({})", KeyAction::decode(entry), spaced(bytes)),
+        Err(_) => spaced(bytes),
+    }
+}
+
+/// The changed entries of a planned write, at most [`MAX_CHANGES`] unless
+/// `all` (an import lists every keymap entry it writes).
+fn changes_text(
+    table: TableId,
+    write: &PlannedWrite,
+    model: Option<&Model>,
+    all: bool,
+) -> Vec<String> {
+    let limit = if all { usize::MAX } else { MAX_CHANGES };
     let mut lines: Vec<String> = write
         .changes
         .iter()
-        .take(MAX_CHANGES)
+        .take(limit)
         .map(|c| change_text(table, c, model))
         .collect();
-    if write.changes.len() > MAX_CHANGES {
+    if write.changes.len() > limit {
         lines.push(format!(
             "... and {} more entries",
-            write.changes.len() - MAX_CHANGES
+            write.changes.len() - limit
         ));
     }
     lines
@@ -281,11 +335,20 @@ pub fn restore_plan(
     dry_run: bool,
     packets: bool,
 ) -> String {
-    let mut out = String::from(if dry_run {
-        "Restore plan (dry run: nothing is written)\n"
+    let import = plan
+        .warnings
+        .iter()
+        .any(|w| matches!(w, PlanWarning::Imported { .. }));
+    let what = if import {
+        "Import plan"
     } else {
-        "Restore plan\n"
-    });
+        "Restore plan"
+    };
+    let mut out = if dry_run {
+        format!("{what} (dry run: nothing is written)\n")
+    } else {
+        format!("{what}\n")
+    };
     let firmware = |f: &Option<String>| f.clone().unwrap_or_else(|| "unknown".into());
     out.push_str(&format!(
         "  Backup    made {}, firmware {}\n",
@@ -322,7 +385,9 @@ pub fn restore_plan(
                 PlanAction::Unchanged => unchanged.push(item.table),
                 PlanAction::NotInBackup => missing.push(item.table),
                 PlanAction::Write(write) => {
-                    let mut changes = changes_text(item.table, write, model);
+                    // An import lists every keymap entry it takes from the file.
+                    let all = import && matches!(item.table, TableId::Keymap { .. });
+                    let mut changes = changes_text(item.table, write, model, all);
                     if let Some(reason) = write.commit_trigger {
                         changes.push(commit_trigger_text(reason, write.is_resent_unchanged()));
                     }
@@ -377,6 +442,14 @@ pub fn restore_plan(
                 out.push_str(&format!("    - {skip}\n"));
             }
         }
+        if let Some(index) = critical_fn_block(&profile.items) {
+            out.push_str(&format!(
+                "  To import the keys anyway, add --allow-critical-fn-overrides (Fn + {} will \
+                 then no longer do its built-in function, a profile switch or the reset, while \
+                 this profile is active).\n",
+                key_label(model, usize::from(index))
+            ));
+        }
         if !unchanged.is_empty() {
             out.push_str("  Unchanged (the keyboard already holds the backup's values):\n");
             out.push_str(&wrap_list(&table_names(&unchanged), "    ", WIDTH));
@@ -407,7 +480,7 @@ pub fn restore_plan(
     if !plan.warnings.is_empty() {
         out.push_str("\nWarnings\n");
         for warning in &plan.warnings {
-            out.push_str(&format!("  - {}\n", warning_text(warning)));
+            out.push_str(&format!("  - {}\n", warning_text(warning, model)));
         }
     }
 
@@ -422,6 +495,7 @@ pub fn restore_plan(
         .map(|p| p.profile.to_string())
         .collect();
     let skipped = plan.skips().count();
+    let compared = plan.profiles.iter().filter(|p| p.compared).count();
     out.push('\n');
     if plan.has_writes() {
         out.push_str(&format!(
@@ -429,6 +503,16 @@ pub fn restore_plan(
             count(plan.write_count(), "write"),
             count(plan.packet_count(), "packet"),
             list(&profiles)
+        ));
+    } else if compared == 0 {
+        out.push_str("Total: nothing compared");
+        if dry_run {
+            out.push_str(" (dry run)");
+        }
+    } else if !not_compared.is_empty() {
+        out.push_str(&format!(
+            "Total: nothing to write in the compared profile(s); profile(s) {} not compared",
+            list(&not_compared)
         ));
     } else {
         out.push_str("Total: nothing to write");
@@ -443,8 +527,44 @@ pub fn restore_plan(
     out
 }
 
+/// The key index of a critical built-in Fn function that blocks the keymap
+/// group of an import, if one does.
+fn critical_fn_block(items: &[PlanItem]) -> Option<u8> {
+    items.iter().find_map(|item| match &item.action {
+        PlanAction::Skip {
+            reason:
+                SkipReason::KeymapGroupBlocked {
+                    cause: BlockCause::CriticalFnOverride { index },
+                },
+            ..
+        } => Some(*index),
+        _ => None,
+    })
+}
+
+/// Whether an import's plan leaves out a category the user chose to
+/// import: the keymap group blocked as a whole, or SOCD pairs it cannot
+/// write. (A category that is merely unchanged is not left out.)
+pub fn import_blocked(plan: &RestorePlan, include: &ImportSelection) -> bool {
+    plan.skips().any(|(_, item)| {
+        include.includes(item.table)
+            && matches!(
+                &item.action,
+                PlanAction::Skip {
+                    reason: SkipReason::KeymapGroupBlocked { .. }
+                        | SkipReason::UnwritableSocdPairs { .. },
+                    ..
+                }
+            )
+    })
+}
+
 /// A plan warning in words.
-fn warning_text(warning: &PlanWarning) -> String {
+fn warning_text(warning: &PlanWarning, model: Option<&Model>) -> String {
+    let layer_name = |layer: &openwraith_protocol::Layer| match layer {
+        openwraith_protocol::Layer::Base => "base",
+        openwraith_protocol::Layer::Fn => "Fn",
+    };
     match warning {
         PlanWarning::FirmwareDiffers { backup, keyboard } => format!(
             "the backup was made with firmware {}, the keyboard runs {} (allowed with \
@@ -482,6 +602,36 @@ fn warning_text(warning: &PlanWarning) -> String {
             "the backup holds different copies of {table} in its profiles, but the keyboard \
              holds the same copy in every profile: it is probably shared by all profiles, so \
              the backup cannot be restored exactly (the final check will report it)"
+        ),
+        PlanWarning::Imported { from, into } => {
+            format!("profile {from} of the file is imported into profile {into} of the keyboard")
+        }
+        PlanWarning::ImportedMacros { slots } => {
+            let slots: Vec<String> = slots.iter().map(ToString::to_string).collect();
+            format!("the import writes macro slot(s) {}", list(&slots))
+        }
+        PlanWarning::FnBuiltinOverridden { index, critical } => format!(
+            "the Fn layer replaces the built-in function of Fn + {}{}",
+            key_label(model, usize::from(*index)),
+            if *critical { " (a critical one)" } else { "" }
+        ),
+        PlanWarning::ImportKeptAsRead { layer, indices } => {
+            let keys: Vec<String> = indices
+                .iter()
+                .map(|i| key_label(model, usize::from(*i)))
+                .collect();
+            format!(
+                "the file's {} keymap differs at {}, which are never imported (not keys, the \
+                 knob, the Fn key or keys the keyboard locks): the keyboard's entries are kept",
+                layer_name(layer),
+                list(&keys)
+            )
+        }
+        PlanWarning::Unverified { layer, index, note } => format!(
+            "{} on the {} layer: {note} is not yet verified on a W75 (the vendor site sends the \
+             same bytes)",
+            key_label(model, usize::from(*index)),
+            layer_name(layer)
         ),
     }
 }
@@ -522,6 +672,16 @@ pub fn write_warning_text(warning: &WriteWarning) -> String {
              switch or power loss"
                 .into()
         }
+        WriteWarning::UnexpectedAck { packet } => format!(
+            "the keyboard acknowledged packet {packet}, which it is not seen to acknowledge; it \
+             was taken as ours"
+        ),
+        WriteWarning::SocdToggledOnKeyboard { power } => format!(
+            "SOCD was switched on the keyboard (Fn + Right Shift) during the write or before it \
+             was read again, so that switch may have been overwritten, and a difference in the \
+             power alone does not count as lost; SOCD is now {}",
+            if *power { "on" } else { "off" }
+        ),
     }
 }
 
@@ -529,7 +689,7 @@ pub fn write_warning_text(warning: &WriteWarning) -> String {
 /// (for the plan's change column). `unchanged`: it re-sends the keyboard's
 /// Fn keymap only for this reason; otherwise it is written because it
 /// differs, and the text explains its place in the group.
-fn commit_trigger_text(reason: CommitTriggerReason, unchanged: bool) -> String {
+pub(crate) fn commit_trigger_text(reason: CommitTriggerReason, unchanged: bool) -> String {
     const BASE: &str =
         "the keyboard keeps the base keymap only when the Fn keymap is written after it";
     const SLOTS: &str = "the keyboard may keep macro and advanced-key slots only when the Fn \
@@ -635,8 +795,17 @@ fn resent_text(packets: usize, sends: u32) -> String {
     text
 }
 
-/// The result of the persistence check of a restore, in words.
-fn persistence_text(check: &PersistenceCheck) -> String {
+/// The result of the persistence check of a restore (`what` = "restore")
+/// or an edit (`what` = "command"), in words.
+fn persistence_text(check: &PersistenceCheck, what: &str) -> String {
+    persistence_text_with(
+        check,
+        &format!("Run the same {what} again, or undo it with the command below."),
+    )
+}
+
+/// [`persistence_text`] with `advice` after a lost table.
+fn persistence_text_with(check: &PersistenceCheck, advice: &str) -> String {
     let profiles: Vec<String> = check.profiles.iter().map(ToString::to_string).collect();
     let noun = if profiles.len() == 1 {
         "profile"
@@ -667,9 +836,9 @@ fn persistence_text(check: &PersistenceCheck) -> String {
     if check.not_checked > 0 {
         parts.push(format!(
             "{} could not be checked (a table that may be shared by all profiles and was \
-             written in another profile too; the final check compares {} with the backup)",
-            count(check.not_checked, "written table"),
-            it(check.not_checked)
+             written in another profile too, which the final check compares, or SOCD switched \
+             on the keyboard after it was written; see the notes of the table)",
+            count(check.not_checked, "written table")
         ));
     }
     if parts.is_empty() {
@@ -681,7 +850,8 @@ fn persistence_text(check: &PersistenceCheck) -> String {
         parts.join("; ")
     );
     if check.lost > 0 {
-        text.push_str(" Run the same restore again, or undo it with the command below.");
+        text.push(' ');
+        text.push_str(advice);
     }
     text.push('\n');
     text
@@ -785,6 +955,22 @@ impl Resent {
     fn of(report: &RestoreReport) -> Self {
         let mut resent = Resent::default();
         for (profile, item) in report.items() {
+            if !item.resent_unchanged || !matches!(item.result, ItemResult::Written { .. }) {
+                continue;
+            }
+            resent.profiles.push(profile);
+            match item.commit_trigger {
+                Some(CommitTriggerReason::MacrosOrAdvancedKeys) => resent.slots = true,
+                Some(CommitTriggerReason::BaseKeymap) | None => resent.base = true,
+            }
+        }
+        resent
+    }
+
+    /// The re-sent Fn keymaps of an edit of `profile`.
+    fn of_items(profile: u8, items: &[ItemReport]) -> Self {
+        let mut resent = Resent::default();
+        for item in items {
             if !item.resent_unchanged || !matches!(item.result, ItemResult::Written { .. }) {
                 continue;
             }
@@ -912,6 +1098,18 @@ fn outcome_text(outcome: Outcome, counts: &Counts, error: Option<&str>) -> Strin
     }
 }
 
+/// The note after the headline when Ctrl+C came while the writes the
+/// keymap group still needed were being made (all of them were made).
+fn cancel_note(cancel_requested: bool, outcome: Outcome) -> &'static str {
+    if cancel_requested && outcome == Outcome::Completed {
+        "Ctrl+C received; the remaining writes were needed to keep the keyboard consistent (the \
+         Fn keymap that makes it save the keys, or a slot a written key refers to), so they were \
+         sent. Everything planned was written.\n"
+    } else {
+        ""
+    }
+}
+
 /// Text of a restore report.
 pub fn restore_report(report: &RestoreReport, model: Option<&Model>) -> String {
     let items: Vec<(Option<u8>, &ItemReport)> =
@@ -939,11 +1137,12 @@ pub fn restore_report(report: &RestoreReport, model: Option<&Model>) -> String {
             report.error.as_ref().map(|e| e.message.as_str())
         )
     );
+    out.push_str(cancel_note(report.cancel_requested, report.outcome));
     if !items.is_empty() {
         out.push_str(&item_rows(&items, model));
     }
     if let Some(check) = &report.persistence {
-        out.push_str(&persistence_text(check));
+        out.push_str(&persistence_text(check, "restore"));
     }
     if let Some(check) = &report.final_check {
         let profiles: Vec<String> = check.profiles.iter().map(ToString::to_string).collect();
@@ -1040,8 +1239,46 @@ pub fn light_edit_plan(plan: &LightEditPlan) -> String {
     out
 }
 
+/// How an edit report speaks about the persistence check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistNote {
+    /// Trigger and main-light edits: the keyboard is known to keep them, so
+    /// they never switch profiles to check.
+    NotNeeded,
+    /// The v0.2 edits, with the `--check-persistence` mode.
+    Mode(PersistenceCheckMode),
+    /// A slot-only keymap-group edit with `--commit-trigger skip` (the
+    /// persistence check always runs): writing it again the same way would
+    /// lose it again.
+    CommitTriggerSkipped,
+}
+
+/// Keys left referring to an empty slot, in words.
+fn dangling_text(dangling: &[DanglingBinding], model: Option<&Model>) -> String {
+    if dangling.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "Keys that may now refer to an empty slot (the edit stopped part-way; the undo command \
+         below restores them):\n",
+    );
+    for d in dangling {
+        let layer = match d.layer {
+            openwraith_protocol::Layer::Base => "base",
+            openwraith_protocol::Layer::Fn => "Fn",
+        };
+        out.push_str(&format!(
+            "  - profile {}, {layer} layer, {} -> {}\n",
+            d.profile,
+            key_label(model, usize::from(d.index)),
+            d.slot
+        ));
+    }
+    out
+}
+
 /// Text of an edit report.
-pub fn edit_report(report: &EditReport, model: Option<&Model>) -> String {
+pub fn edit_report(report: &EditReport, model: Option<&Model>, note: PersistNote) -> String {
     let items: Vec<(Option<u8>, &ItemReport)> =
         report.items.iter().map(|item| (None, item)).collect();
     let mut out = format!(
@@ -1050,24 +1287,62 @@ pub fn edit_report(report: &EditReport, model: Option<&Model>) -> String {
             report.outcome,
             &Counts {
                 written: report.written(),
+                resent: Resent::of_items(report.profile, &report.items),
+                lost: report.lost(),
                 maybe_lost: report.maybe_lost(),
+                base_unsaved: report
+                    .items
+                    .iter()
+                    .filter(|i| match &i.result {
+                        ItemResult::MaybeLost { warnings, .. } => {
+                            warnings.contains(&WriteWarning::BaseKeymapNotSaved)
+                        }
+                        _ => false,
+                    })
+                    .count(),
                 total: items.len(),
-                ..Counts::default()
             },
             report.error.as_ref().map(|e| e.message.as_str())
         )
     );
+    out.push_str(cancel_note(report.cancel_requested, report.outcome));
     if !items.is_empty() {
         out.push_str(&item_rows(&items, model));
     }
     if let Some(ms) = report.waited_for_commit_ms {
         out.push_str(&format!(
             "Waited {} after the last write so that the keyboard could save it (it saves about \
-             1 s after a write). An edit does not switch profiles to read it again, so the \
-             lighting stays as it is.\n",
+             1 s after a write).",
             seconds_text(ms)
         ));
+        match note {
+            _ if report.persistence.is_some() => {}
+            PersistNote::NotNeeded => out.push_str(
+                " An edit does not switch profiles to read it again, so the lighting stays as it \
+                 is.",
+            ),
+            PersistNote::Mode(PersistenceCheckMode::Never) => {
+                out.push_str(" Not checked by switching profiles (--check-persistence never).")
+            }
+            PersistNote::Mode(_) if report.is_success() => out.push_str(
+                " Not checked by switching profiles: the keyboard is known from hardware tests \
+                 to keep what was written.",
+            ),
+            PersistNote::Mode(_) | PersistNote::CommitTriggerSkipped => {}
+        }
+        out.push('\n');
     }
+    if let Some(check) = &report.persistence {
+        out.push_str(&match note {
+            PersistNote::CommitTriggerSkipped => persistence_text_with(
+                check,
+                "Run the same command without --commit-trigger skip (the Fn keymap after the \
+                 slot makes the keyboard save it), or undo it with the command below.",
+            ),
+            _ => persistence_text(check, "command"),
+        });
+    }
+    out.push_str(&dangling_text(&report.dangling, model));
     if let Some(activity) = &report.foreign_activity {
         out.push_str(&format!(
             "Another program was active while writing ({activity}).\n"
@@ -1243,6 +1518,8 @@ mod tests {
             safety_backup: "safety.owbackup.json".into(),
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
+            dangling: Vec::new(),
+            cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
         for expected in [
@@ -1274,11 +1551,12 @@ mod tests {
             not_checked: 1,
         };
         assert_eq!(
-            persistence_text(&check),
+            persistence_text(&check, "restore"),
             "Persistence check: profiles 2 and 3 selected again after switching away; 2 written \
              tables still hold what was written (the keyboard saved them); 1 written table could \
              not be checked (a table that may be shared by all profiles and was written in \
-             another profile too; the final check compares it with the backup).\n"
+             another profile too, which the final check compares, or SOCD switched on the \
+             keyboard after it was written; see the notes of the table).\n"
         );
         let only_unchecked = PersistenceCheck {
             profiles: vec![3],
@@ -1286,7 +1564,7 @@ mod tests {
             lost: 0,
             not_checked: 1,
         };
-        let text = persistence_text(&only_unchecked);
+        let text = persistence_text(&only_unchecked, "restore");
         assert!(!text.contains("saved"), "{text}");
         assert!(
             text.contains("1 written table could not be checked"),
@@ -1408,6 +1686,8 @@ mod tests {
             safety_backup: "safety.owbackup.json".into(),
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
+            dangling: Vec::new(),
+            cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
         assert!(
@@ -1473,6 +1753,8 @@ mod tests {
             safety_backup: "safety.owbackup.json".into(),
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
+            dangling: Vec::new(),
+            cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
         for expected in [
@@ -1527,8 +1809,12 @@ mod tests {
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
             waited_for_commit_ms: None,
+            persistence: None,
+            warnings: Vec::new(),
+            dangling: Vec::new(),
+            cancel_requested: false,
         };
-        let text = edit_report(&report, Some(&W75));
+        let text = edit_report(&report, Some(&W75), PersistNote::NotNeeded);
         for expected in [
             "FAILED: the active onboard profile changed to 2 before the keyboard had saved",
             "1 table written and verified, but the keyboard may not have saved it",
@@ -1558,7 +1844,7 @@ mod tests {
                 &change,
                 Some(&W75)
             ),
-            "W (#46): 00 00 00 00 -> 00 04 00 00"
+            "W (#46): default (00 00 00 00) -> A (00 04 00 00)"
         );
     }
 }

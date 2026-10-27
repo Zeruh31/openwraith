@@ -243,7 +243,9 @@ fn info_json_from_backup() {
 #[test]
 fn every_section_works_from_backup() {
     let file = c06_backup_file("sections");
-    for section in ["triggers", "light", "keymap", "macros", "all"] {
+    for section in [
+        "triggers", "light", "keymap", "macros", "advanced", "socd", "all",
+    ] {
         for json in [false, true] {
             let mut args = vec!["show", section, "--from", path_str(&file)];
             if json {
@@ -352,11 +354,15 @@ fn help_lists_the_commands_that_write() {
     assert!(out.status.success());
     let text = stdout(&out);
     assert!(
-        text.contains("list, info, show and backup are READ-ONLY"),
+        text.contains("list, info, show, monitor and backup are READ-ONLY"),
         "{text}"
     );
     assert!(
-        text.contains("These commands write to the keyboard: profile select, set, restore, and"),
+        text.contains("These commands write to the keyboard: profile select, set, restore,"),
+        "{text}"
+    );
+    assert!(
+        text.contains("travel (only the key-depth test's open and close)"),
         "{text}"
     );
     assert!(text.contains("a tab in the"), "{text}");

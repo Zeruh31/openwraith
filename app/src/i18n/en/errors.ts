@@ -129,6 +129,10 @@ export const errors = {
       title: "Something went wrong inside OpenWraith",
       body: "If this keeps happening, report it with the technical details.",
     },
+    travel_test_open: {
+      title: "A key-depth test is still running",
+      body: "The keyboard may still be sending key depths. Stop the test first, then try again.",
+    },
   } satisfies Record<AppErrorKind, { title: string; body: string }>,
   detail: {
     other_program: (p: { status: number; acks: number; profiles: number }) =>

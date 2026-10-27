@@ -282,6 +282,14 @@ pub enum SkipReasonView {
     },
     NotInKeyboard,
     Unusable,
+    /// Only bytes that are never written differ (the SOCD hotkey).
+    ReadOnlyBytes,
+    /// The backup's SOCD pairs are not in the vendor site's form.
+    UnwritableSocdPairs {
+        rule: String,
+    },
+    /// An import does not write this category.
+    NotImported,
 }
 
 /// Why the keymap group is not restored.
@@ -290,11 +298,37 @@ pub enum SkipReasonView {
 #[serde(tag = "code", rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum BlockCauseView {
-    NonEmptyAdvancedKey { slot: u8 },
-    NonCanonicalMacro { slot: u8, rule: String },
-    MalformedReference { layer: LayerView, index: u8 },
-    Incomplete { table: TableRef },
-    FnKeymapNotWritable { reason: CommitTriggerReasonView },
+    /// An advanced-key slot that is not a DKS, Mod-Tap or Toggle OpenWraith
+    /// can write (`reason` is technical text).
+    UnwritableAdvancedKey {
+        slot: u8,
+        reason: String,
+    },
+    NonCanonicalMacro {
+        slot: u8,
+        rule: String,
+    },
+    MalformedReference {
+        layer: LayerView,
+        index: u8,
+    },
+    Incomplete {
+        table: TableRef,
+    },
+    FnKeymapNotWritable {
+        reason: CommitTriggerReasonView,
+    },
+    /// An imported Fn layer replaces a critical built-in function.
+    CriticalFnOverride {
+        index: u8,
+    },
+    /// An imported keymap entry OpenWraith does not write (`entry` is the
+    /// hex of the file's 4 bytes).
+    UnwritableImportedEntry {
+        layer: LayerView,
+        index: u8,
+        entry: String,
+    },
 }
 
 /// A difference that does not block the restore.
@@ -318,6 +352,34 @@ pub enum PlanWarningView {
     },
     LikelySharedTableDiffers {
         table: TableRef,
+    },
+    /// Profile `from` of the file is imported into profile `into`.
+    Imported {
+        from: u8,
+        into: u8,
+    },
+    /// An import writes these macro slots (0-based).
+    ImportedMacros {
+        slots: Vec<u8>,
+    },
+    /// The Fn layer replaces a built-in Fn function.
+    FnBuiltinOverridden {
+        index: u8,
+        critical: bool,
+    },
+    /// An import keeps the keyboard's entries at these key indices (not
+    /// keys, the knob, the Fn key, Fn-locked keys).
+    ImportKeptAsRead {
+        layer: LayerView,
+        indices: Vec<u8>,
+    },
+    /// An imported entry whose effect is not yet verified on a W75
+    /// (`what` and `question` are technical text).
+    Unverified {
+        layer: LayerView,
+        index: u8,
+        what: String,
+        question: String,
     },
 }
 

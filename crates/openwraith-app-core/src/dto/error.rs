@@ -89,6 +89,8 @@ pub enum AppErrorKind {
     SafetyDirUnavailable,
     FileUnknown,
     Internal,
+    /// A live key-depth test is (or may be) open on the keyboard.
+    TravelTestOpen,
 }
 
 /// Structured details of an error.

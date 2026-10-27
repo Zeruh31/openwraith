@@ -62,7 +62,7 @@
 //! (including each snapshot's `profile`) is derived from the raw reports.
 
 use std::collections::HashSet;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -96,6 +96,14 @@ pub const BACKUP_EXTENSION: &str = "owbackup.json";
 pub const BACKUP_SCOPE: &str = "active_profile_and_global_settings";
 /// Value of the `scope` field of an all-profile backup (schema 2).
 pub const BACKUP_SCOPE_PROFILES: &str = "profiles";
+/// Value of the `scope` field of one exported profile
+/// ([`Backup::export_profile`], schema 1).
+pub const BACKUP_SCOPE_EXPORT: &str = "profile_export";
+/// The largest backup file [`Backup::load`] reads (8 MiB; an all-profile
+/// backup is about 0.7 MB).
+pub const BACKUP_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// The longest label of an exported profile, in characters.
+const EXPORT_LABEL_MAX: usize = 120;
 /// Human-readable explanation stored in every single-profile backup.
 pub const BACKUP_NOTE: &str = "Read-only snapshot of the ACTIVE onboard profile. Other onboard \
 profiles are not included. Tables whose profile scope is unverified (custom colour tables, \
@@ -927,13 +935,90 @@ impl Backup {
     }
 
     /// Reads and parses a backup file (see [`from_json`](Self::from_json)).
+    /// A file larger than [`BACKUP_MAX_FILE_BYTES`] is refused before it is
+    /// read ([`BackupError::TooLarge`]).
     pub fn load(path: &Path) -> Result<Backup, BackupError> {
-        let text = std::fs::read_to_string(path).map_err(|source| BackupError::Io {
+        let io = |source| BackupError::Io {
             action: "read",
             path: path.to_path_buf(),
             source,
-        })?;
+        };
+        let too_large = |bytes| BackupError::TooLarge {
+            path: path.to_path_buf(),
+            bytes,
+            max: BACKUP_MAX_FILE_BYTES,
+        };
+        let size = std::fs::metadata(path).map_err(io)?.len();
+        if size > BACKUP_MAX_FILE_BYTES {
+            return Err(too_large(size));
+        }
+        let file = std::fs::File::open(path).map_err(io)?;
+        let mut text = String::new();
+        // The file may have grown since: never read more than the limit.
+        let read = file
+            .take(BACKUP_MAX_FILE_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(io)?;
+        let read = u64::try_from(read).unwrap_or(u64::MAX);
+        if read > BACKUP_MAX_FILE_BYTES {
+            return Err(too_large(read));
+        }
         Self::from_json(&text)
+    }
+
+    /// One profile of this backup as a backup of its own, to share as a file
+    /// and import into another profile (schema 1, scope
+    /// [`BACKUP_SCOPE_EXPORT`]): the snapshot of `profile` with its own
+    /// `21/11` reply, without the USB identity (the serial number is not
+    /// shared), and `label` (control characters removed, at most 120
+    /// characters) in the note.
+    pub fn export_profile(
+        &self,
+        profile: ProfileId,
+        label: Option<&str>,
+    ) -> Result<Backup, BackupError> {
+        let Some(view) = self.snapshot(profile) else {
+            return Err(BackupError::InvalidSnapshot {
+                profile: Some(profile.get()),
+                reason: format!("the backup does not hold profile {profile}"),
+            });
+        };
+        let entries = view.entries().to_vec();
+        let device = match view.device_info() {
+            Some(info) => DeviceIdentity::new(
+                info,
+                info.product.as_deref().and_then(model_for_product),
+                None,
+            ),
+            None => DeviceIdentity::unknown(None),
+        };
+        let label: String = label
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(EXPORT_LABEL_MAX)
+            .collect();
+        let mut note = format!(
+            "One onboard profile (profile {profile} when it was read), exported to be shared or \
+             imported into a profile. The raw reports are authoritative. It holds no USB serial \
+             number."
+        );
+        if !label.trim().is_empty() {
+            note.push_str(" Label: ");
+            note.push_str(label.trim());
+        }
+        Ok(Backup {
+            format: BACKUP_FORMAT.to_string(),
+            schema_version: BACKUP_SCHEMA_VERSION,
+            tool: self.tool.clone(),
+            created_at: self.created_at.clone(),
+            scope: BACKUP_SCOPE_EXPORT.to_string(),
+            note,
+            device,
+            active_profile: view.profile(),
+            entries,
+            profiles: Vec::new(),
+        })
     }
 
     /// Suggested file name: `openwraith-<product>-<YYYYMMDD-HHMMSS>.owbackup.json`

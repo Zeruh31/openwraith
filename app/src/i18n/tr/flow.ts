@@ -140,6 +140,7 @@ export const flow: Messages<typeof en> = {
     dead_band: "Ölü bölge",
     socd_pairs: "SOCD çiftleri",
     socd_settings: "SOCD ayarları",
+    socd: "SOCD",
     switch_types: "Switch türleri",
     poll_rate: "Yoklama hızı",
     win_lock_and_rollover: "Win kilidi ve çoklu tuş algılama",
@@ -158,6 +159,9 @@ export const flow: Messages<typeof en> = {
       `OpenWraith önce klavyenin önceki bir değişikliği kaydetmesi için ${p.seconds} bekledi.`,
     base_keymap_not_saved:
       "Tuş atamaları yazıldı ama klavyenin onları kaydetmesini sağlayan adım tamamlanmadı.",
+    unexpected_ack: (p) => `Klavye ${p.packet}. paketi onayladı; bunu genellikle yapmaz.`,
+    socd_toggled_on_keyboard: (p) =>
+      `Yazma sırasında ya da hemen ardından SOCD klavyeden değiştirildi (Fn + Sağ Shift); bu değişiklik üzerine yazılmış olabilir. SOCD şu an ${p.on ? "açık" : "kapalı"}.`,
   },
   commitTrigger: {
     base_keymap: "Fn katmanı tuş atamaları: klavye tuş atamalarını saklasın diye değiştirilmeden yeniden gönderilir",

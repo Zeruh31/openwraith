@@ -16,6 +16,7 @@ mod macros;
 mod socd;
 mod status;
 mod switch;
+mod travel;
 mod trigger;
 
 pub use advanced::{AdvancedKey, AdvancedKeySlot, AdvancedKeys};
@@ -31,6 +32,7 @@ pub use status::{
     WinLockOptions,
 };
 pub use switch::{SwitchTypeList, SwitchTypeTable, switch_type_name};
+pub use travel::{LongTravelFields, TravelReport, TravelVariant};
 pub use trigger::{DeadBand, DeadBandTable, KeyTrigger, TriggerGlobal, TriggerMode};
 
 use crate::error::DecodeError;

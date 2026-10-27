@@ -18,11 +18,11 @@ const W_C06: [u8; 9] = [0x0c, 0x32, 0x32, 0x0f, 0x0f, 0, 0, 0, 0];
 /// Factory trigger record: 1.70 mm, Rapid Trigger off.
 const FACTORY: [u8; 9] = [0x00, 0x55, 0x55, 0x01, 0x01, 0, 0, 0, 0];
 
-fn pos(row: u8, col: u8) -> KeyPos {
+pub(crate) fn pos(row: u8, col: u8) -> KeyPos {
     KeyPos::new(row, col).expect("matrix position")
 }
 
-fn profile(n: u8) -> ProfileId {
+pub(crate) fn profile(n: u8) -> ProfileId {
     ProfileId::new(n).expect("profile 1-4")
 }
 
@@ -35,33 +35,33 @@ fn q() -> KeyPos {
 }
 
 /// A temporary directory with the backup files and safety backups of a test.
-struct Fixture {
+pub(crate) struct Fixture {
     dir: tempfile::TempDir,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Fixture {
             dir: tempfile::tempdir().expect("temporary directory"),
         }
     }
 
-    fn path(&self, name: &str) -> PathBuf {
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
     }
 
-    fn safety_dir(&self) -> PathBuf {
+    pub(crate) fn safety_dir(&self) -> PathBuf {
         self.path("safety")
     }
 
-    fn save(&self, backup: &Backup, name: &str) -> PathBuf {
+    pub(crate) fn save(&self, backup: &Backup, name: &str) -> PathBuf {
         let path = self.path(&format!("{name}.owbackup.json"));
         backup.save(&path, false).expect("saved");
         path
     }
 
     /// The safety backups saved so far.
-    fn safety_files(&self) -> Vec<PathBuf> {
+    pub(crate) fn safety_files(&self) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(self.safety_dir())
             .map(|entries| entries.filter_map(|e| e.ok().map(|e| e.path())).collect())
             .unwrap_or_default();
@@ -70,12 +70,16 @@ impl Fixture {
     }
 }
 
-fn text(path: &Path) -> &str {
+pub(crate) fn text(path: &Path) -> &str {
     path.to_str().expect("utf-8 temporary path")
 }
 
 /// Parses `args` like the binary and runs the command against the simulator.
-fn run(args: &[&str], connector: &mut SimConnector, ui: &mut TestUi) -> anyhow::Result<Exit> {
+pub(crate) fn run(
+    args: &[&str],
+    connector: &mut SimConnector,
+    ui: &mut TestUi,
+) -> anyhow::Result<Exit> {
     let cli = Cli::try_parse_from(std::iter::once("openwraith").chain(args.iter().copied()))
         .unwrap_or_else(|e| panic!("{args:?} does not parse: {e}"));
     run_command(&cli.command, &globals(&cli), connector, ui)
@@ -103,7 +107,7 @@ fn changed_sim() -> DeviceSim {
 }
 
 /// Every packet the simulator received is a documented read.
-fn assert_reads_only(sim: &DeviceSim) {
+pub(crate) fn assert_reads_only(sim: &DeviceSim) {
     assert_eq!(sim.write_packets().count(), 0, "a write was sent");
     for packet in sim.written() {
         assert!(
@@ -116,7 +120,7 @@ fn assert_reads_only(sim: &DeviceSim) {
 }
 
 /// The write packets the simulator received, as spaced hex.
-fn writes(sim: &DeviceSim) -> Vec<String> {
+pub(crate) fn writes(sim: &DeviceSim) -> Vec<String> {
     sim.write_packets().map(|p| p.summary()).collect()
 }
 
@@ -161,7 +165,7 @@ fn dry_run_against_the_keyboard_reads_only_and_shows_the_plan() {
         "{out}"
     );
     assert!(
-        out.contains("    dead band, base keymap, Fn keymap,"),
+        out.contains("    dead band, SOCD, base keymap, Fn keymap,"),
         "{out}"
     );
     assert!(

@@ -1,10 +1,12 @@
-# Hardware tests (Phase 2)
+# Hardware tests
 
 Every automated test runs against captures or the device simulator; none of
 them opens a HID device. The commands that write have therefore only been
 checked against the simulator. This checklist is run **by hand** on a real
-Wraith W75, in order. Record the full output of every command (add
-`--verbose` for session statistics) and keep every file it writes.
+Wraith W75, in order: H0-H11 for the Phase 2 writes, H12-H25 for the v0.2
+editors of the CLI, A1-A10 for the desktop app. Record the full output of
+every command (add `--verbose` for session statistics) and keep every file
+it writes.
 
 File names below are examples; use your own. `openwraith` is
 `target\release\openwraith.exe` after `cargo build --release`.
@@ -323,8 +325,9 @@ block the keymap group). Then restore `before-h11.owbackup.json` and check
 with `--dry-run` that nothing is left to write.
 
 Optional macro-persistence check (PROTOCOL.md 4.8.2: whether macro slots
-are kept without a following `18 02` is untested; OpenWraith always ends a
-keymap group that writes macro or advanced-key slots with an `18 02`):
+are kept without a following `18 02` is untested; OpenWraith always writes
+an `18 02` after the macro slots of a keymap group, in the site's order:
+macro slots, `18 02`, advanced-key slots):
 
 4. `openwraith restore h11.owbackup.json --dry-run --packets`, then
    `openwraith restore h11.owbackup.json` and answer `y`. The plan writes
@@ -349,6 +352,365 @@ keymap group that writes macro or advanced-key slots with an `18 02`):
    the dead band, the macro clear, the base keymap (zeros at 16-21 again)
    and the Fn keymap after it. Check with `--dry-run` that nothing is left
    to write.
+
+## v0.2 editors (H12-H25, CLI)
+
+These tests check every write path that v0.2 adds before the desktop app is
+built on it. They are ordered from the lowest risk up: a read-only monitor,
+the key-depth test (nothing stored), then tables whose write form is
+confirmed (colours, presets, dead band, keymaps), then the forms whose
+effect or persistence is still open (macros, advanced keys, SOCD), the
+power cycle that checks them all, and finally sharing and undoing.
+
+Run `cargo test -p openwraith-cli sim_tests_v02 -- --nocapture` first: it
+prints the plans and reports of the same commands against the simulator, so
+you know what to expect.
+
+**Before H12:** H0-H2 as above (vendor site closed, one keyboard), then
+
+```text
+openwraith backup --all-profiles -o v02-before.owbackup.json
+```
+
+This file is what H24 restores at the end. Profile 1 is the working
+profile; profile 2 is the spare profile for the tables whose profile scope
+is unknown (dead band, SOCD); profile 3 receives the import of H23 and the
+optional H25. Changes made in H14-H21 stay on the keyboard until the power
+cycle of H22 (unless a step says to undo them).
+
+Every `set` command prints its plan, asks `[y/N]` and saves a safety backup
+first; answer `y` unless the plan looks wrong. `--dry-run` shows the plan
+without writing (read-only), `--packets` adds the hex of every packet.
+After a write the command waits 2 s for the keyboard to save. With the
+default `--check-persistence auto`, tables whose keeping is not proven on
+hardware yet (macro slots, SOCD, advanced-key slots written without the Fn
+keymap before them) are read again after a switch to the lowest other
+profile and back: the lighting changes briefly, and the report says
+`persisted` or `LOST`.
+
+### H12. Monitor (read-only)
+
+```text
+openwraith monitor --duration 40s
+```
+
+While it listens: press Fn + 2, wait 3 s, press Fn + 1; press Fn + Right
+Shift twice (no SOCD pair is stored yet); type a few letters.
+
+Pass: lines `profile report: profile 2 is active (raw: 21 ..)` and then
+profile 1; two lines `SOCD push: SOCD is now on/off (raw: 24 02 00 00 06 PP
+..; Fn + Right Shift ...)`, the second one `off`; no `status report(s)
+nobody here asked for` and no warning about another program. The command
+sends nothing at all (not even a read). The `raw:` hex is what arrived
+(the header, the declared payload and every byte up to the last non-zero
+one), never rebuilt from the decoded fields. Record: the full raw bytes of
+both profile pushes, not only the last byte (PROTOCOL Q2), that the SOCD
+push also comes with no pair stored and that PP is the state after the
+toggle (Q35). If SOCD ended on, press Fn + Right Shift once more and check
+with `openwraith show socd`.
+
+### H13. Live key depth (the travel test)
+
+The test stores nothing, but the keyboard keeps streaming until it is
+closed; `travel` closes it on every way out.
+
+1. `openwraith travel --duration 60s`. Press W slowly to the bottom and let
+   go, tap Esc fast, hold W and A together, then press Ctrl+C. Pass: the
+   live line shows bars for the keys that move; after Ctrl+C `Key-depth
+   test: stopped on request (Ctrl+C).` and `The keyboard acknowledged the
+   close: the test is off.`, a table with W, Esc and A (deepest about
+   3.40 mm at the bottom), exit code 0. Record the deepest values and
+   whether slow presses update about 14 times a second (Q34).
+2. `openwraith travel --duration 60s`, then switch to a text editor and type
+   a sentence while the test is open (normal typing, Rapid Trigger on W if
+   set; Q33). Back in the terminal, press Fn + 2. Pass: `the keyboard
+   switched to profile 2 (Fn + 2); the test was closed`, exit code 0. Then
+   `openwraith profile select 1`.
+3. `openwraith travel --close` with no test open. Pass: `The keyboard
+   acknowledged the close` and `No key-depth report arrived before it`: a
+   close while closed is harmless (Q33).
+4. A test left open by a crash: `openwraith travel --duration 120s`, then
+   close the terminal window while it runs. In a new terminal run
+   `openwraith monitor --duration 15s` and press some keys. Record whether
+   `key-depth report(s): a key-depth test is open` lines appear (the test
+   outlived the program; Q33). Then `openwraith set trigger W --actuation
+   1.70 --dry-run` (allowed: read-only) and `openwraith set trigger W
+   --actuation 1.70 --yes` while pressing keys: refused with `the keyboard is
+   streaming key depths ... (openwraith travel --close). Nothing was
+   written` (only if the stream was seen). Finally `openwraith travel
+   --close` while pressing a key: `Before it, N key-depth report(s)
+   arrived: a test was still open.`; a last `monitor --duration 10s` shows
+   no more stream reports.
+
+   Run step 4 only if normal typing worked in step 2. Before closing the
+   terminal, have a way to type `openwraith travel --close` that does not
+   depend on this keyboard: the Windows on-screen keyboard (`osk.exe`), a
+   second keyboard, or a prepared `travel-close.cmd` (containing
+   `openwraith travel --close`) started with the mouse. If none of these
+   works, unplug and re-plug the keyboard and record whether that ends the
+   stream (Q33).
+5. `openwraith travel --duration 10s --json --keys W > w.ndjson` and press
+   W: one JSON object per report, the last one `"event":"stopped"`.
+
+### H14. Per-key colours (custom table 1)
+
+```text
+openwraith show light
+openwraith set colors Left=0000ff Down=0000ff --dry-run --packets
+openwraith set colors Left=0000ff Down=0000ff
+openwraith show light
+```
+
+Pass: the plan lists only Left and Down, 8 packets `09 00`, `Every other
+slot of the table (... #103 and #126) keeps its bytes`, no profile switch.
+If the main light is not in the Custom mode the plan says so; run it with
+`--custom-mode` then (the light switches to Custom). Left and Down light up
+blue: record that the LED slot equals the key index for Left (123) and Down
+(124) (Q8). `show light` afterwards: the slots `#103` and `#126` keep what
+they held before. Keep the colours for H22.
+
+### H15. Trigger presets
+
+```text
+openwraith set trigger W A S D --preset competitive
+openwraith show triggers
+```
+
+Pass: 4 packets (one per key), W, A, S and D at 0.40 mm with Rapid Trigger
+0.10 mm in `show triggers`; typing on them feels it. Undo with the printed
+undo command (answer `y`).
+
+### H16. Dead band (spare profile 2)
+
+```text
+openwraith profile select 2
+openwraith set deadband W --top 0.10 --bottom 0.20
+openwraith profile select 1
+openwraith backup --all-profiles -o h16.owbackup.json
+openwraith show triggers --from h16.owbackup.json --profile 2
+openwraith show triggers --from h16.owbackup.json --profile 1
+```
+
+Pass: the plan warns `dead band may apply to every profile`, one write of
+5 packets `26 01`, verified, no profile switch (the dead band is known to be
+kept). Profile 2 shows W at `0.10 mm / 0.20 mm`. Record what profile 1
+shows for W: the same (a shared table) or its own value (per profile):
+the dead band's scope (Q3). Keep it for H22.
+
+### H17. Base-layer key assignments
+
+```text
+openwraith set key Caps=L-Ctrl F12=media:mute --dry-run --packets
+openwraith set key Caps=L-Ctrl F12=media:mute
+openwraith show keymap
+```
+
+Pass: 20 packets (10 x `18 00`, then 10 x `18 02` with `unchanged,
+re-sent: the keyboard keeps the base keymap only when the Fn keymap is
+written after it`), no profile switch, `Not checked by switching profiles:
+the keyboard is known from hardware tests to keep what was written`. Caps
+acts as Ctrl (Caps + C copies), F12 mutes. Keep both for H22.
+
+### H18. Fn-layer codes and built-in functions
+
+```text
+openwraith show keymap
+openwraith set key --layer fn F1=media:0x24 F2=media:0x25 F3=mouse:0x08 F4=mouse:0x10 Q=mouse:wheel-up E=combo:L-Ctrl+C Z=mouse:left X=mouse:right C=mouse:middle
+```
+
+The second command is refused: F1-F4 have built-in Fn functions (`show
+keymap` lists them). Run it again with `--allow-builtin F1 --allow-builtin
+F2 --allow-builtin F3 --allow-builtin F4`. Pass: the plan says `Fn + F1
+(#2) will no longer do its built-in function "media player" ...` for each,
+names the unverified codes (Q14, Q37), writes only the Fn keymap (10
+packets). Then, with Fn held, in a browser with a page history: Fn + F1 and
+Fn + F2 (record which one goes back, Q14), Fn + F3 and Fn + F4 (record
+which mouse button they are, Q37), Fn + Q scrolls up, Fn + E copies (a
+one-modifier combination, Q37), Fn + Z / X / C click left / right / middle.
+Plain F1-F4, Q, E, Z, X, C are unchanged; Fn + F5 still does its built-in.
+`openwraith profile select 2`, `openwraith profile select 1`: the Fn entries
+still work (Q12). Undo with the printed undo command.
+
+### H19. Macros
+
+1. A macro bound to a key, in the vendor site's order:
+
+   ```text
+   openwraith set macro Del --steps "A+ 100, A- 100, B+ 100, B-"
+   openwraith show macros
+   ```
+
+   Pass: the plan writes `macro slot 0 (19 00)` (5 packets), the base keymap
+   and the unchanged Fn keymap; the persistence check switches to profile 2
+   and back and reports `persisted` for the slot and the base keymap. In a
+   text editor Del types `ab`. `show macros` reads the slot back in the
+   flat layout (`As steps: "A+ 100, A- 100, B+ 100, B-"`, `bound to Del
+   (Base layer)`; Q13).
+2. **A macro slot without a following Fn keymap** (does the keyboard keep
+   it? Q1, Q36):
+
+   ```text
+   openwraith set macro --slot 0 --steps "A+ 50, A-, C+ 50, C-" --commit-trigger skip
+   ```
+
+   Pass: the plan writes only `macro slot 0 (19 00)`, says `--commit-trigger
+   skip (hardware test)`, and the forced persistence check switches away and
+   back. Record whether the slot is `persisted` (Del now types `ac`) or
+   `LOST` (exit code 1: macros need the Fn keymap after them; run the same
+   command without `--commit-trigger skip` to repair it).
+3. Optional, play modes (Q13): `openwraith set macro Del --steps "A+ 50, A-"
+   --play times:3` (one press types `aaa`?), then `--play toggle` and
+   `--play while-held`. Record what each does.
+4. Optional, a macro on the Fn layer (Q13): `openwraith set macro Q --layer
+   fn --steps "X+, X-"` (Fn + Q types `x`?). Undo it with its printed undo
+   command.
+
+Keep the macro on Del (with the content the last step left) for H22.
+
+### H20. Advanced keys
+
+1. ```text
+   openwraith set advanced E dks --point 1.5 --row E:t... --row R:.t..
+   openwraith set advanced G mod-tap --hold L-Ctrl
+   openwraith set advanced H toggle
+   openwraith show advanced
+   ```
+
+   Pass: each plan writes the base keymap, the unchanged Fn keymap and then
+   the slot (`22 0N`, `completes a binding`), no persistence check (slots
+   after a complete Fn keymap are known to be kept). E: a light press types
+   `e`, a full press `er` (as in c16). G: a tap types `g`; held longer than 300 ms it is
+   Ctrl (G held + C copies; Q19). H: one press holds `h` (auto-repeat), the
+   next releases it (Q19). `show advanced`: `3 of 40 slots used` with the
+   three definitions and their keys.
+2. **A lone advanced-key write without the Fn keymap** (Q36):
+
+   ```text
+   openwraith set advanced E dks --point 1.5 --row E:..t. --commit-trigger skip
+   ```
+
+   Pass: only `advanced-key slot 0 (22 00)` is written, then the forced
+   persistence check. Record `persisted` or `LOST`, and what E now does
+   (a tap when the key comes up from the bottom: stage 3, Q19).
+3. The DKS press point's unit (Q19): `openwraith set advanced E dks --point
+   0.5 --row E:t...`, then `--point 2.5`. Record whether E types much
+   earlier, then much later.
+
+Keep the slots for H22.
+
+### H21. SOCD (spare profile 2)
+
+```text
+openwraith profile select 2
+openwraith show socd
+openwraith set socd --on --pair A/D
+```
+
+Pass: the plan shows `Power off -> on` and `1. A / D, mode 1: the last
+input wins`, one write of 3 packets (`24 03`, two `24 00`), verified, then
+the persistence check reports `persisted`. Record whether a note says `the
+keyboard acknowledged packet 1, which it is not seen to acknowledge` (the
+power write was acknowledged after all; Q35). Do not press Fn + Right
+Shift until the command has finished: a switch on the keyboard during the
+write or before the persistence check read SOCD again is reported as `SOCD
+was switched on the keyboard ...` and the item stays `not checked`, which is
+no evidence either way (run the command again for H21). In a key tester (a text
+field, or a website that shows held keys): hold A, then press D: with mode
+1 only D counts; let go of D: A again. `openwraith set socd --pair A/D:4`
+(mode 4) and repeat; record what changes (Q35). Press Fn + Right Shift:
+`openwraith show socd` shows `Power: off`; `openwraith set socd --on` turns
+it on again and keeps the pair. Then
+
+```text
+openwraith backup --all-profiles -o h21.owbackup.json
+openwraith show socd --from h21.owbackup.json --profile 1
+openwraith profile select 1
+```
+
+Record whether profile 1 shows SOCD on with A / D too (shared) or not (per
+profile): the SOCD scope (Q3). Keep SOCD on in profile 2 for H22.
+
+### H22. USB power cycle (persistence of everything above)
+
+```text
+openwraith backup --all-profiles -o before-replug.owbackup.json
+```
+
+Unplug the keyboard, wait 10 s, plug it in again.
+
+```text
+openwraith backup --all-profiles -o after-replug.owbackup.json
+openwraith restore before-replug.owbackup.json --dry-run --against after-replug.owbackup.json
+```
+
+Pass: nothing to write in any profile: custom colours 1 (H14), the dead
+band (H16), the base keymap (H17), the macro slot (H19), the advanced-key
+slots (H20) and SOCD (H21) survived the power loss (Q1). Check the
+behaviour too: Left and Down blue, Del plays its macro, E is a DKS, SOCD on
+in profile 2 (Fn + 2, hold A and D). Record every table the dry run lists.
+
+### H23. Sharing a profile
+
+```text
+openwraith profile export 1 -o p1.owprofile.json --label "H23"
+openwraith profile select 3
+openwraith profile import p1.owprofile.json --into 3 --dry-run
+openwraith profile import p1.owprofile.json --into 3 --include keys --dry-run --packets
+openwraith profile select 1
+openwraith profile import p1.owprofile.json --into 3
+openwraith profile import p1.owprofile.json --into 3 --include keys
+```
+
+A dry run reads only the active profile, so profile 3 is selected for the
+two dry runs (with profile 1 active they would only say `not compared`).
+
+Pass: `p1.owprofile.json` has `"usb": null` and the label in its note. The
+first import writes only triggers and lighting into profile 3 (`Import
+plan`, `profile 1 of the file is imported into profile 3 of the keyboard`,
+the other categories `not imported`), switches to profile 3 and back, and
+reports `persisted`. The `--include keys` import first lists the file's
+macros as steps, then writes profile 3's keymap group in the vendor site's
+order (macro slot, base keymap, Fn keymap, advanced-key slots) and reports
+`persisted`. On profile 3 (Fn + 3) Caps, Del, E, G and H behave as on
+profile 1. `openwraith profile select 1`.
+
+### H24. Restoring advanced keys and SOCD (undo)
+
+```text
+openwraith backup --all-profiles -o v02-after.owbackup.json
+openwraith restore v02-before.owbackup.json --dry-run --packets
+openwraith restore v02-before.owbackup.json
+openwraith restore v02-after.owbackup.json --profile 2
+openwraith restore v02-before.owbackup.json --profile 2
+openwraith restore v02-before.owbackup.json --dry-run
+```
+
+Pass: the first restore clears what H14-H23 changed: the advanced-key
+slots (`22 0N` clears after the Fn keymap), the macro slot, the base keymap
+with its Fn keymap, custom colours 1, the dead band and SOCD of profile 2
+(`SOCD power off and pairs (24 03, 24 00)`, `power on -> off`), the
+imported settings of profile 3; every item `persisted`, the final check
+passes, exit code 0. The restore of `v02-after.owbackup.json --profile 2`
+writes SOCD **on with the A / D pair** through the restore path (W11 with
+content) and reports `persisted`; restoring profile 2 of
+`v02-before.owbackup.json` again turns it off. The last dry run reports
+nothing to write. (Restoring profile 1 of `v02-after` the same way checks
+the restore of non-empty advanced-key slots, W10; restore `v02-before`
+afterwards.)
+
+### H25 (optional, spare profile 3). A critical Fn function replaced
+
+```text
+openwraith profile select 3
+openwraith set key --layer fn 2=media:mute --allow-critical-builtin 2
+```
+
+(`--allow-builtin 2` alone is refused: Fn + 2 switches profiles.) On profile
+3, press Fn + 2: record whether it mutes or still switches to profile 2
+(Q14). Then on profile 3 run `openwraith set key --layer fn 2=default`
+(no acknowledgement needed; it brings the built-in back) and check that
+Fn + 2 switches profiles again. Finally `openwraith restore
+v02-before.owbackup.json --dry-run` reports nothing to write.
 
 ## Desktop app (A1-A10, Phase 3)
 

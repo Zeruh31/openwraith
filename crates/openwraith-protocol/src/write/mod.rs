@@ -1,14 +1,14 @@
-//! Writes (Phase 2): the nine write forms confirmed on the keyboard.
+//! Writes: the write forms confirmed on the keyboard (Phase 2 and v0.2).
 //!
 //! This module is the only place in the workspace that can produce bytes
 //! which change the keyboard. It is deliberately narrow:
 //!
 //! * A [`WritePacket`] is a separate type from the read-only
 //!   [`OutPacket`](crate::OutPacket). It has no public constructor, no
-//!   `From`, no `Deserialize` and no mutable access; the only way to obtain
-//!   one is [`WriteRequest::steps`]. There is no conversion between the two
-//!   packet types, so read-only code (which only ever handles `OutPacket`s)
-//!   cannot send a write.
+//!   `From`, no `Deserialize` and no mutable access; the only ways to obtain
+//!   one are [`WriteRequest::steps`] and [`TravelTestRequest::step`]. There
+//!   is no conversion between the two packet types, so read-only code
+//!   (which only ever handles `OutPacket`s) cannot send a write.
 //! * [`WriteRequest`] has one variant per write form below, and nothing
 //!   else. Every parameter is a validated type, so every constructible
 //!   request produces one of these forms. `WriteRequest` is `Serialize` (for
@@ -28,17 +28,30 @@
 //! | W7 | Advanced-key clear | `22 SS 00 00 32` + 50 x `00`, SS `00`..`27` | `22 00 00 00 00` | [`WriteRequest::AdvancedKeyClear`] |
 //! | W8 | Trigger | `21 00 00 00 18 MM` + mask (bytes 6-27) + `A A P R Ah Ah Ph Rh` (bytes 28-35), MM `00`/`0C`/`0D` | `21 00 00 00 01 00` | [`WriteRequest::Trigger`] |
 //! | W9 | Dead band | 5 x `26 01 00 cc LL` + table, LL = `3A` x 4, `20` | `26 01 00 00 00` | [`WriteRequest::DeadBand`] |
+//! | W10 | Advanced-key slot | `22 SS 00 00 32` + 40 slot bytes ([`AdvancedSlotData`]: DKS, MT or TGL) + 10 x `00` | `22 00 00 00 00` | [`WriteRequest::AdvancedKey`] |
+//! | W11 | SOCD | `24 03 00 00 01 PP`, then `24 00 00 cc 28` + 40 pair bytes, cc `00`, `01` | power: none expected ([`AckSpec::Possible`]); chunks `24 00 00 00 00` | [`WriteRequest::Socd`] |
+//! | T1 | Travel test open | `21 00 00 00 18 02` + the layout mask (bytes 6-27) | `21 00 00 00 01 00` | [`TravelTestRequest::Open`] |
+//! | T2 | Travel test close | `21 00 00 00 18 03` | `21 00 00 00 01 00` | [`TravelTestRequest::Close`] |
 //!
-//! All nine are CONFIRMED on hardware (captures c02, c03, c08-c13). Acks
-//! never carry a chunk index, so a chunk can only be matched to its ack by
-//! sending one packet at a time and waiting (stop-and-wait).
+//! W1-W9 are CONFIRMED on hardware (captures c02, c03, c08-c13); W10, W11,
+//! T1 and T2 are CONFIRMED by capture session 3 (c14-c17: the vendor site
+//! sent these bytes and the keyboard accepted them). Keymap entries are
+//! built from the closed [`KeyAssignment`], macro slots from
+//! [`MacroProgram`]. Acks never carry a chunk index, so a chunk can only be
+//! matched to its ack by sending one packet at a time and waiting
+//! (stop-and-wait). The travel test is not a table write: it has its own
+//! request type, [`TravelTestRequest`], and nothing to verify.
 //!
 //! Everything else stays impossible to build here: any `0x14` (reset,
 //! Win-Lock, 6-key, gamepad, sleep), music-rhythm enter, the side light
-//! (`08 00`), custom table 2 (`09 01`), SOCD (`24`), switch types (`25 01`),
-//! reset triggers (`21/06`), calibration (`21` `07`/`08`/`0F`/`10`), the
-//! travel test (`21` `02`/`03`), set poll rate (`21/09`), an empty-mask
-//! trigger write and a non-empty advanced-key slot.
+//! (`08 00`), custom table 2 (`09 01`), a SOCD read sub-command as a write
+//! (`24 01`, `24 02`), switch types (`25 01`), reset triggers (`21/06`),
+//! calibration (`21` `07`/`08`/`0F`/`10`), a travel-test open with another
+//! mask, set poll rate (`21/09`), an empty-mask trigger write, advanced-key
+//! types other than DKS/MT/TGL (RS, RKRT, MDS) and keymap entries of the
+//! categories Fn (`01`), lighting (`02`-`06`), function (`11`) and gamepad
+//! (`18`, `19`). [`is_permitted_packet`] is a coarse header allowlist a
+//! transport layer checks before sending.
 //!
 //! # Example
 //!
@@ -68,9 +81,37 @@
 //!     serde_json::from_str(r#"{"select_profile":2}"#).unwrap();
 //! ```
 
+/// Implements hex `Debug` and hex-string `Serialize` for a boxed-array newtype.
+macro_rules! hex_table {
+    ($ty:ident) => {
+        impl ::std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(
+                    f,
+                    concat!(stringify!($ty), "({})"),
+                    $crate::hex::to_spaced_hex(&self.0[..])
+                )
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&$crate::hex::to_hex(&self.0[..]))
+            }
+        }
+    };
+}
+
+mod advanced;
 mod data;
+mod evidence;
 mod ids;
+mod keymap;
 mod light;
+mod macros;
+mod socd;
+mod travel;
 mod trigger;
 
 #[cfg(test)]
@@ -80,12 +121,25 @@ use std::fmt;
 use std::time::Duration;
 
 pub use crate::error::WriteBuildError;
+pub use crate::model::FnBuiltin;
+pub use advanced::{
+    ADVANCED_SLOT_LEN, AdvancedKeyDef, AdvancedLimits, AdvancedSlotData, Dks, DksRow, DksStep,
+    ModTap, Toggle,
+};
 pub use data::{
     COLOR_TABLE_LEN, CanonicalMacro, ColorTableData, DEAD_BAND_LEN, DeadBandData, DeadBandWrite,
     KEYMAP_LEN, KeymapData, KeymapReference, MACRO_SLOT_LEN, MacroData,
 };
+pub use evidence::{Evidence, UnverifiedNote};
 pub use ids::{AdvancedSlotId, ProfileId};
+pub use keymap::{
+    BuiltinAck, Combo, EntryKind, HidUsage, KeyAssignment, MediaKey, MouseAction, MouseButton,
+    PlacementError, check_placement,
+};
 pub use light::{LIGHT_RECORD_LEN, LightLimits, LightRecord, MainLightWrite};
+pub use macros::{KeyMotion, MacroPlay, MacroProgram, MacroStep};
+pub use socd::{SOCD_PAIRS_LEN, SocdMode, SocdPair, SocdPairsData, SocdWrite};
+pub use travel::{TRAVEL_ACK_TIMEOUT, TravelTestMask, TravelTestRequest};
 pub use trigger::{TriggerGrouping, TriggerLimits, TriggerSetting, TriggerWrite, TriggerWriteMode};
 
 use crate::frame::{HEADER_LEN, REPORT_ID, REPORT_LEN, Report, trimmed};
@@ -100,17 +154,24 @@ pub const COLOR_CHUNK_GAP: Duration = Duration::from_millis(5);
 /// Settle time after a main-light write, which is not acknowledged.
 pub const LIGHT_SETTLE: Duration = Duration::from_millis(20);
 
-/// Bytes per advanced-key slot in the `22 80` read (the write carries 50).
-const ADVANCED_READ_SLOT_LEN: usize = 40;
+/// Pause after the SOCD power write (`24 03`), which the keyboard is not
+/// seen to acknowledge (c15: 3 packets, 2 acks per burst). A writer listens
+/// during it and consumes a `24 00 00 00 00` that arrives anyway
+/// ([`AckSpec::Possible`]).
+pub const SOCD_POWER_SETTLE: Duration = Duration::from_millis(50);
 
 /// Payload length of an advanced-key write (`0x32` = 50 bytes).
 const ADVANCED_WRITE_LEN: u8 = 0x32;
 
+/// Header of the SOCD chunk ack (`24 00 00 00 00`, c15).
+const SOCD_ACK: [u8; HEADER_LEN] = [0x24, 0x00, 0x00, 0x00, 0x00];
+
 /// A 63-byte output report that changes the keyboard.
 ///
-/// There is deliberately **no public constructor**: the only way to obtain a
-/// `WritePacket` is [`WriteRequest::steps`], which only produces the nine
-/// confirmed write forms. It is a different type from the read-only
+/// There is deliberately **no public constructor**: the only ways to obtain
+/// a `WritePacket` are [`WriteRequest::steps`] and
+/// [`TravelTestRequest::step`], which only produce the confirmed write forms
+/// of the [module table](self). It is a different type from the read-only
 /// [`OutPacket`](crate::OutPacket), and neither converts into the other.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WritePacket([u8; REPORT_LEN]);
@@ -204,21 +265,30 @@ pub enum AckSpec {
     /// `21 00 00 00 03 11 PP 00` (bytes 4 and 7 ignored), in either order
     /// (c08, c10: ack and push 3-4 ms after the select).
     ProfileSelected(ProfileId),
+    /// No reply is expected, but one whose bytes 0-4 equal `header` may
+    /// arrive (SOCD power `24 03`: never seen acked, one lone sample). A
+    /// writer listens for it during the step's gap, consumes and reports it
+    /// if it arrives, and never waits for it or registers it as a late ack.
+    Possible {
+        /// Bytes 0-4 of the possible ack.
+        header: [u8; HEADER_LEN],
+    },
 }
 
 impl AckSpec {
     /// Whether a missing ack is an error.
     pub fn is_required(&self) -> bool {
         match self {
-            AckSpec::None => false,
+            AckSpec::None | AckSpec::Possible { .. } => false,
             AckSpec::Report { required, .. } => *required,
             AckSpec::ProfileSelected(_) => true,
         }
     }
 
-    /// Whether the keyboard sends anything at all for this packet.
+    /// Whether the keyboard is expected to send anything for this packet
+    /// (false for [`AckSpec::None`] and [`AckSpec::Possible`]).
     pub fn expects_reply(&self) -> bool {
-        !matches!(self, AckSpec::None)
+        !matches!(self, AckSpec::None | AckSpec::Possible { .. })
     }
 
     /// A tracker that recognises the ack (and push) of one packet.
@@ -274,6 +344,14 @@ impl AckTracker {
     pub fn offer(&mut self, report: &Report) -> AckOffer {
         match self.spec {
             AckSpec::None => AckOffer::Ignored,
+            AckSpec::Possible { header } => {
+                if !self.ack && report.as_bytes()[..HEADER_LEN] == header {
+                    self.ack = true;
+                    AckOffer::Ack
+                } else {
+                    AckOffer::Ignored
+                }
+            }
             AckSpec::Report {
                 header, selector, ..
             } => {
@@ -302,10 +380,10 @@ impl AckTracker {
     }
 
     /// Whether everything expected has arrived (always true for
-    /// [`AckSpec::None`]).
+    /// [`AckSpec::None`] and [`AckSpec::Possible`]).
     pub fn is_complete(&self) -> bool {
         match self.spec {
-            AckSpec::None => true,
+            AckSpec::None | AckSpec::Possible { .. } => true,
             AckSpec::Report { .. } => self.ack,
             AckSpec::ProfileSelected(_) => self.ack && self.push,
         }
@@ -336,9 +414,11 @@ fn is_profile_push(report: &Report, profile: ProfileId) -> bool {
 
 /// Whether `report` has the shape of an acknowledgement of one of the write
 /// forms: `21 00 00 00 01 00` (trigger write; also the vendor site's
-/// empty-mask write, reset triggers and travel-test close),
+/// empty-mask write, reset triggers and travel-test open and close),
 /// `21 00 00 00 02 12` (profile select), `09`/`17`/`18`/`19`/`22`
-/// `00 00 00 00` and `26 01 00 00 00`.
+/// `00 00 00 00`, `26 01 00 00 00` and `24 00 00 00 00` (SOCD chunks, c15;
+/// no read reply has that shape: `24 01` replies carry byte 1 = `01`,
+/// `24 02` byte 1 = `02`).
 ///
 /// A session uses this to notice acknowledgements of another program's
 /// writes. Note that `09 00 00 00 00` is also the reply to the `09 20` read
@@ -351,6 +431,45 @@ pub fn is_write_ack(report: &Report) -> bool {
         [0x21, 0x00, 0x00, 0x00, 0x02] => b[5] == 0x12,
         [0x09 | 0x17 | 0x18 | 0x19 | 0x22, 0x00, 0x00, 0x00, 0x00] => true,
         [0x26, 0x01, 0x00, 0x00, 0x00] => true,
+        [0x24, 0x00, 0x00, 0x00, 0x00] => true,
+        _ => false,
+    }
+}
+
+/// A coarse allowlist of write-packet headers, for a transport layer to
+/// check before anything is sent: `21 00 00 00 00 12` (select profile),
+/// `21 00 00 00 18` with byte 5 `00`/`0C`/`0D` (trigger) or `02`/`03`
+/// (travel test), `17 00 00 00 02 00 00` (music-rhythm leave),
+/// `07 00 00 00 0E` with a mode other than `64` (main light), `09 00`,
+/// `18 00`/`18 02`, `19 00`..`19 09`, `22 00`..`22 27` with byte 4 `32`
+/// and a type (byte 5) of at most 3, `26 01`, `24 03 00 00 01 00|01` and
+/// `24 00 00 00|01 28`.
+///
+/// Every packet [`WriteRequest::steps`] and [`TravelTestRequest::step`]
+/// produce passes (a unit test checks a large sample). It is a second,
+/// independent line of defence; the exact forms are enforced by the
+/// builders.
+pub fn is_permitted_packet(packet: &WritePacket) -> bool {
+    let b = packet.as_bytes();
+    match b[0] {
+        0x21 => {
+            b[1..4] == [0x00, 0x00, 0x00]
+                && matches!(
+                    (b[4], b[5]),
+                    (0x00, 0x12) | (0x18, 0x00 | 0x0C | 0x0D | 0x02 | 0x03)
+                )
+        }
+        0x17 => b[1..7] == [0x00, 0x00, 0x00, 0x02, 0x00, 0x00],
+        0x07 => b[1..5] == [0x00, 0x00, 0x00, 0x0E] && b[5] != 0x64,
+        0x09 => b[1] == 0x00,
+        0x18 => matches!(b[1], 0x00 | 0x02),
+        0x19 => b[1] <= 0x09,
+        0x22 => b[1] <= 0x27 && b[2..5] == [0x00, 0x00, ADVANCED_WRITE_LEN] && b[5] <= 0x03,
+        0x26 => b[1] == 0x01,
+        0x24 => {
+            (b[1..5] == [0x03, 0x00, 0x00, 0x01] && b[5] <= 0x01)
+                || (b[1..3] == [0x00, 0x00] && b[3] <= 0x01 && b[4] == 0x28)
+        }
         _ => false,
     }
 }
@@ -364,7 +483,8 @@ pub struct WriteStep {
     /// How the keyboard acknowledges it.
     pub ack: AckSpec,
     /// Pause after the packet (and its ack): [`COLOR_CHUNK_GAP`] after each
-    /// colour chunk, [`LIGHT_SETTLE`] after a main-light write, else zero.
+    /// colour chunk, [`LIGHT_SETTLE`] after a main-light write,
+    /// [`SOCD_POWER_SETTLE`] after the SOCD power write, else zero.
     #[cfg_attr(
         feature = "serde",
         serde(rename = "gap_after_ms", serialize_with = "serialize_millis")
@@ -410,7 +530,7 @@ pub enum TableId {
         /// Which slot.
         slot: MacroSlotId,
     },
-    /// One advanced-key slot (`22`; only cleared).
+    /// One advanced-key slot (`22`).
     AdvancedKey {
         /// Which slot.
         slot: AdvancedSlotId,
@@ -419,10 +539,15 @@ pub enum TableId {
     Triggers,
     /// Dead band (`26`).
     DeadBand,
-    /// SOCD pairs (`24 01`; never written).
+    /// SOCD pairs (`24 01`; read side only, written as part of
+    /// [`TableId::Socd`]).
     SocdPairs,
-    /// SOCD power and hotkey (`24 02`; never written).
+    /// SOCD power and hotkey (`24 02`; read side only: the power is written
+    /// as part of [`TableId::Socd`], the hotkey never).
     SocdSettings,
+    /// SOCD power and pairs as one write (`24 03` + `24 00`, read back with
+    /// `24 02` and `24 01`).
+    Socd,
     /// Per-key switch types (`25 02`; never written).
     SwitchTypes,
     /// Polling rate (`21/09`; never written).
@@ -450,6 +575,7 @@ impl fmt::Display for TableId {
             TableId::DeadBand => f.write_str("dead band"),
             TableId::SocdPairs => f.write_str("SOCD pairs"),
             TableId::SocdSettings => f.write_str("SOCD settings"),
+            TableId::Socd => f.write_str("SOCD"),
             TableId::SwitchTypes => f.write_str("switch types"),
             TableId::PollRate => f.write_str("polling rate"),
             TableId::WinLockAndRollover => f.write_str("Win-Lock and rollover"),
@@ -457,7 +583,8 @@ impl fmt::Display for TableId {
     }
 }
 
-/// Every write Phase 2 can send (see the [module documentation](self)).
+/// Every table write OpenWraith can send (see the [module
+/// documentation](self)).
 ///
 /// Each variant holds validated data, so every constructible request
 /// produces only the confirmed write forms. Serialize only.
@@ -475,14 +602,19 @@ pub enum WriteRequest {
     Keymap(Layer, KeymapData),
     /// W6: one macro slot.
     Macro(MacroSlotId, MacroData),
-    /// W7: clear one advanced-key slot (all-zero content; non-empty slots
-    /// cannot be written: their write format is CODE-ONLY).
+    /// W7: clear one advanced-key slot (all-zero content). Non-empty slots
+    /// are written with [`WriteRequest::AdvancedKey`] (W10).
     AdvancedKeyClear(AdvancedSlotId),
     /// W8: trigger settings for a set of keys.
     Trigger(TriggerWrite),
     /// W9: the whole dead-band table, validated against the keyboard's range
     /// and the model's ceiling ([`DeadBandWrite::new`]).
     DeadBand(DeadBandWrite),
+    /// W10: one non-empty advanced-key slot (DKS, MT or TGL).
+    AdvancedKey(AdvancedSlotId, AdvancedSlotData),
+    /// W11: SOCD power and the whole pair table, always as the site's
+    /// burst (power, chunk 0, chunk 1).
+    Socd(SocdWrite),
 }
 
 impl WriteRequest {
@@ -575,6 +707,29 @@ impl WriteRequest {
                 ack([0x26, 0x01, 0x00, 0x00, 0x00]),
                 Duration::ZERO,
             ),
+            WriteRequest::AdvancedKey(slot, data) => vec![step(
+                WritePacket::new(
+                    [0x22, slot.get(), 0x00, 0x00, ADVANCED_WRITE_LEN],
+                    data.as_bytes(),
+                ),
+                ack([0x22, 0x00, 0x00, 0x00, 0x00]),
+                Duration::ZERO,
+            )],
+            WriteRequest::Socd(write) => {
+                let mut steps = vec![step(
+                    WritePacket::new([0x24, 0x03, 0x00, 0x00, 0x01], &[u8::from(write.power())]),
+                    AckSpec::Possible { header: SOCD_ACK },
+                    SOCD_POWER_SETTLE,
+                )];
+                steps.extend(chunked(
+                    [0x24, 0x00],
+                    write.pairs().as_bytes(),
+                    40,
+                    ack(SOCD_ACK),
+                    Duration::ZERO,
+                ));
+                steps
+            }
         }
     }
 
@@ -591,6 +746,8 @@ impl WriteRequest {
             WriteRequest::AdvancedKeyClear(slot) => TableId::AdvancedKey { slot: *slot },
             WriteRequest::Trigger(_) => TableId::Triggers,
             WriteRequest::DeadBand(_) => TableId::DeadBand,
+            WriteRequest::AdvancedKey(slot, _) => TableId::AdvancedKey { slot: *slot },
+            WriteRequest::Socd(_) => TableId::Socd,
         }
     }
 
@@ -606,6 +763,8 @@ impl WriteRequest {
             WriteRequest::AdvancedKeyClear(_) => "advanced_key_clear",
             WriteRequest::Trigger(_) => "trigger",
             WriteRequest::DeadBand(_) => "dead_band",
+            WriteRequest::AdvancedKey(..) => "advanced_key",
+            WriteRequest::Socd(_) => "socd",
         }
     }
 
@@ -621,13 +780,16 @@ impl WriteRequest {
             }
             WriteRequest::Keymap(layer, _) => vec![ReadRequest::Keymap(*layer)],
             WriteRequest::Macro(slot, _) => vec![ReadRequest::Macro(*slot)],
-            WriteRequest::AdvancedKeyClear(_) => vec![ReadRequest::AdvancedKeys],
+            WriteRequest::AdvancedKeyClear(_) | WriteRequest::AdvancedKey(..) => {
+                vec![ReadRequest::AdvancedKeys]
+            }
             WriteRequest::Trigger(write) => write
                 .positions()
                 .into_iter()
                 .map(ReadRequest::KeyTrigger)
                 .collect(),
             WriteRequest::DeadBand(_) => vec![ReadRequest::DeadBand],
+            WriteRequest::Socd(_) => vec![ReadRequest::SocdSettings, ReadRequest::SocdPairs],
         }
     }
 
@@ -640,8 +802,12 @@ impl WriteRequest {
     /// * macro: the table bytes are equal, where an empty slot matches both
     ///   all `00` and all `FF`;
     /// * advanced-key clear: the slot's 40 bytes in `22 80` are all zero;
+    /// * advanced-key slot: the slot's 40 bytes in `22 80` equal the data;
     /// * trigger: payload bytes 1..10 of each key's `21/05` reply equal
-    ///   `MM A A P R Ah Ah Ph Rh`.
+    ///   `MM A A P R Ah Ah Ph Rh`;
+    /// * SOCD: `24 02` payload byte 0 equals the power (bytes 1-5, unknown
+    ///   and the hotkey, are not compared) and the 80 `24 01` table bytes
+    ///   equal the pairs.
     ///
     /// `replies` may hold other replies too; a missing one is a mismatch. If
     /// it holds several replies to the same read, the last one counts (a
@@ -673,26 +839,36 @@ impl WriteRequest {
         Ok(())
     }
 
-    /// The bytes [`check`](Self::check) expects in the reply to `read`.
-    fn expected_bytes(&self, read: ReadRequest) -> Vec<u8> {
+    /// The bytes [`check`](Self::check) expects in the reply to `read` (one
+    /// of [`verify_reads`](Self::verify_reads)), in the form of
+    /// [`observed_bytes`](Self::observed_bytes).
+    pub fn expected_bytes(&self, read: ReadRequest) -> Vec<u8> {
         match self {
             WriteRequest::SelectProfile(profile) => vec![profile.get()],
             WriteRequest::MainLight(write) => write.record().as_bytes().to_vec(),
             WriteRequest::CustomColors1(data) => data.as_bytes().to_vec(),
             WriteRequest::Keymap(_, data) => data.as_bytes().to_vec(),
             WriteRequest::Macro(_, data) => data.to_bytes().to_vec(),
-            WriteRequest::AdvancedKeyClear(_) => vec![0u8; ADVANCED_READ_SLOT_LEN],
+            WriteRequest::AdvancedKeyClear(_) => vec![0u8; ADVANCED_SLOT_LEN],
             WriteRequest::Trigger(write) => match read {
                 ReadRequest::KeyTrigger(_) => write.setting().read_bytes().to_vec(),
                 _ => Vec::new(),
             },
             WriteRequest::DeadBand(data) => data.as_bytes().to_vec(),
+            WriteRequest::AdvancedKey(_, data) => data.as_bytes().to_vec(),
+            WriteRequest::Socd(write) => match read {
+                ReadRequest::SocdSettings => vec![u8::from(write.power())],
+                ReadRequest::SocdPairs => write.pairs().as_bytes().to_vec(),
+                _ => Vec::new(),
+            },
         }
     }
 
-    /// The bytes of `reply` that [`check`](Self::check) compares, or `None`
-    /// if the reply is too short or its chunks are malformed.
-    fn observed_bytes(&self, reply: &RawResponse) -> Option<Vec<u8>> {
+    /// The bytes of `reply` (a reply to one of
+    /// [`verify_reads`](Self::verify_reads)) that [`check`](Self::check)
+    /// compares, or `None` if the reply is too short or its chunks are
+    /// malformed.
+    pub fn observed_bytes(&self, reply: &RawResponse) -> Option<Vec<u8>> {
         match self {
             WriteRequest::SelectProfile(_) => reply.payload().get(1..2).map(<[u8]>::to_vec),
             WriteRequest::MainLight(_) => Some(reply.payload()),
@@ -700,14 +876,19 @@ impl WriteRequest {
             | WriteRequest::Keymap(..)
             | WriteRequest::Macro(..)
             | WriteRequest::DeadBand(_) => reply.table_bytes("read-back").ok(),
-            WriteRequest::AdvancedKeyClear(slot) => {
+            WriteRequest::AdvancedKeyClear(slot) | WriteRequest::AdvancedKey(slot, _) => {
                 let table = reply.table_bytes("advanced keys").ok()?;
-                let start = usize::from(slot.get()) * ADVANCED_READ_SLOT_LEN;
+                let start = usize::from(slot.get()) * ADVANCED_SLOT_LEN;
                 table
-                    .get(start..start + ADVANCED_READ_SLOT_LEN)
+                    .get(start..start + ADVANCED_SLOT_LEN)
                     .map(<[u8]>::to_vec)
             }
             WriteRequest::Trigger(_) => reply.payload().get(1..10).map(<[u8]>::to_vec),
+            WriteRequest::Socd(_) => match reply.request() {
+                ReadRequest::SocdSettings => reply.payload().get(..1).map(<[u8]>::to_vec),
+                ReadRequest::SocdPairs => reply.table_bytes("SOCD pairs").ok(),
+                _ => None,
+            },
         }
     }
 }
@@ -735,6 +916,14 @@ impl fmt::Display for WriteRequest {
                 write!(f, "triggers of {} (21)", keys.join(", "))
             }
             WriteRequest::DeadBand(_) => f.write_str("dead band (26 01)"),
+            WriteRequest::AdvancedKey(slot, _) => {
+                write!(f, "advanced-key slot {0} (22 {0:02X})", slot.get())
+            }
+            WriteRequest::Socd(write) => write!(
+                f,
+                "SOCD power {} and pairs (24 03, 24 00)",
+                if write.power() { "on" } else { "off" }
+            ),
         }
     }
 }

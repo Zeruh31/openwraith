@@ -6,8 +6,19 @@
 //! * **Type gate.** Only a [`Session`] over a [`WriteTransport`] has
 //!   [`Session::writer`]; read-only code is generic over
 //!   [`Transport`](crate::Transport) and cannot reach it. Only
-//!   [`WriteRequest`]s (the nine write forms confirmed on hardware) can be
-//!   sent.
+//!   [`WriteRequest`]s (the write forms W1-W11 confirmed by captures and on
+//!   hardware) and the travel-test open and close
+//!   ([`travel`](crate::travel)) can be sent, and every packet passes the
+//!   egress allowlist right before it is sent.
+//! * **Key-depth tests.** No table is written while the keyboard may stream
+//!   key depths: while a close was not acknowledged
+//!   ([`WriteError::TravelTestMaybeOpen`]) or while stream reports arrive
+//!   that no test of this session opened ([`WriteError::TravelTestOpen`]).
+//!   Profile selects stay allowed.
+//! * **The keyboard's own switches.** SOCD switched with Fn + Right Shift
+//!   during a SOCD write is never overridden: a read-back that then differs
+//!   fails with [`WriteError::ChangedOnKeyboard`] without a second
+//!   attempt.
 //! * **Back up first.** The only public way to write a table is
 //!   [`Writer::write_guarded`], which needs a [`SavedBackup`] of the active
 //!   profile of this keyboard, confirms the active profile with `21/11` and
@@ -108,12 +119,15 @@ use serde::Serialize;
 use crate::backup::{Progress, Snapshot, read_snapshot};
 use crate::error::{ProfilesFailure, SessionError, WriteError};
 use crate::safety::SavedBackup;
-use crate::session::{Expect, Fatal, ForeignActivity, Session, Unrelated};
+use crate::session::{Expect, Fatal, ForeignActivity, Session, TravelState, Unrelated};
 use crate::transport::WriteTransport;
 
 /// How a pending late acknowledgement is waited for: in slices of this
 /// length, so the wait ends soon after it arrives.
 const SETTLE_SLICE: Duration = Duration::from_millis(50);
+
+/// At most this many queued reports are drained after a listening window.
+const SETTLE_DRAIN_MAX: usize = 512;
 
 /// How the user agreed to a write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -126,6 +140,15 @@ pub enum ConsentOrigin {
     CommandLineFlag,
     /// An application (such as a GUI) obtained the user's agreement.
     Application,
+    /// A rule the user set up beforehand (an automatic profile switch for a
+    /// game): only profile selects are made with it
+    /// ([`ProfileSwitcher`](crate::ProfileSwitcher)). The library enforces
+    /// it: a [`Writer`] with this consent selects profiles and reads, and
+    /// refuses every other write ([`WriteError::ConsentOnlyForSelects`]), as
+    /// do the restore, the edits and the travel test. The other origins are
+    /// not restricted; which code may use which consent is checked by the
+    /// application's own source rules.
+    StandingRule,
 }
 
 /// The user's agreement to write to the keyboard; required to create a
@@ -144,6 +167,16 @@ impl WriteConsent {
     /// How the consent was obtained.
     pub fn origin(&self) -> ConsentOrigin {
         self.origin
+    }
+
+    /// Fails with [`WriteError::ConsentOnlyForSelects`] when this consent
+    /// may only select profiles ([`ConsentOrigin::StandingRule`]) and
+    /// something else is about to be written.
+    pub(crate) fn ensure_not_standing_rule(self) -> Result<(), WriteError> {
+        match self.origin {
+            ConsentOrigin::StandingRule => Err(WriteError::ConsentOnlyForSelects),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -337,6 +370,22 @@ pub enum WriteWarning {
     /// a base keymap was unsaved ([`Writer::base_keymap_unsaved`]), so the
     /// keyboard dropped it.
     BaseKeymapNotSaved,
+    /// The keyboard acknowledged a packet for which no acknowledgement was
+    /// expected (the SOCD power write `24 03`, spec 2.7); it was taken as
+    /// ours.
+    UnexpectedAck {
+        /// The packet (1-based).
+        packet: usize,
+    },
+    /// SOCD was switched on the keyboard (Fn + Right Shift) while it was
+    /// written (the read-back still matched what was written, so the
+    /// keyboard's switch may have been overwritten), or after it and before
+    /// the persistence check read it again (which then does not count it,
+    /// [`Persistence::NotChecked`](crate::Persistence::NotChecked)).
+    SocdToggledOnKeyboard {
+        /// Whether SOCD is on now, as last read.
+        power: bool,
+    },
 }
 
 /// What a table write did.
@@ -489,17 +538,22 @@ impl<T: WriteTransport> Session<T> {
         let activity = self.activity_since_gate();
         if !activity.is_quiet() {
             if activity.status_reports == 0 && activity.foreign_acks == 0 {
-                // Only profile reports: another active profile than the one
-                // we last read is a profile change (on the keyboard or by
-                // another program); the same profile is another program's
-                // query reply.
-                if let (Some(reported), Some(known)) = (
-                    self.last_foreign_profile_report(),
-                    self.last_known_profile(),
-                ) {
-                    if reported != known {
+                // Only profile reports. A report of another profile than
+                // the one we last read is a profile change (Fn + 1..4 on the
+                // keyboard): a round trip 1 -> 2 -> 1 included, which ends
+                // on the known profile but reloaded it meanwhile. Reports in
+                // the push form (byte 7 = 00) only are a switch on the
+                // keyboard too. Same-profile query replies (byte 7 = 01) are
+                // another program's. Another program's own switch is caught
+                // by its acknowledgement (a foreign ack).
+                let reports = self.foreign_profile_reports();
+                let known = self.last_known_profile();
+                let other = known.is_some_and(|k| reports.iter().any(|(p, _)| *p != k));
+                let pushes_only = reports.iter().all(|(_, extra)| *extra == 0x00);
+                if let Some(&(reported, _)) = reports.last() {
+                    if other || pushes_only {
                         return Err(WriteError::ProfileChanged {
-                            expected: Some(known),
+                            expected: known,
                             reported,
                         });
                     }
@@ -515,7 +569,6 @@ impl<T: WriteTransport> Session<T> {
             identity: None,
             sends: HashMap::new(),
             stop: None,
-            base_unsaved: false,
         })
     }
 }
@@ -582,9 +635,6 @@ pub struct Writer<'s, T: WriteTransport> {
     identity: Option<Identity>,
     sends: HashMap<SendKey, u32>,
     stop: Option<ForeignActivity>,
-    /// A base keymap was sent and no complete Fn-keymap write followed yet
-    /// ([`base_keymap_unsaved`](Writer::base_keymap_unsaved)).
-    base_unsaved: bool,
 }
 
 impl<T: WriteTransport> Writer<'_, T> {
@@ -629,9 +679,10 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// profile switch or a power loss drops it, even after the commit settle
     /// (spec 4.8.2). [`select_profile`](Self::select_profile) reports such a
     /// switch with [`WriteWarning::BaseKeymapNotSaved`] and clears this.
-    /// Kept per writer: a new writer starts with `false`.
+    /// Kept by the session ([`Session::base_keymap_unsaved`]), so a later
+    /// writer of the same session sees it too.
     pub fn base_keymap_unsaved(&self) -> bool {
-        self.base_unsaved
+        self.session.base_keymap_unsaved()
     }
 
     /// Reads the active profile (`21/11`).
@@ -762,7 +813,8 @@ impl<T: WriteTransport> Writer<'_, T> {
             if active == profile {
                 // The switch reloaded the profile: a base keymap without
                 // the Fn keymap after it is gone (spec 4.8.2).
-                if std::mem::take(&mut self.base_unsaved) {
+                if self.session.base_keymap_unsaved() {
+                    self.session.set_base_keymap_unsaved(false);
                     warnings.push(WriteWarning::BaseKeymapNotSaved);
                 }
                 return Ok(SelectOutcome {
@@ -1022,6 +1074,7 @@ impl<T: WriteTransport> Writer<'_, T> {
         on_packet: &mut dyn FnMut(PacketProgress),
     ) -> Result<WriteOutcome, WriteError> {
         self.ensure_usable()?;
+        self.consent.ensure_not_standing_rule()?;
         self.check_backed_up(saved)?;
         self.write_trigger_observed(trigger, on_packet)
     }
@@ -1057,7 +1110,22 @@ impl<T: WriteTransport> Writer<'_, T> {
         request: &WriteRequest,
         on_packet: &mut dyn FnMut(PacketProgress),
     ) -> Result<WriteOutcome, WriteError> {
-        self.write_with(request, Completion::Verified, on_packet)
+        self.write_with(request, Completion::Verified, on_packet, None)
+    }
+
+    /// [`write_observed`](Self::write_observed) with the session's SOCD push
+    /// count (`socd_mark`, [`Session::socd_pushes`]) taken by the caller
+    /// before it read the table to check it for changes: a SOCD switch on
+    /// the keyboard from then on is reported
+    /// ([`WriteWarning::SocdToggledOnKeyboard`],
+    /// [`WriteError::ChangedOnKeyboard`]).
+    pub(crate) fn write_observed_marked(
+        &mut self,
+        request: &WriteRequest,
+        on_packet: &mut dyn FnMut(PacketProgress),
+        socd_mark: u64,
+    ) -> Result<WriteOutcome, WriteError> {
+        self.write_with(request, Completion::Verified, on_packet, Some(socd_mark))
     }
 
     /// [`write_observed`](Self::write_observed) for a [`CommitTrigger`]
@@ -1075,16 +1143,23 @@ impl<T: WriteTransport> Writer<'_, T> {
         trigger: &CommitTrigger,
         on_packet: &mut dyn FnMut(PacketProgress),
     ) -> Result<WriteOutcome, WriteError> {
-        self.write_with(trigger.request(), Completion::EveryPacketAcked, on_packet)
+        self.write_with(
+            trigger.request(),
+            Completion::EveryPacketAcked,
+            on_packet,
+            None,
+        )
     }
 
     /// The write of [`write_observed`](Self::write_observed) and
-    /// [`write_trigger_observed`](Self::write_trigger_observed).
+    /// [`write_trigger_observed`](Self::write_trigger_observed). `socd_mark`:
+    /// the SOCD push count to compare with (else the count right now).
     fn write_with(
         &mut self,
         request: &WriteRequest,
         completion: Completion,
         on_packet: &mut dyn FnMut(PacketProgress),
+        socd_mark: Option<u64>,
     ) -> Result<WriteOutcome, WriteError> {
         if let WriteRequest::SelectProfile(profile) = request {
             let writes_before = self.session.stats().writes;
@@ -1100,10 +1175,18 @@ impl<T: WriteTransport> Writer<'_, T> {
             });
         }
         self.ensure_usable()?;
+        // A standing rule (an automatic switch) only ever selects profiles.
+        self.consent.ensure_not_standing_rule()?;
         self.listen_checked(Duration::ZERO)?;
         if let Some(evidence) = self.stop {
             return Err(WriteError::OtherProgramActive { evidence });
         }
+        // Nothing is written while the keyboard may stream key depths (spec
+        // 4.11.7): a test left open must be closed first.
+        self.check_travel_closed()?;
+        // SOCD switched on the keyboard (Fn + Right Shift) during the write
+        // (or since the caller's check of the table).
+        let socd_pushes = socd_mark.unwrap_or_else(|| self.session.socd_pushes());
         // The main light is always built from the keyboard's current mode.
         let first_request = self.rebuild(request)?;
         let request = &first_request;
@@ -1121,8 +1204,23 @@ impl<T: WriteTransport> Writer<'_, T> {
         outcome.sends = 1;
         let sent = self.send_steps(request, 1, &mut outcome, on_packet)?;
         let verified = self.verify(request, &mut outcome)?;
+        let toggled = self.session.socd_pushes() > socd_pushes;
         let first = match self.unverified(request, completion, sent, verified, 1) {
-            None => return Ok(self.verified_outcome(request, sent, outcome)),
+            None => {
+                if let (true, WriteRequest::Socd(socd)) = (toggled, request) {
+                    outcome.warnings.push(WriteWarning::SocdToggledOnKeyboard {
+                        power: socd.power(),
+                    });
+                }
+                return Ok(self.verified_outcome(request, sent, outcome));
+            }
+            // The user switched SOCD on the keyboard meanwhile: sending the
+            // table again would override that.
+            Some(_) if toggled && request.table() == TableId::Socd => {
+                return Err(WriteError::ChangedOnKeyboard {
+                    table: TableId::Socd,
+                });
+            }
             Some(failure) => failure,
         };
 
@@ -1182,9 +1280,28 @@ impl<T: WriteTransport> Writer<'_, T> {
         outcome: WriteOutcome,
     ) -> WriteOutcome {
         if sent == Sent::Complete && matches!(request, WriteRequest::Keymap(Layer::Fn, _)) {
-            self.base_unsaved = false;
+            self.session.set_base_keymap_unsaved(false);
         }
         outcome
+    }
+
+    /// Refuses a table write while the keyboard may stream key depths: a
+    /// close that was not acknowledged ([`WriteError::TravelTestMaybeOpen`])
+    /// or stream reports while no test of ours is open
+    /// ([`WriteError::TravelTestOpen`]).
+    pub(crate) fn check_travel_closed(&self) -> Result<(), WriteError> {
+        match self.session.travel_state() {
+            TravelState::MaybeOpen => return Err(WriteError::TravelTestMaybeOpen),
+            TravelState::Open => {
+                return Err(WriteError::TravelTestOpen { stray_reports: 0 });
+            }
+            TravelState::Closed => {}
+        }
+        let stray_reports = self.session.stray_travel_since_gate();
+        if stray_reports > 0 {
+            return Err(WriteError::TravelTestOpen { stray_reports });
+        }
+        Ok(())
     }
 
     /// Reads one complete profile snapshot (the [`read_all`](crate::read_all)
@@ -1205,6 +1322,11 @@ impl<T: WriteTransport> Writer<'_, T> {
             ..activity
         });
         Ok(result?)
+    }
+
+    /// The keyboard's model (`0D`, read once per writer).
+    pub(crate) fn model(&mut self) -> Result<&'static Model, WriteError> {
+        Ok(self.identity()?.model)
     }
 
     /// The keyboard's product code and model (`0D`, read once per writer).
@@ -1236,7 +1358,7 @@ impl<T: WriteTransport> Writer<'_, T> {
 
     /// Fails without sending anything when the session saw a reset or lost
     /// its connection.
-    fn ensure_usable(&self) -> Result<(), WriteError> {
+    pub(crate) fn ensure_usable(&self) -> Result<(), WriteError> {
         match self.session.fatal() {
             Some(fatal) => Err(fatal_error(fatal)),
             None => Ok(()),
@@ -1244,7 +1366,7 @@ impl<T: WriteTransport> Writer<'_, T> {
     }
 
     /// Records foreign activity seen during an operation.
-    fn note_foreign(&mut self, activity: ForeignActivity) {
+    pub(crate) fn note_foreign(&mut self, activity: ForeignActivity) {
         if activity.status_reports == 0 && activity.foreign_acks == 0 {
             return;
         }
@@ -1265,21 +1387,23 @@ impl<T: WriteTransport> Writer<'_, T> {
             .unwrap_or_default()
             .iter()
             .find_map(|event| match event {
-                DeviceEvent::ProfileReport { profile, .. } => Some(*profile),
+                DeviceEvent::ProfileReport { profile, extra } => Some((*profile, *extra)),
                 _ => None,
             });
         match reported {
-            Some(profile) => Err(self.unexpected_profile_report(profile)),
+            Some((profile, extra)) => Err(self.unexpected_profile_report(profile, extra)),
             None => Ok(()),
         }
     }
 
-    /// The error for a profile report we did not cause. A report of another
-    /// profile than the known one is a profile change: the reported profile
-    /// becomes the known one.
-    fn unexpected_profile_report(&mut self, reported: u8) -> WriteError {
+    /// The error for a profile report we did not cause (`extra`: its byte
+    /// 7). A report of another profile than the known one, or of the same
+    /// one in the push form (byte 7 = `00`, a switch on the keyboard), is a
+    /// profile change: the reported profile becomes the known one. A
+    /// same-profile query reply (byte 7 = `01`) is another program's.
+    fn unexpected_profile_report(&mut self, reported: u8, extra: u8) -> WriteError {
         let expected = self.known_profile.map(ProfileId::get);
-        if expected == Some(reported) {
+        if expected == Some(reported) && extra != 0x00 {
             // The same profile: another program's query reply.
             return WriteError::OtherProgramActive {
                 evidence: ForeignActivity {
@@ -1337,12 +1461,14 @@ impl<T: WriteTransport> Writer<'_, T> {
     }
 
     /// Handles a report that is not the acknowledgement being waited for.
-    fn handle_unrelated(&mut self, report: &Report) -> Result<(), WriteError> {
+    pub(crate) fn handle_unrelated(&mut self, report: &Report) -> Result<(), WriteError> {
         match self.session.classify_unrelated(report) {
             Unrelated::Reset => Err(WriteError::KeyboardReset {
                 report: report.summary(),
             }),
-            Unrelated::ProfileReport { profile } => Err(self.unexpected_profile_report(profile)),
+            Unrelated::ProfileReport { profile, extra } => {
+                Err(self.unexpected_profile_report(profile, extra))
+            }
             Unrelated::ForeignStatus => {
                 self.note_foreign(ForeignActivity {
                     status_reports: 1,
@@ -1357,13 +1483,22 @@ impl<T: WriteTransport> Writer<'_, T> {
                 });
                 Ok(())
             }
-            Unrelated::Expected | Unrelated::Other => Ok(()),
+            // The keyboard's own reports (SOCD push, travel stream): never
+            // another program.
+            Unrelated::KeyboardEvent
+            | Unrelated::Travel
+            | Unrelated::Expected
+            | Unrelated::Other => Ok(()),
         }
     }
 
     /// Waits up to `timeout` for the acknowledgement described by `spec`.
     /// Unrelated reports do not extend the deadline.
-    fn wait_for(&mut self, spec: AckSpec, timeout: Duration) -> Result<AckTracker, WriteError> {
+    pub(crate) fn wait_for(
+        &mut self,
+        spec: AckSpec,
+        timeout: Duration,
+    ) -> Result<AckTracker, WriteError> {
         let mut tracker = spec.tracker();
         let deadline = self.session.now() + timeout;
         while !tracker.is_complete() {
@@ -1446,7 +1581,14 @@ impl<T: WriteTransport> Writer<'_, T> {
             outcome.packets += 1;
             if let WriteRequest::Keymap(Layer::Base, _) = request {
                 // In the working copy now; saved only by an 18 02 after it.
-                self.base_unsaved = true;
+                self.session.set_base_keymap_unsaved(true);
+            }
+            if let AckSpec::Possible { .. } = step.ack {
+                // No ack is expected (SOCD power, c15), but one may come:
+                // listen for it during the pause instead of taking it for
+                // another program's.
+                self.listen_for_possible_ack(step.ack, step.gap_after, packet, outcome)?;
+                continue;
             }
             if step.ack.expects_reply() {
                 let required = step.ack.is_required();
@@ -1479,6 +1621,45 @@ impl<T: WriteTransport> Writer<'_, T> {
             }
         }
         Ok(Sent::Complete)
+    }
+
+    /// Listens for `window` after a packet whose acknowledgement may come
+    /// but is not expected ([`AckSpec::Possible`]): a matching report is
+    /// counted as ours and reported ([`WriteWarning::UnexpectedAck`]);
+    /// everything else is classified as always. Never waits longer, never
+    /// registers a late acknowledgement.
+    fn listen_for_possible_ack(
+        &mut self,
+        spec: AckSpec,
+        window: Duration,
+        packet: usize,
+        outcome: &mut WriteOutcome,
+    ) -> Result<(), WriteError> {
+        let mut tracker = spec.tracker();
+        let deadline = self.session.now() + window;
+        // After the window only queued reports are drained, a bounded number.
+        let mut late = 0usize;
+        loop {
+            let remaining = deadline.saturating_duration_since(self.session.now());
+            if remaining.is_zero() {
+                if late >= SETTLE_DRAIN_MAX {
+                    break;
+                }
+                late += 1;
+            }
+            let Some(report) = self.session.read_input(remaining)? else {
+                break;
+            };
+            if tracker.offer(&report) == AckOffer::Ack {
+                self.session.count_ack();
+                outcome
+                    .warnings
+                    .push(WriteWarning::UnexpectedAck { packet });
+            } else {
+                self.handle_unrelated(&report)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reads `request`'s verify reads and compares them; on a mismatch reads
@@ -1559,6 +1740,9 @@ fn fatal_error(fatal: &Fatal) -> WriteError {
         },
         Fatal::Disconnected(message) => WriteError::Disconnected {
             message: message.clone(),
+        },
+        Fatal::Refused(packet) => WriteError::EgressRefused {
+            packet: packet.clone(),
         },
     }
 }

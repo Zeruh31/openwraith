@@ -3,8 +3,8 @@
 //! This crate does no I/O. It knows how to build **read** requests, how to
 //! recognise the input reports that answer them, and how to decode the
 //! collected reports into typed models. The separate [`write`](mod@write) module builds
-//! the few write packets that are confirmed on hardware (Phase 2). Talking to
-//! a real device is the job of the `openwraith-hid` crate.
+//! the few write packets that are confirmed by captures and on hardware.
+//! Talking to a real device is the job of the `openwraith-hid` crate.
 //!
 //! The protocol is described in `docs/PROTOCOL.md` (our own document, written
 //! from USB captures and an analysis of the vendor's web configurator). Section
@@ -32,8 +32,9 @@
 //! ```
 //!
 //! Writes use a different packet type, [`WritePacket`], produced only by
-//! [`WriteRequest::steps`] for the nine write forms confirmed on hardware.
-//! There is no conversion between `OutPacket` and `WritePacket`, so code that
+//! [`WriteRequest::steps`] for the confirmed table writes and by
+//! [`TravelTestRequest::step`] for the travel-test open and close. There is
+//! no conversion between `OutPacket` and `WritePacket`, so code that
 //! handles only `OutPacket`s cannot send a write. See the [`write`](mod@write) module.
 //!
 //! # Typical flow
@@ -88,9 +89,10 @@ pub use decode::{
     ActiveCustomTable, ActiveProfile, AdvancedKey, AdvancedKeySlot, AdvancedKeys, CapabilityFlagsA,
     CapabilityFlagsB, ColorTable, DeadBand, DeadBandTable, Decoded, DeviceInfo, FnLockedKeys,
     FromResponse, KeyAction, KeyTrigger, KeymapEntry, KeymapTable, LightDirection, LightEffect,
-    LightMode, LightModeList, LinkType, MacroContent, MacroPlayMode, MacroSlot, MacroStep,
-    PollRate, Rgb, SocdEntry, SocdPairs, SocdSettings, Status, SwitchTypeList, SwitchTypeTable,
-    TriggerGlobal, TriggerMode, WinLockOptions, decode, switch_type_name,
+    LightMode, LightModeList, LinkType, LongTravelFields, MacroContent, MacroPlayMode, MacroSlot,
+    MacroStep, PollRate, Rgb, SocdEntry, SocdPairs, SocdSettings, Status, SwitchTypeList,
+    SwitchTypeTable, TravelReport, TravelVariant, TriggerGlobal, TriggerMode, WinLockOptions,
+    decode, switch_type_name,
 };
 pub use error::{DecodeError, FrameError, ResponseError, WriteBuildError};
 pub use event::{DeviceEvent, is_keyboard_reset};
@@ -100,8 +102,8 @@ pub use layout::{
     KEY_MASK_LEN, Key, KeyMask, KeyPos, MATRIX_COLS, MATRIX_ROWS, MATRIX_SIZE, W75_KEYS,
 };
 pub use model::{
-    CONFIG_USAGE, CONFIG_USAGE_PAGE, MODELS, Model, PRODUCT_IDS, VENDOR_ID, W75,
-    W75_WRITE_CEILINGS, WriteCeilings, model_for_product,
+    CONFIG_USAGE, CONFIG_USAGE_PAGE, FnBuiltin, MODELS, Model, PRODUCT_IDS, VENDOR_ID, W75,
+    W75_FN_BUILTINS, W75_WRITE_CEILINGS, WriteCeilings, model_for_product,
 };
 pub use request::{
     CustomTable, Layer, MacroSlotId, ReadRequest, ResponseSpec, SubMatch, TableLayout,
@@ -109,9 +111,12 @@ pub use request::{
 pub use response::{Offer, RawResponse, ResponseCollector};
 pub use units::Distance;
 pub use write::{
-    AckOffer, AckSpec, AckTracker, AdvancedSlotId, CanonicalMacro, ColorTableData, DeadBandData,
-    DeadBandWrite, KeymapData, KeymapReference, LightLimits, LightRecord, MacroData,
-    MainLightWrite, Mismatch, MismatchKind, ProfileId, TableId, TriggerGrouping, TriggerLimits,
-    TriggerSetting, TriggerWrite, TriggerWriteMode, WritePacket, WriteRequest, WriteStep,
-    is_write_ack,
+    AckOffer, AckSpec, AckTracker, AdvancedKeyDef, AdvancedLimits, AdvancedSlotData,
+    AdvancedSlotId, BuiltinAck, CanonicalMacro, ColorTableData, Combo, DeadBandData, DeadBandWrite,
+    EntryKind, Evidence, HidUsage, KeyAssignment, KeymapData, KeymapReference, LightLimits,
+    LightRecord, MacroData, MacroPlay, MacroProgram, MainLightWrite, MediaKey, Mismatch,
+    MismatchKind, MouseAction, MouseButton, PlacementError, ProfileId, SocdMode, SocdPair,
+    SocdPairsData, SocdWrite, TableId, TravelTestMask, TravelTestRequest, TriggerGrouping,
+    TriggerLimits, TriggerSetting, TriggerWrite, TriggerWriteMode, UnverifiedNote, WritePacket,
+    WriteRequest, WriteStep, check_placement, is_permitted_packet, is_write_ack,
 };

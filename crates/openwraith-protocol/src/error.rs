@@ -2,6 +2,7 @@
 
 use crate::request::ReadRequest;
 use crate::units::Distance;
+use crate::write::PlacementError;
 
 /// A byte buffer could not be turned into a [`Report`](crate::Report).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -210,4 +211,119 @@ pub enum WriteBuildError {
         /// Largest allowed value in trigger units.
         max: u16,
     },
+    /// A value is not one the vendor configurator offers (a HID usage,
+    /// multimedia index, ...), so it is never written.
+    #[error("{what} {value:#04x} is not offered")]
+    NotOffered {
+        /// What the value is (`"HID usage"`, `"multimedia index"`, ...).
+        what: &'static str,
+        /// The rejected value.
+        value: u8,
+    },
+    /// A key combination does not have the form the site builds: one or
+    /// two distinct modifiers, then exactly one other key.
+    #[error("invalid key combination: {reason}")]
+    InvalidCombo {
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// A macro has more steps than the vendor site allows.
+    #[error("the macro has {steps} steps, at most {max} are allowed")]
+    MacroTooLong {
+        /// Number of steps.
+        steps: usize,
+        /// Largest number of steps.
+        max: usize,
+    },
+    /// A macro presses a key twice, releases a key that is not pressed, or
+    /// leaves a key pressed at its end.
+    #[error("macro step {step}: {reason}")]
+    UnbalancedMacro {
+        /// Index of the offending step (0-based).
+        step: usize,
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// The last step of a macro has a delay after it (the site always
+    /// writes 0 there).
+    #[error("the last macro step must not have a delay after it")]
+    MacroLastDelay,
+    /// A macro repeat count of 0.
+    #[error("a macro must be played at least once")]
+    InvalidMacroCount,
+    /// An advanced-key slot read from the keyboard or a backup is not in a
+    /// form OpenWraith writes back (unknown type, unexpected bytes).
+    #[error("advanced-key slot cannot be written: {reason}")]
+    UnwritableAdvancedKey {
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// A DKS press point is outside 1..=`max` (0.1 mm units).
+    #[error("DKS press point {value} is out of range (1 to {max}, in 0.1 mm)")]
+    DksPointOutOfRange {
+        /// The rejected value.
+        value: u8,
+        /// Largest allowed value.
+        max: u8,
+    },
+    /// A DKS row breaks the step grammar of the vendor site.
+    #[error("DKS row {row}: {reason}")]
+    DksSteps {
+        /// Row 0..=3.
+        row: usize,
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// A Mod-Tap hold threshold outside the site's range.
+    #[error("Mod-Tap hold threshold {value} is out of range ({min} to {max}, in 10 ms)")]
+    MtThresholdOutOfRange {
+        /// The rejected value.
+        value: u8,
+        /// Smallest allowed value.
+        min: u8,
+        /// Largest allowed value.
+        max: u8,
+    },
+    /// The keyboard's trigger unit is not 20 um (0.02 mm), the only one the
+    /// DKS press points are derived for.
+    #[error("trigger unit of {unit_um} um is not supported")]
+    UnsupportedUnit {
+        /// The unit in micrometres.
+        unit_um: u32,
+    },
+    /// A SOCD pair table read from the keyboard or a backup is not in the
+    /// form the vendor site writes.
+    #[error("SOCD pairs cannot be written: {reason}")]
+    UnwritableSocdPairs {
+        /// Which rule it breaks.
+        reason: &'static str,
+    },
+    /// A key is used in two SOCD pairs.
+    #[error("HID usage {usage:#04x} is used in two SOCD pairs")]
+    SocdDuplicateKey {
+        /// The usage.
+        usage: u8,
+    },
+    /// Both keys of a SOCD pair are the same.
+    #[error("both keys of a SOCD pair are HID usage {usage:#04x}")]
+    SocdSameKey {
+        /// The usage.
+        usage: u8,
+    },
+    /// More SOCD pairs than the vendor site allows.
+    #[error("{count} SOCD pairs, at most 20 are allowed")]
+    TooManySocdPairs {
+        /// Number of pairs.
+        count: usize,
+    },
+    /// A colour for a position that is not a key of the model, or for the
+    /// knob.
+    #[error("key #{index} has no colour slot that can be written")]
+    KeyNotColourable {
+        /// Key index.
+        index: u8,
+    },
+    /// A keymap entry cannot be placed on this key and layer.
+    #[error(transparent)]
+    Placement(#[from] PlacementError),
 }

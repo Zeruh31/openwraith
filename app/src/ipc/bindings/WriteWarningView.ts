@@ -3,4 +3,4 @@
 /**
  * Something noteworthy during a write that still succeeded.
  */
-export type WriteWarningView = { "code": "ack_timeout", packet: number, of: number, send: number, } | { "code": "optional_ack_missing", packet: number, } | { "code": "verify_reread" } | { "code": "retried" } | { "code": "select_ack_missing", profile: number, } | { "code": "profile_push_missing", profile: number, } | { "code": "select_retried", profile: number, } | { "code": "waited_for_late_ack" } | { "code": "waited_for_commit", waited_ms: number, } | { "code": "base_keymap_not_saved" };
+export type WriteWarningView = { "code": "ack_timeout", packet: number, of: number, send: number, } | { "code": "optional_ack_missing", packet: number, } | { "code": "verify_reread" } | { "code": "retried" } | { "code": "select_ack_missing", profile: number, } | { "code": "profile_push_missing", profile: number, } | { "code": "select_retried", profile: number, } | { "code": "waited_for_late_ack" } | { "code": "waited_for_commit", waited_ms: number, } | { "code": "base_keymap_not_saved" } | { "code": "unexpected_ack", packet: number, } | { "code": "socd_toggled_on_keyboard", power: boolean, };

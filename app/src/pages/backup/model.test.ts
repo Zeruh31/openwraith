@@ -140,7 +140,8 @@ describe("plan grouping", () => {
     expect(one?.writes[1]?.action.resent_unchanged).toBe(true);
     expect(one?.changes).toBe(2);
     expect(one?.packets).toBe(21);
-    expect(one?.unchanged).toHaveLength(61);
+    // SOCD power and pairs are one table (written together).
+    expect(one?.unchanged).toHaveLength(60);
     // Profile 2: the main light, and an advanced key that blocks the keymap group.
     expect(two?.changes).toBe(1);
     expect(two?.skips.map((s) => s.reason.code)).toEqual(["keymap_group_blocked"]);

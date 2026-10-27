@@ -179,6 +179,8 @@ pub struct TestUi {
     /// progress line.
     pub cancel_after_note: Option<String>,
     pub cancel_enabled: bool,
+    /// Whether Ctrl+C was set to "close the key-depth test first".
+    pub close_first: bool,
     cancel_armed: bool,
     cancelled: bool,
 }
@@ -246,6 +248,11 @@ impl crate::ui::Ui for TestUi {
 
     fn enable_cancel(&mut self) {
         self.cancel_enabled = true;
+    }
+
+    fn enable_cancel_close_first(&mut self) {
+        self.cancel_enabled = true;
+        self.close_first = true;
     }
 
     fn cancelled(&self) -> bool {

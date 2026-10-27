@@ -3,4 +3,4 @@
 /**
  * Kinds of errors: the library's kinds one to one, then the app's own.
  */
-export type AppErrorKind = "not_found" | "busy" | "other_program_active" | "timeout" | "keyboard_reset" | "disconnected" | "profile_changed" | "changed_since_plan" | "verify_failed" | "not_persisted" | "model_mismatch" | "firmware_mismatch" | "invalid_backup" | "cancelled" | "io" | "unexpected_reply" | "invalid_request" | "not_connected" | "operation_running" | "stale_plan" | "needs_switch_consent" | "writes_blocked" | "safety_dir_unavailable" | "file_unknown" | "internal";
+export type AppErrorKind = "not_found" | "busy" | "other_program_active" | "timeout" | "keyboard_reset" | "disconnected" | "profile_changed" | "changed_since_plan" | "verify_failed" | "not_persisted" | "model_mismatch" | "firmware_mismatch" | "invalid_backup" | "cancelled" | "io" | "unexpected_reply" | "invalid_request" | "not_connected" | "operation_running" | "stale_plan" | "needs_switch_consent" | "writes_blocked" | "safety_dir_unavailable" | "file_unknown" | "internal" | "travel_test_open";

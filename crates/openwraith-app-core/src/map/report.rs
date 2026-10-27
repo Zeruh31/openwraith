@@ -42,6 +42,12 @@ pub(crate) fn write_warning(warning: &WriteWarning) -> WriteWarningView {
             waited_ms: sat32(waited_ms),
         },
         WriteWarning::BaseKeymapNotSaved => WriteWarningView::BaseKeymapNotSaved,
+        WriteWarning::UnexpectedAck { packet } => WriteWarningView::UnexpectedAck {
+            packet: sat16(packet),
+        },
+        WriteWarning::SocdToggledOnKeyboard { power } => {
+            WriteWarningView::SocdToggledOnKeyboard { power }
+        }
     }
 }
 

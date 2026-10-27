@@ -1,5 +1,8 @@
 //! The commands that may write to the keyboard: `profile [select N]`,
-//! `backup --all-profiles`, `set trigger`, `set light` and `restore`.
+//! `backup --all-profiles` and `restore`, and the helpers every command that
+//! writes shares (the `set` editors are in [`crate::edits`], `profile export`
+//! / `import` in [`crate::share`], `travel` and `monitor` in
+//! [`crate::live`]).
 //!
 //! Their logic is generic over a [`Connector`] (which opens the sessions)
 //! and a [`Ui`] (console output and the confirmation question), so the
@@ -15,19 +18,17 @@
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use anyhow::bail;
 use openwraith_hid::{
-    Backup, BackupError, BackupOptions, ConsentOrigin, LightEdit, ProfileSet, ProfilesOptions,
+    Backup, BackupError, BackupOptions, ConsentOrigin, ProfileSet, ProfilesOptions,
     ProfilesProgress, Progress, RestoreError, RestoreOptions, RestorePlan, RestoreReport,
-    SavedBackup, Session, ToolInfo, Transport, TriggerEdit, WriteConsent, WriteError, WriteOptions,
-    WriteProgress, WriteTransport, apply_light_edit, apply_trigger_edit, dry_run_restore,
-    execute_restore, plan_light_edit, plan_restore, plan_trigger_edit, prepare_restore,
+    SavedBackup, Session, ToolInfo, Transport, TravelState, WriteConsent, WriteError, WriteOptions,
+    WriteProgress, WriteTransport, dry_run_restore, execute_restore, plan_restore, prepare_restore,
     read_all_cancellable, read_all_profiles, read_summary,
 };
-use openwraith_protocol::{Distance, Model, ProfileId};
+use openwraith_protocol::{Model, ProfileId};
 use serde::Serialize;
 
-use crate::args::{ProfileAction, RestoreArgs, SetLightArgs, SetTriggerArgs};
+use crate::args::{ProfileAction, RestoreArgs};
 use crate::device::Connector;
 use crate::report;
 use crate::ui::Ui;
@@ -64,7 +65,8 @@ a tab in the background may not be detected). It receives OpenWraith's replies a
 the keyboard on its own.";
 
 /// Printed when a change was not confirmed.
-const NOT_CONFIRMED: &str = "Not confirmed: nothing was written. The safety backup is kept.\n";
+pub(crate) const NOT_CONFIRMED: &str =
+    "Not confirmed: nothing was written. The safety backup is kept.\n";
 
 /// Tool and time recorded in backups made by the CLI.
 pub fn tool_options() -> BackupOptions {
@@ -80,7 +82,7 @@ pub fn tool_options() -> BackupOptions {
 /// The directory for safety backups: `--safety-dir`, else
 /// `OPENWRAITH_SAFETY_DIR`, else the per-user data directory. Fails before
 /// anything is written if none can be determined.
-fn safety_dir(globals: &Globals) -> anyhow::Result<PathBuf> {
+pub(crate) fn safety_dir(globals: &Globals) -> anyhow::Result<PathBuf> {
     match &globals.safety_dir {
         Some(dir) => Ok(dir.clone()),
         None => Ok(openwraith_hid::safety::default_dir()?),
@@ -89,7 +91,7 @@ fn safety_dir(globals: &Globals) -> anyhow::Result<PathBuf> {
 
 /// Refuses early (before the keyboard is opened) when the user cannot be
 /// asked and did not pass `--yes`.
-fn require_prompt_or_yes(ui: &impl Ui, yes: bool) -> anyhow::Result<()> {
+pub(crate) fn require_prompt_or_yes(ui: &impl Ui, yes: bool) -> anyhow::Result<()> {
     if yes || ui.can_prompt() {
         return Ok(());
     }
@@ -103,7 +105,11 @@ fn require_prompt_or_yes(ui: &impl Ui, yes: bool) -> anyhow::Result<()> {
 
 /// The user's consent: `--yes`, or a "y" answer. `None` when declined or
 /// cancelled.
-fn confirm(ui: &mut impl Ui, yes: bool, question: &str) -> anyhow::Result<Option<WriteConsent>> {
+pub(crate) fn confirm(
+    ui: &mut impl Ui,
+    yes: bool,
+    question: &str,
+) -> anyhow::Result<Option<WriteConsent>> {
     if ui.cancelled() {
         return Ok(None);
     }
@@ -122,7 +128,11 @@ fn confirm(ui: &mut impl Ui, yes: bool, question: &str) -> anyhow::Result<Option
 
 /// After a command that talked to the keyboard: statistics with
 /// `--verbose`, and a warning if another program was active.
-fn report_session<T: Transport>(ui: &mut impl Ui, globals: &Globals, session: &Session<T>) {
+pub(crate) fn report_session<T: Transport>(
+    ui: &mut impl Ui,
+    globals: &Globals,
+    session: &Session<T>,
+) {
     if globals.verbose {
         let stats = serde_json::to_string(session.stats()).unwrap_or_default();
         ui.note(&format!("session statistics: {stats}"));
@@ -133,18 +143,24 @@ fn report_session<T: Transport>(ui: &mut impl Ui, globals: &Globals, session: &S
 }
 
 /// Refuses before the safety backup and the question when the session saw
-/// another program (the writer's gate would refuse later anyway).
-fn ensure_quiet<T: Transport>(session: &Session<T>) -> anyhow::Result<()> {
+/// another program, or key-depth reports of a test left open (the writer's
+/// gate would refuse later anyway).
+pub(crate) fn ensure_quiet<T: Transport>(session: &Session<T>) -> anyhow::Result<()> {
     let evidence = session.foreign_activity();
-    if evidence.is_quiet() {
-        Ok(())
-    } else {
-        Err(WriteError::OtherProgramActive { evidence }.into())
+    if !evidence.is_quiet() {
+        return Err(WriteError::OtherProgramActive { evidence }.into());
+    }
+    if session.travel_state() == TravelState::MaybeOpen {
+        return Err(WriteError::TravelTestMaybeOpen.into());
+    }
+    match session.stray_travel_since_gate() {
+        0 => Ok(()),
+        stray_reports => Err(WriteError::TravelTestOpen { stray_reports }.into()),
     }
 }
 
 /// Where the active profile is now, after a failure.
-fn note_active_profile(ui: &mut impl Ui, now: Option<u8>) {
+pub(crate) fn note_active_profile(ui: &mut impl Ui, now: Option<u8>) {
     match now {
         Some(p) => ui.note(&format!("The keyboard is on profile {p} now.")),
         None => ui.note(
@@ -154,7 +170,7 @@ fn note_active_profile(ui: &mut impl Ui, now: Option<u8>) {
     }
 }
 
-fn read_progress_text(p: &Progress) -> String {
+pub(crate) fn read_progress_text(p: &Progress) -> String {
     format!("reading {:>3}/{:<3} {}", p.done, p.total, p.request)
 }
 
@@ -212,7 +228,7 @@ fn write_progress_text(p: &WriteProgress) -> String {
 }
 
 /// Shows progress and turns a Ctrl+C into a cancellation request.
-fn step(ui: &mut impl Ui, text: &str) -> ControlFlow<()> {
+pub(crate) fn step(ui: &mut impl Ui, text: &str) -> ControlFlow<()> {
     ui.progress(text);
     if ui.cancelled() {
         ControlFlow::Break(())
@@ -235,7 +251,7 @@ fn is_commit_wait(p: &WriteProgress) -> bool {
 /// The progress of an operation that writes: a wait for the keyboard to
 /// save (up to 2 s, when the output would otherwise stand still) is a note
 /// that stays, everything else a progress line.
-fn write_step(ui: &mut impl Ui, p: &WriteProgress) -> ControlFlow<()> {
+pub(crate) fn write_step(ui: &mut impl Ui, p: &WriteProgress) -> ControlFlow<()> {
     if is_commit_wait(p) {
         ui.note(&write_progress_text(p));
         return if ui.cancelled() {
@@ -248,7 +264,7 @@ fn write_step(ui: &mut impl Ui, p: &WriteProgress) -> ControlFlow<()> {
 }
 
 /// The progress of an all-profile backup (see [`write_step`]).
-fn profiles_step(ui: &mut impl Ui, p: &ProfilesProgress) -> ControlFlow<()> {
+pub(crate) fn profiles_step(ui: &mut impl Ui, p: &ProfilesProgress) -> ControlFlow<()> {
     if matches!(p, ProfilesProgress::WaitingForCommit { .. }) {
         return write_step(ui, &WriteProgress::SafetyBackup { progress: *p });
     }
@@ -257,7 +273,7 @@ fn profiles_step(ui: &mut impl Ui, p: &ProfilesProgress) -> ControlFlow<()> {
 
 /// Reads the active profile (read-only) and saves it as a verified safety
 /// backup.
-fn safety_backup<T: Transport>(
+pub(crate) fn safety_backup<T: Transport>(
     session: &mut Session<T>,
     ui: &mut impl Ui,
     dir: &Path,
@@ -275,7 +291,8 @@ fn safety_backup<T: Transport>(
 
 // ----- profile -----
 
-/// `openwraith profile` (read-only) and `openwraith profile select N`.
+/// `openwraith profile` (read-only), `openwraith profile select N`, and
+/// `profile export` / `profile import` (in [`crate::share`]).
 pub fn profile<C: Connector, U: Ui>(
     connector: &mut C,
     ui: &mut U,
@@ -307,6 +324,8 @@ pub fn profile<C: Connector, U: Ui>(
             report_session(ui, globals, &session);
             result
         }
+        Some(ProfileAction::Export(args)) => crate::share::export(connector, ui, globals, args),
+        Some(ProfileAction::Import(args)) => crate::share::import(connector, ui, globals, args),
     }
 }
 
@@ -422,156 +441,27 @@ fn backup_all_profiles_on<T: WriteTransport>(
     Ok(Exit::Success)
 }
 
-// ----- set trigger / set light -----
-
-/// `openwraith set trigger KEY... [--actuation MM] [--rapid-trigger P[/R] | --no-rapid-trigger]`.
-pub fn set_trigger<C: Connector, U: Ui>(
-    connector: &mut C,
-    ui: &mut U,
-    globals: &Globals,
-    args: &SetTriggerArgs,
-) -> anyhow::Result<Exit> {
-    require_prompt_or_yes(ui, args.yes)?;
-    let dir = safety_dir(globals)?;
-    ui.note(CLOSE_SITE_NOTE);
-    ui.enable_cancel();
-    let mut session = connector.open_write()?;
-    let result = set_trigger_on(&mut session, ui, args, &dir);
-    report_session(ui, globals, &session);
-    result
-}
-
-fn set_trigger_on<T: WriteTransport>(
-    session: &mut Session<T>,
-    ui: &mut impl Ui,
-    args: &SetTriggerArgs,
-    dir: &Path,
-) -> anyhow::Result<Exit> {
-    let summary = read_summary(session)?;
-    let Some(model) = summary.model() else {
-        bail!("unsupported keyboard; nothing was written");
-    };
-    let unit = summary
-        .trigger_global
-        .unit_micrometres(summary.status.flags_b.high_precision);
-    if unit != Distance::MICROMETRES_PER_UNIT {
-        bail!(
-            "the keyboard reports a distance unit of {unit} um; OpenWraith only handles 0.02 mm \
-             units. Nothing was written."
-        );
-    }
-    let keys = args
-        .keys
-        .iter()
-        .map(|k| k.resolve(model).map_err(UsageError))
-        .collect::<Result<Vec<_>, _>>()?;
-    let edit = TriggerEdit {
-        keys,
-        actuation: args.actuation,
-        rapid_trigger: args.rapid_trigger_edit(),
-    };
-    let plan = plan_trigger_edit(session, &edit)?;
-    ensure_quiet(session)?;
-    if !plan.has_changes() {
-        ui.print(&report::trigger_edit_plan(&plan))?;
-        ui.print(
-            "Nothing to change: every key already has these settings. Nothing was written.\n",
-        )?;
-        return Ok(Exit::Success);
-    }
-    let saved = safety_backup(session, ui, dir, "set-trigger")?;
-    ui.print(&report::trigger_edit_plan(&plan))?;
-    let changing = plan.keys().iter().filter(|k| k.changes()).count();
-    let question = format!(
-        "Write the new trigger settings of {changing} key(s) to profile {}?",
-        plan.profile()
-    );
-    let Some(consent) = confirm(ui, args.yes, &question)? else {
-        ui.print(NOT_CONFIRMED)?;
-        return Ok(Exit::Failure);
-    };
-    let report = apply_trigger_edit(
-        session,
-        &plan,
-        &saved,
-        consent,
-        &WriteOptions::default(),
-        |p| write_step(ui, &p),
-    );
-    ui.clear_progress();
-    ui.print(&report::edit_report(&report, Some(model)))?;
-    Ok(if report.is_success() {
-        Exit::Success
-    } else {
-        Exit::Failure
-    })
-}
-
-/// `openwraith set light [--mode NAME] [--color RRGGBB] [--brightness N] [--speed N]`.
-pub fn set_light<C: Connector, U: Ui>(
-    connector: &mut C,
-    ui: &mut U,
-    globals: &Globals,
-    args: &SetLightArgs,
-) -> anyhow::Result<Exit> {
-    require_prompt_or_yes(ui, args.yes)?;
-    let dir = safety_dir(globals)?;
-    ui.note(CLOSE_SITE_NOTE);
-    ui.enable_cancel();
-    let mut session = connector.open_write()?;
-    let result = set_light_on(&mut session, ui, args, &dir);
-    report_session(ui, globals, &session);
-    result
-}
-
-fn set_light_on<T: WriteTransport>(
-    session: &mut Session<T>,
-    ui: &mut impl Ui,
-    args: &SetLightArgs,
-    dir: &Path,
-) -> anyhow::Result<Exit> {
-    let summary = read_summary(session)?;
-    let model = summary.model();
-    let edit = LightEdit {
-        mode: args.mode,
-        foreground: args.color,
-        brightness: args.brightness,
-        speed: args.speed,
-    };
-    let plan = plan_light_edit(session, &edit)?;
-    ensure_quiet(session)?;
-    if !plan.has_changes() {
-        ui.print(&report::light_edit_plan(&plan))?;
-        ui.print(
-            "Nothing to change: the main light already has these settings. Nothing was written.\n",
-        )?;
-        return Ok(Exit::Success);
-    }
-    let saved = safety_backup(session, ui, dir, "set-light")?;
-    ui.print(&report::light_edit_plan(&plan))?;
-    let question = format!("Write the new main light to profile {}?", plan.profile());
-    let Some(consent) = confirm(ui, args.yes, &question)? else {
-        ui.print(NOT_CONFIRMED)?;
-        return Ok(Exit::Failure);
-    };
-    let report = apply_light_edit(
-        session,
-        &plan,
-        &saved,
-        consent,
-        &WriteOptions::default(),
-        |p| write_step(ui, &p),
-    );
-    ui.clear_progress();
-    ui.print(&report::edit_report(&report, model))?;
-    Ok(if report.is_success() {
-        Exit::Success
-    } else {
-        Exit::Failure
-    })
-}
-
 // ----- restore -----
+
+/// How a restore (or an import) runs: the options of `restore` and
+/// `profile import` that are not [`RestoreOptions`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RestoreRun<'a> {
+    /// The file that is restored.
+    pub file: &'a Path,
+    /// Only compare and show the plan.
+    pub dry_run: bool,
+    /// With `dry_run`: compare with this file instead of the keyboard.
+    pub against: Option<&'a Path>,
+    /// Do not ask.
+    pub yes: bool,
+    /// JSON output.
+    pub json: bool,
+    /// Print every packet.
+    pub packets: bool,
+    /// The safety backup's reason (`restore`, `import`).
+    pub reason: &'static str,
+}
 
 /// JSON output of `restore --json`.
 #[derive(Debug, Serialize)]
@@ -630,16 +520,39 @@ pub fn restore<C: Connector, U: Ui>(
         allow_firmware_mismatch: args.allow_firmware_mismatch,
         backup: tool_options(),
         write: WriteOptions::default(),
+        import: None,
     };
-    if args.dry_run {
-        return restore_dry_run(connector, ui, globals, args, &target, &options);
+    let run = RestoreRun {
+        file: &args.file,
+        dry_run: args.dry_run,
+        against: args.against.as_deref(),
+        yes: args.yes,
+        json: args.json,
+        packets: args.packets,
+        reason: "restore",
+    };
+    run_restore(connector, ui, globals, &target, &options, &run)
+}
+
+/// Runs a prepared restore (or import) of `target`: a dry run, or the
+/// guarded restore with its safety backup and question.
+pub(crate) fn run_restore<C: Connector, U: Ui>(
+    connector: &mut C,
+    ui: &mut U,
+    globals: &Globals,
+    target: &Backup,
+    options: &RestoreOptions,
+    run: &RestoreRun<'_>,
+) -> anyhow::Result<Exit> {
+    if run.dry_run {
+        return restore_dry_run(connector, ui, globals, run, target, options);
     }
-    require_prompt_or_yes(ui, args.yes)?;
+    require_prompt_or_yes(ui, run.yes)?;
     let dir = safety_dir(globals)?;
     ui.note(CLOSE_SITE_NOTE);
     ui.enable_cancel();
     let mut session = connector.open_write()?;
-    let result = restore_on(&mut session, ui, args, &target, &options, &dir);
+    let result = restore_on(&mut session, ui, run, target, options, &dir);
     report_session(ui, globals, &session);
     result
 }
@@ -648,11 +561,11 @@ fn restore_dry_run<C: Connector>(
     connector: &mut C,
     ui: &mut impl Ui,
     globals: &Globals,
-    args: &RestoreArgs,
+    args: &RestoreRun<'_>,
     target: &Backup,
     options: &RestoreOptions,
 ) -> anyhow::Result<Exit> {
-    let plan = match &args.against {
+    let plan = match args.against {
         Some(path) => {
             let current = Backup::load(path)?;
             plan_restore(target, &current, options)?
@@ -676,7 +589,7 @@ fn restore_dry_run<C: Connector>(
             &RestoreJson {
                 backup: args.file.display().to_string(),
                 dry_run: true,
-                against: args.against.as_ref().map(|p| p.display().to_string()),
+                against: args.against.map(|p| p.display().to_string()),
                 safety_backup: None,
                 plan: &plan,
                 packets: args.packets.then(|| report::plan_packets(&plan)),
@@ -692,6 +605,17 @@ fn restore_dry_run<C: Connector>(
             true,
             args.packets,
         ))?;
+        if let Some(import) = &options.import {
+            if plan.original_profile != Some(import.into.get()) {
+                ui.print(&format!(
+                    "Profile {into} is not active: a dry run cannot read it without switching \
+                     profiles. Select it first (`openwraith profile select {into}`), or run \
+                     without --dry-run (the plan is shown and you are asked before anything is \
+                     written).\n",
+                    into = import.into
+                ))?;
+            }
+        }
     }
     Ok(Exit::Success)
 }
@@ -699,7 +623,7 @@ fn restore_dry_run<C: Connector>(
 fn restore_on<T: WriteTransport>(
     session: &mut Session<T>,
     ui: &mut impl Ui,
-    args: &RestoreArgs,
+    args: &RestoreRun<'_>,
     target: &Backup,
     options: &RestoreOptions,
     dir: &Path,
@@ -735,7 +659,7 @@ fn restore_on<T: WriteTransport>(
     };
     ui.clear_progress();
     ensure_quiet(session)?;
-    let saved = prepared.safety().save_safety(dir, "restore")?;
+    let saved = prepared.safety().save_safety(dir, args.reason)?;
     ui.note(&format!("Safety backup saved: {}", saved.path().display()));
     let plan = prepared.plan();
     let plan_text = report::restore_plan(plan, model, false, args.packets);
@@ -747,6 +671,13 @@ fn restore_on<T: WriteTransport>(
         // never answered blind. Stdout stays pure JSON.
         ui.note(&plan_text);
     }
+    // An import that leaves out a category the user chose fails (exit 1),
+    // also when everything else was written.
+    let import_blocked = options
+        .import
+        .as_ref()
+        .is_some_and(|import| report::import_blocked(plan, &import.include));
+    let blocked_note = "A category chosen with --include was not imported (see \"Not written\").\n";
     if !plan.has_writes() {
         if args.json {
             print_json(ui, &restore_json(args, &saved, plan, None, None))?;
@@ -758,8 +689,15 @@ fn restore_on<T: WriteTransport>(
                 "Nothing was written: everything that can be restored already matches; the \
                  differences listed under \"Not written\" are not restored.\n"
             })?;
+            if import_blocked {
+                ui.print(blocked_note)?;
+            }
         }
-        return Ok(Exit::Success);
+        return Ok(if import_blocked {
+            Exit::Failure
+        } else {
+            Exit::Success
+        });
     }
     let per_profile: Vec<String> = report::packets_per_profile(plan)
         .iter()
@@ -787,8 +725,11 @@ fn restore_on<T: WriteTransport>(
         )?;
     } else {
         ui.print(&report::restore_report(&report, model))?;
+        if import_blocked {
+            ui.print(blocked_note)?;
+        }
     }
-    Ok(if report.is_success() {
+    Ok(if report.is_success() && !import_blocked {
         Exit::Success
     } else {
         Exit::Failure
@@ -797,7 +738,7 @@ fn restore_on<T: WriteTransport>(
 
 /// The JSON output of a real (not dry) restore.
 fn restore_json<'a>(
-    args: &RestoreArgs,
+    args: &RestoreRun<'_>,
     saved: &'a SavedBackup,
     plan: &'a RestorePlan,
     confirmed: Option<bool>,
@@ -817,7 +758,7 @@ fn restore_json<'a>(
 }
 
 /// Pretty JSON on stdout.
-fn print_json(ui: &mut impl Ui, value: &impl Serialize) -> anyhow::Result<()> {
+pub(crate) fn print_json(ui: &mut impl Ui, value: &impl Serialize) -> anyhow::Result<()> {
     let mut text = serde_json::to_string_pretty(value)?;
     text.push('\n');
     ui.print(&text)

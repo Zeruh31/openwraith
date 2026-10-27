@@ -4,4 +4,4 @@ import type { LayerView } from "./LayerView";
 /**
  * A table of the keyboard.
  */
-export type TableRef = { "table": "profile" } | { "table": "main_light" } | { "table": "side_light" } | { "table": "active_custom_table" } | { "table": "custom_colors", number: number, } | { "table": "keymap", layer: LayerView, } | { "table": "macro", slot: number, } | { "table": "advanced_key", slot: number, } | { "table": "triggers" } | { "table": "dead_band" } | { "table": "socd_pairs" } | { "table": "socd_settings" } | { "table": "switch_types" } | { "table": "poll_rate" } | { "table": "win_lock_and_rollover" };
+export type TableRef = { "table": "profile" } | { "table": "main_light" } | { "table": "side_light" } | { "table": "active_custom_table" } | { "table": "custom_colors", number: number, } | { "table": "keymap", layer: LayerView, } | { "table": "macro", slot: number, } | { "table": "advanced_key", slot: number, } | { "table": "triggers" } | { "table": "dead_band" } | { "table": "socd_pairs" } | { "table": "socd_settings" } | { "table": "socd" } | { "table": "switch_types" } | { "table": "poll_rate" } | { "table": "win_lock_and_rollover" };

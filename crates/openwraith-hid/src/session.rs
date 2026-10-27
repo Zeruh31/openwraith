@@ -51,13 +51,39 @@
 //! [`Session::foreign_activity`] (status reports we did not request,
 //! acknowledgements of writes we did not send, profile reports we did not
 //! cause) shows whether another program was active.
+//!
+//! # Reports the keyboard sends on its own
+//!
+//! Two kinds of unsolicited reports come from the keyboard itself and are
+//! **never** counted as another program's activity (spec sections 4.11.7
+//! and 4.15):
+//!
+//! * the SOCD push `24 02 00 00 06 PP` after Fn + Right Shift: recorded as a
+//!   [`DeviceEvent::SocdPower`] in [`Session::events`] and counted in
+//!   [`SessionStats::socd_pushes`] (a `24 02` read pending at that moment
+//!   takes it as its reply);
+//! * the live travel stream `21 .. (05|03) 01` while a travel test is open
+//!   ([`TravelState`]): queued for the open test, never listed in
+//!   [`Session::events`]. Stream reports that arrive while no test of ours
+//!   is open (a test left open by a crashed run) are counted as stray
+//!   ([`Session::stray_travel_since_gate`]); table writes are refused until
+//!   the stray test is closed.
+//!
+//! # Egress allowlist
+//!
+//! Every write packet passes [`is_permitted_packet`] right before it is
+//! sent, a coarse header check independent of the builders. A packet that
+//! fails it is not sent, and the session refuses every later write (a
+//! programming error, never a keyboard condition).
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
 use openwraith_protocol::{
     AckOffer, AckSpec, DeviceEvent, FromResponse, Offer, OutPacket, ProfileId, RawResponse,
-    ReadRequest, Report, ResponseCollector, WritePacket, is_keyboard_reset, is_write_ack,
+    ReadRequest, Report, ResponseCollector, TravelReport, WritePacket, is_keyboard_reset,
+    is_permitted_packet, is_write_ack,
 };
 use serde::Serialize;
 
@@ -126,7 +152,45 @@ pub struct SessionStats {
     pub expected_reports_consumed: u64,
     /// Reads interrupted by a signal and retried.
     pub interrupted: u64,
+    /// SOCD pushes (`24 02 00 00 06 PP`, Fn + Right Shift on the keyboard)
+    /// that answered none of our reads. A user action, never another
+    /// program.
+    pub socd_pushes: u64,
+    /// Travel-stream reports (`21 .. (05|03) 01`) received, whether a test
+    /// of ours was open or not.
+    pub travel_reports: u64,
+    /// Travel-stream reports received while no travel test of ours was open
+    /// (outside a short grace period after our close): a test left open by
+    /// an earlier run.
+    pub stray_travel_reports: u64,
+    /// Travel-stream reports dropped because the queue of the open test was
+    /// full.
+    pub travel_dropped: u64,
 }
+
+/// Whether a live travel test (spec section 4.11.7) may be open on the
+/// keyboard, as far as this session knows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TravelState {
+    /// No test of this session is open (stray stream reports are counted
+    /// separately, see [`Session::stray_travel_since_gate`]).
+    #[default]
+    Closed,
+    /// A test of this session is open; stream reports are queued for it.
+    Open,
+    /// The close of a test was not acknowledged: the keyboard may still be
+    /// streaming. Table writes are refused until a close is acknowledged.
+    MaybeOpen,
+}
+
+/// At most this many travel-stream reports wait for the open test; older
+/// ones are kept, newer ones dropped ([`SessionStats::travel_dropped`]).
+const TRAVEL_QUEUE_CAP: usize = 1024;
+
+/// Stream reports that arrive this soon after our acknowledged close are
+/// still in flight, not stray.
+pub(crate) const TRAVEL_CLOSE_GRACE: Duration = Duration::from_millis(100);
 
 /// What a session saw that suggests another program is using the keyboard.
 ///
@@ -213,8 +277,17 @@ pub(crate) enum Unrelated {
     ProfileReport {
         /// The profile it names.
         profile: u8,
+        /// Byte 7: `00` in the push after a profile switch, `01` in the
+        /// reply to a `21/11` query.
+        extra: u8,
     },
-    /// Anything else (another program's read replies, travel stream, ...).
+    /// A report the keyboard sends on its own because of a key press (the
+    /// SOCD push after Fn + Right Shift). Never another program.
+    KeyboardEvent,
+    /// A travel-stream report (queued for an open test, or counted as
+    /// stray). Never another program.
+    Travel,
+    /// Anything else (another program's read replies, ...).
     Other,
 }
 
@@ -263,6 +336,9 @@ pub(crate) enum Fatal {
     Reset(String),
     /// The transport failed (message).
     Disconnected(String),
+    /// A write packet failed the egress allowlist and was not sent (hex);
+    /// a programming error, so nothing more is written.
+    Refused(String),
 }
 
 /// A session with one keyboard.
@@ -301,6 +377,9 @@ pub struct Session<T: Transport> {
     options: SessionOptions,
     stats: SessionStats,
     events: Vec<DeviceEvent>,
+    /// The reports the [`events`](Self::events) were decoded from, in the
+    /// same order (what arrived, byte for byte).
+    event_reports: Vec<Report>,
     opened: Instant,
     expected: Vec<Expectation>,
     fatal: Option<Fatal>,
@@ -315,6 +394,23 @@ pub struct Session<T: Transport> {
     last_write: Option<LastWrite>,
     /// When [`fatal`](Self::fatal) was first set (on the transport clock).
     fatal_at: Option<Instant>,
+    /// Whether a travel test of this session is open (see [`TravelState`]).
+    travel: TravelState,
+    /// When our last close of a travel test was acknowledged.
+    travel_closed_at: Option<Instant>,
+    /// Stream reports for the open travel test, oldest first.
+    travel_queue: VecDeque<TravelReport>,
+    /// Stream reports dropped since the queue was last taken.
+    travel_queue_dropped: u64,
+    /// [`SessionStats::stray_travel_reports`] at the gate mark (or at the
+    /// last acknowledged close of a stray test).
+    stray_mark: u64,
+    /// A base keymap was sent and no complete Fn-keymap write followed yet
+    /// (see [`Session::base_keymap_unsaved`]).
+    base_keymap_unsaved: bool,
+    /// When the last report of another program (status or foreign ack) was
+    /// seen.
+    last_foreign_at: Option<Instant>,
 }
 
 /// The last write packet of a session that changes a setting (see
@@ -353,6 +449,7 @@ impl<T: Transport> Session<T> {
             options,
             stats: SessionStats::default(),
             events: Vec::new(),
+            event_reports: Vec::new(),
             opened,
             expected: Vec::new(),
             fatal: None,
@@ -364,7 +461,80 @@ impl<T: Transport> Session<T> {
             },
             last_write: None,
             fatal_at: None,
+            travel: TravelState::Closed,
+            travel_closed_at: None,
+            travel_queue: VecDeque::new(),
+            travel_queue_dropped: 0,
+            stray_mark: 0,
+            base_keymap_unsaved: false,
+            last_foreign_at: None,
         }
+    }
+
+    /// SOCD pushes the keyboard sent since the session was opened (Fn +
+    /// Right Shift; [`SessionStats::socd_pushes`]).
+    pub fn socd_pushes(&self) -> u64 {
+        self.stats.socd_pushes
+    }
+
+    /// Whether a travel test of this session is open, or may still be open
+    /// after an unacknowledged close.
+    pub fn travel_state(&self) -> TravelState {
+        self.travel
+    }
+
+    /// Travel-stream reports that arrived while no test of ours was open,
+    /// since the gate mark ([`rearm_gate`](Self::rearm_gate)) or the last
+    /// acknowledged close of such a stray test. Table writes are refused
+    /// while this is not zero.
+    pub fn stray_travel_since_gate(&self) -> u64 {
+        self.stats
+            .stray_travel_reports
+            .saturating_sub(self.stray_mark)
+    }
+
+    /// Whether a base keymap (`18 00`) was sent in this session and no
+    /// complete Fn-keymap write (`18 02`, every packet acknowledged)
+    /// followed it yet: the keyboard keeps the base keymap only then, and a
+    /// profile switch or a power loss now would drop it (spec 4.8.2). Kept
+    /// by the session, so it also covers later writers.
+    pub fn base_keymap_unsaved(&self) -> bool {
+        self.base_keymap_unsaved
+    }
+
+    /// When the last report of another program (a status report we did not
+    /// request or an acknowledgement of a write we did not send) arrived,
+    /// on the transport clock.
+    pub fn last_foreign_at(&self) -> Option<Instant> {
+        self.last_foreign_at
+    }
+
+    /// Records whether a base keymap waits for its Fn-keymap write.
+    pub(crate) fn set_base_keymap_unsaved(&mut self, unsaved: bool) {
+        self.base_keymap_unsaved = unsaved;
+    }
+
+    /// Sets the travel state; an acknowledged close also starts the grace
+    /// period for reports still in flight.
+    pub(crate) fn set_travel(&mut self, state: TravelState) {
+        if self.travel == TravelState::Open && state == TravelState::Closed {
+            self.travel_closed_at = Some(self.now());
+        }
+        self.travel = state;
+    }
+
+    /// After an acknowledged close of a stray test: earlier stray reports no
+    /// longer refuse writes.
+    pub(crate) fn rearm_stray_mark(&mut self) {
+        self.stray_mark = self.stats.stray_travel_reports;
+        self.travel_closed_at = Some(self.now());
+    }
+
+    /// The queued stream reports of the open test and how many were dropped
+    /// since the last call.
+    pub(crate) fn take_travel_reports(&mut self) -> (Vec<TravelReport>, u64) {
+        let reports = self.travel_queue.drain(..).collect();
+        (reports, std::mem::take(&mut self.travel_queue_dropped))
     }
 
     /// When this session last sent a write packet that changes a setting
@@ -440,12 +610,21 @@ impl<T: Transport> Session<T> {
 
     /// Noteworthy unsolicited reports seen so far, in arrival order: profile
     /// reports that did not answer one of our requests (for example after a
-    /// profile change on the keyboard). Status reports are only counted (see
+    /// profile change on the keyboard) and the keyboard's SOCD pushes
+    /// ([`DeviceEvent::SocdPower`]). Status reports are only counted (see
     /// [`SessionStats::status_reports`]); a keyboard reset ends the request
-    /// with an error instead. Profile pushes caused by our own profile
-    /// selects are not listed.
+    /// with an error instead; travel-stream reports are never listed.
+    /// Profile pushes caused by our own profile selects are not listed.
     pub fn events(&self) -> &[DeviceEvent] {
         &self.events
+    }
+
+    /// The reports [`events`](Self::events) were decoded from, byte for
+    /// byte, in the same order (`event_reports()[i]` is the report of
+    /// `events()[i]`): what the keyboard really sent, for a tool that shows
+    /// it.
+    pub fn event_reports(&self) -> &[Report] {
+        &self.event_reports
     }
 
     /// How long ago the session was opened: the time during which reports
@@ -468,6 +647,7 @@ impl<T: Transport> Session<T> {
             activity: self.foreign_activity(),
             events: self.events.len(),
         };
+        self.stray_mark = self.stats.stray_travel_reports;
     }
 
     /// How long the gate has observed the keyboard: since the session was
@@ -480,6 +660,20 @@ impl<T: Transport> Session<T> {
     /// since the last [`rearm_gate`](Self::rearm_gate).
     pub fn activity_since_gate(&self) -> ForeignActivity {
         self.foreign_activity().since(&self.gate.activity)
+    }
+
+    /// Every profile report we did not cause since the gate mark: `(profile,
+    /// byte 7)`, oldest first.
+    pub(crate) fn foreign_profile_reports(&self) -> Vec<(u8, u8)> {
+        self.events
+            .get(self.gate.events..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|event| match event {
+                DeviceEvent::ProfileReport { profile, extra } => Some((*profile, *extra)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The profile named by the last profile report we did not cause since
@@ -726,22 +920,62 @@ impl<T: Transport> Session<T> {
             Some(DeviceEvent::KeyboardReset) => Unrelated::Reset,
             Some(DeviceEvent::Status) => {
                 self.stats.status_reports += 1;
+                self.last_foreign_at = Some(now);
                 Unrelated::ForeignStatus
             }
-            Some(event @ DeviceEvent::ProfileReport { profile, .. }) => {
+            Some(event @ DeviceEvent::ProfileReport { profile, extra }) => {
                 self.stats.ignored += 1;
                 self.events.push(event);
-                Unrelated::ProfileReport { profile }
+                self.event_reports.push(report.clone());
+                Unrelated::ProfileReport { profile, extra }
+            }
+            // Fn + Right Shift on the keyboard: a user action (c15), never
+            // another program.
+            Some(event @ DeviceEvent::SocdPower { .. }) => {
+                self.stats.socd_pushes += 1;
+                self.events.push(event);
+                self.event_reports.push(report.clone());
+                Unrelated::KeyboardEvent
+            }
+            // The live travel stream: for the open test, or stray. Never
+            // another program, never an event.
+            Some(DeviceEvent::TravelStream(stream)) => {
+                self.note_travel(stream, now);
+                Unrelated::Travel
             }
             None if is_write_ack(report) => {
                 self.stats.ignored += 1;
                 self.stats.foreign_acks += 1;
+                self.last_foreign_at = Some(now);
                 Unrelated::ForeignAck
             }
             None => {
                 self.stats.ignored += 1;
                 Unrelated::Other
             }
+        }
+    }
+
+    /// Queues a stream report for the open travel test, or counts it as
+    /// stray when no test of ours is open (outside the grace period after
+    /// our last acknowledged close).
+    fn note_travel(&mut self, stream: TravelReport, now: Instant) {
+        self.stats.travel_reports += 1;
+        if self.travel == TravelState::Open {
+            if self.travel_queue.len() >= TRAVEL_QUEUE_CAP {
+                self.stats.travel_dropped += 1;
+                self.travel_queue_dropped += 1;
+            } else {
+                self.travel_queue.push_back(stream);
+            }
+            return;
+        }
+        let in_grace = self.travel == TravelState::Closed
+            && self
+                .travel_closed_at
+                .is_some_and(|at| now.saturating_duration_since(at) <= TRAVEL_CLOSE_GRACE);
+        if !in_grace {
+            self.stats.stray_travel_reports += 1;
         }
     }
 
@@ -856,8 +1090,20 @@ impl<T: WriteTransport> Session<T> {
         self.send(packet)
     }
 
-    /// Sends one write packet; a failure marks the connection as lost.
+    /// Sends a travel-test open or close (used by the travel guard only): it
+    /// stores nothing, so it does not restart the commit settle.
+    pub(crate) fn send_control(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
+        self.send(packet)
+    }
+
+    /// Sends one write packet; a failure marks the connection as lost. A
+    /// packet outside the egress allowlist ([`is_permitted_packet`]) is not
+    /// sent, and the session refuses every later write.
     fn send(&mut self, packet: &WritePacket) -> Result<(), TransportError> {
+        if !is_permitted_packet(packet) {
+            self.set_fatal(Fatal::Refused(packet.summary()));
+            return Err(TransportError::Refused(packet.summary()));
+        }
         let result = self.transport.write_command(packet);
         match &result {
             Ok(()) => self.stats.writes += 1,

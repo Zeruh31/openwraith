@@ -4,11 +4,12 @@
 
 use std::path::Path;
 
-use openwraith_hid::{Backup, DeviceSummary, UsbInfo};
+use openwraith_hid::{Backup, DeviceSummary, SocdState, UsbInfo};
 use openwraith_protocol::{
-    ActiveCustomTable, AdvancedKeys, ColorTable, DeadBand, FnLockedKeys, HexBytes, KeyTrigger,
-    KeymapTable, LightEffect, LightModeList, MacroSlot, Model, PollRate, ReadRequest, SocdPairs,
-    SocdSettings, Status, SwitchTypeList, SwitchTypeTable, TriggerGlobal, TriggerMode,
+    ActiveCustomTable, AdvancedKeys, AdvancedSlotData, ColorTable, DeadBand, FnLockedKeys,
+    HexBytes, KeyAction, KeyTrigger, KeymapTable, Layer, LightEffect, LightModeList, MacroSlot,
+    Model, PollRate, ReadRequest, SocdPairs, SocdSettings, Status, SwitchTypeList, SwitchTypeTable,
+    TriggerGlobal, TriggerMode,
 };
 use serde::Serialize;
 
@@ -303,6 +304,38 @@ impl<'a> KeymapView<'a> {
     }
 }
 
+/// A key whose keymap entry refers to a macro or an advanced-key slot.
+#[derive(Debug, Clone, Serialize)]
+pub struct Binding {
+    /// The slot.
+    pub slot: u8,
+    /// The layer of the entry.
+    pub layer: Layer,
+    /// The key index.
+    pub index: u8,
+    /// The key's name.
+    pub key: String,
+}
+
+/// Every entry of both layers whose action `slot_of` maps to a slot.
+fn bindings(backup: &Backup, slot_of: impl Fn(&KeyAction) -> Option<u8>) -> Vec<Binding> {
+    let model = backup.model();
+    backup
+        .keymaps()
+        .iter()
+        .flat_map(|table| {
+            table.entries.iter().filter_map(|entry| {
+                slot_of(&entry.action).map(|slot| Binding {
+                    slot,
+                    layer: table.layer,
+                    index: entry.index,
+                    key: key_name(model, entry.index),
+                })
+            })
+        })
+        .collect()
+}
+
 /// `show macros`.
 #[derive(Debug, Clone, Serialize)]
 pub struct MacrosView<'a> {
@@ -310,6 +343,8 @@ pub struct MacrosView<'a> {
     pub active_profile: Option<u8>,
     /// The ten macro slots (`19 80`..`19 89`).
     pub slots: Vec<&'a MacroSlot>,
+    /// The keys bound to a macro slot (both layers).
+    pub bindings: Vec<Binding>,
 }
 
 impl<'a> MacrosView<'a> {
@@ -318,6 +353,102 @@ impl<'a> MacrosView<'a> {
         MacrosView {
             active_profile: backup.active_profile,
             slots: backup.macros(),
+            bindings: bindings(backup, |action| match action {
+                KeyAction::Macro { slot, .. } => Some(*slot),
+                _ => None,
+            }),
+        }
+    }
+}
+
+/// One used advanced-key slot of `show advanced`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdvancedRow {
+    /// The slot (0-39).
+    pub slot: u8,
+    /// What OpenWraith reads in it, when it is a DKS, Mod-Tap or Toggle in
+    /// the form OpenWraith writes; `None` otherwise (kept as read; see
+    /// `advanced_keys`).
+    pub definition: Option<String>,
+    /// The keys bound to it.
+    pub bound_to: Vec<Binding>,
+}
+
+/// `show advanced`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdvancedView<'a> {
+    /// Active onboard profile.
+    pub active_profile: Option<u8>,
+    /// The forty slots as decoded (`22 80`).
+    pub advanced_keys: Option<&'a AdvancedKeys>,
+    /// The used slots.
+    pub slots: Vec<AdvancedRow>,
+}
+
+impl<'a> AdvancedView<'a> {
+    /// Builds the view.
+    pub fn new(backup: &'a Backup) -> Self {
+        let bound = bindings(backup, |action| match action {
+            KeyAction::Advanced { slot } => Some(*slot),
+            _ => None,
+        });
+        let slots = backup
+            .advanced_keys()
+            .map(|keys| {
+                keys.used()
+                    .map(|slot| AdvancedRow {
+                        slot: slot.slot,
+                        definition: AdvancedSlotData::from_read_slot(&slot.raw.0)
+                            .ok()
+                            .flatten()
+                            .and_then(|data| data.def())
+                            .map(|def| def.to_string()),
+                        bound_to: bound
+                            .iter()
+                            .filter(|b| b.slot == slot.slot)
+                            .cloned()
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        AdvancedView {
+            active_profile: backup.active_profile,
+            advanced_keys: backup.advanced_keys(),
+            slots,
+        }
+    }
+}
+
+/// `show socd`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SocdView<'a> {
+    /// Active onboard profile.
+    pub active_profile: Option<u8>,
+    /// SOCD power and hotkey (`24 02`; hotkey meaning GUESS).
+    pub socd_settings: Option<&'a SocdSettings>,
+    /// SOCD pairs (`24 01`).
+    pub socd_pairs: Option<&'a SocdPairs>,
+    /// The state as OpenWraith edits it (power byte, pairs in the vendor
+    /// site's form, or why they are not).
+    pub state: Option<SocdState>,
+}
+
+impl<'a> SocdView<'a> {
+    /// Builds the view.
+    pub fn new(backup: &'a Backup) -> Self {
+        let state = match (
+            backup.response(ReadRequest::SocdSettings),
+            backup.response(ReadRequest::SocdPairs),
+        ) {
+            (Some(settings), Some(pairs)) => SocdState::from_replies(settings, pairs).ok(),
+            _ => None,
+        };
+        SocdView {
+            active_profile: backup.active_profile,
+            socd_settings: backup.socd_settings(),
+            socd_pairs: backup.socd_pairs(),
+            state,
         }
     }
 }

@@ -124,6 +124,7 @@ pub(crate) fn change_view(table: TableId, change: &EntryChange) -> ChangeView {
         | TableId::ActiveCustomTable
         | TableId::SocdPairs
         | TableId::SocdSettings
+        | TableId::Socd
         | TableId::SwitchTypes
         | TableId::PollRate
         | TableId::WinLockAndRollover => ChangeView::Raw {

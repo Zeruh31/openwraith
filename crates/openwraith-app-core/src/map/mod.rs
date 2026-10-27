@@ -97,6 +97,7 @@ pub(crate) fn table_ref(table: TableId) -> TableRef {
         TableId::DeadBand => TableRef::DeadBand,
         TableId::SocdPairs => TableRef::SocdPairs,
         TableId::SocdSettings => TableRef::SocdSettings,
+        TableId::Socd => TableRef::Socd,
         TableId::SwitchTypes => TableRef::SwitchTypes,
         TableId::PollRate => TableRef::PollRate,
         TableId::WinLockAndRollover => TableRef::WinLockAndRollover,

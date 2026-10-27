@@ -1,23 +1,32 @@
 //! `openwraith`: command line tool for the Wraith W75 keyboard.
 //!
-//! `list`, `info`, `show` and `backup` (without `--all-profiles`) are
-//! read-only: they open a transport type that cannot send a write (see the
-//! `openwraith-hid` crate). The
-//! commands that write (`profile select`, `set`, `restore`, and
-//! `backup --all-profiles`, which only switches profiles) go through the
-//! guarded write path: consent, the "other program" gate, a verified safety
-//! backup before any change, stop-and-wait writes and read-back
-//! verification. Their logic lives in [`commands`].
+//! `list`, `info`, `show`, `monitor` and `backup` (without
+//! `--all-profiles`) are read-only: they open a transport type that cannot
+//! send a write (see the `openwraith-hid` crate). The commands that write
+//! (`profile select`, `profile export` of a profile that is not active and
+//! `backup --all-profiles`, which only switch profiles; `set`, `restore`,
+//! `profile import`; `travel`, which only opens and closes the key-depth
+//! test) go through the guarded write path: consent, the "other program"
+//! gate, a verified safety backup before any change, stop-and-wait writes
+//! and read-back verification. Their logic lives in [`commands`],
+//! [`edits`], [`share`] and [`live`].
 
 #![forbid(unsafe_code)]
 
 mod args;
 mod commands;
 mod device;
+mod edit_text;
+mod edits;
+mod live;
+mod parse;
 mod render;
 mod report;
+mod share;
 #[cfg(test)]
 mod sim_tests;
+#[cfg(test)]
+mod sim_tests_v02;
 mod table;
 #[cfg(test)]
 mod test_support;
@@ -31,19 +40,19 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use openwraith_hid::backup::BACKUP_NOTE;
 use openwraith_hid::{
-    BACKUP_SCHEMA_VERSION, BACKUP_SCOPE, Backup, BackupError, ProfilesError, ProfilesFailure,
-    Progress, RestoreError, Session, SessionError, SessionStats, Transport, TransportError,
-    WriteError, read_all_with, read_summary,
+    BACKUP_SCHEMA_VERSION, BACKUP_SCOPE, Backup, BackupError, EditError, ProfilesError,
+    ProfilesFailure, Progress, RestoreError, Session, SessionError, SessionStats, Transport,
+    TransportError, WriteError, read_all_with, read_summary,
 };
-use openwraith_protocol::{DeviceEvent, ProfileId};
+use openwraith_protocol::{DeviceEvent, PlacementError, ProfileId, WriteBuildError};
 
-use crate::args::{ProfileAction, RestoreArgs, SetCommand};
+use crate::args::{MonitorArgs, ProfileAction, RestoreArgs, SetCommand, TravelArgs};
 use crate::commands::{Exit, Globals, OutputTarget, UsageError, tool_options};
 use crate::device::{Connector, DeviceError, HidConnector};
 use crate::ui::{Terminal, Ui};
 use crate::view::{
-    AllView, InfoView, JSON_NOTE, JsonOutput, KeymapView, LightView, MacrosView, TriggersView,
-    UndecodedNote, undecoded_notes,
+    AdvancedView, AllView, InfoView, JSON_NOTE, JsonOutput, KeymapView, LightView, MacrosView,
+    SocdView, TriggersView, UndecodedNote, undecoded_notes,
 };
 
 const ABOUT: &str = "Configuration tool for the Wraith W75 keyboard \
@@ -52,23 +61,30 @@ const ABOUT: &str = "Configuration tool for the Wraith W75 keyboard \
 const LONG_ABOUT: &str = "Configuration tool for the Wraith W75 Hall-effect keyboard.
 
 Shows device information, trigger (actuation / Rapid Trigger) settings, \
-lighting, keymap and macros, saves lossless backups, and restores them.
+lighting, keymap, macros, advanced keys and SOCD, saves lossless backups, and \
+restores them; edits triggers, the main light, key assignments, macros, \
+advanced keys, per-key colours, the dead band and SOCD; shares one profile as \
+a file; shows live key depths.
 
-list, info, show and backup are READ-ONLY (backup --all-profiles excepted, \
-see below): they never send a command that changes, resets or calibrates the \
-keyboard. These commands write to the keyboard: profile select, set, restore, \
-and backup --all-profiles (profile switches only). set and restore save a \
+list, info, show, monitor and backup are READ-ONLY (backup --all-profiles \
+excepted, see below): they never send a command that changes, resets or \
+calibrates the keyboard. These commands write to the keyboard: profile select, \
+set, restore, profile import, backup --all-profiles and profile export of a \
+profile that is not active (profile switches only), and travel (only the \
+key-depth test's open and close). set, restore and profile import save a \
 verified safety backup first (see --safety-dir), show what will change and ask \
-for confirmation (unless --yes); every write is checked by reading it back. \
-profile select and backup --all-profiles only switch profiles and do not ask.
+for confirmation (unless --yes; with --dry-run they only show the plan); every \
+write is checked by reading it back. profile select and backup --all-profiles \
+only switch profiles and do not ask.
 
 The keyboard saves a change about 1 s after it is written; a profile switch \
 or unplugging it before that loses the change. Commands that write therefore \
-wait 2 s after the last write before they switch profiles or finish, and \
-restore reads every written profile again after switching away and back \
-(\"persisted\", or \"LOST\" and exit code 1). A profile change on the keyboard \
-or a lost connection before the keyboard has saved is reported as \"MAY BE \
-LOST\" (exit code 1).
+wait 2 s after the last write before they switch profiles or finish. restore, \
+and set for tables whose keeping is not proven on hardware yet (macro slots, \
+SOCD; --check-persistence), read what was written again after switching away \
+and back (\"persisted\", or \"LOST\" and exit code 1). A profile change on the \
+keyboard or a lost connection before the keyboard has saved is reported as \
+\"MAY BE LOST\" (exit code 1).
 
 Close the vendor web configurator first, the whole browser tab (a tab in the \
 background may not be detected): it receives OpenWraith's replies too and \
@@ -191,6 +207,14 @@ enum Command {
     /// Restore a backup (WRITES; shows the plan and asks first). With
     /// --dry-run it only compares and never writes.
     Restore(RestoreArgs),
+    /// Show live key depths (the keyboard's travel test; WRITES only the
+    /// test's open and close, nothing is stored). With --close: only close a
+    /// test that may still be running.
+    Travel(TravelArgs),
+    /// Print what the keyboard sends on its own (profile switches, the SOCD
+    /// switch, key-depth reports, other programs' traffic). Read-only:
+    /// nothing is sent.
+    Monitor(MonitorArgs),
 }
 
 /// Sections of `openwraith show`.
@@ -202,8 +226,12 @@ enum Section {
     Light,
     /// Remapped keys on the base and Fn layers.
     Keymap,
-    /// The ten macro slots.
+    /// The ten macro slots, with their steps and the keys bound to them.
     Macros,
+    /// The forty advanced-key slots (DKS, Mod-Tap, Toggle) and their keys.
+    Advanced,
+    /// SOCD power and key pairs.
+    Socd,
     /// Everything, including advanced keys, SOCD and switch types.
     All,
 }
@@ -266,7 +294,9 @@ fn run(cli: &Cli) -> anyhow::Result<Exit> {
         }
         | Command::Profile { .. }
         | Command::Set { .. }
-        | Command::Restore(_) => {
+        | Command::Restore(_)
+        | Command::Travel(_)
+        | Command::Monitor(_) => {
             let mut connector = HidConnector::new(cli.device.clone());
             let mut ui = Terminal::new();
             run_command(&cli.command, &globals(cli), &mut connector, &mut ui)
@@ -290,13 +320,19 @@ fn run_command<C: Connector, U: Ui>(
             all_profiles: true,
         } => commands::backup_all_profiles(connector, ui, globals, output.as_deref(), *force),
         Command::Profile { action } => commands::profile(connector, ui, globals, action.as_ref()),
-        Command::Set {
-            what: SetCommand::Trigger(args),
-        } => commands::set_trigger(connector, ui, globals, args),
-        Command::Set {
-            what: SetCommand::Light(args),
-        } => commands::set_light(connector, ui, globals, args),
+        Command::Set { what } => match what {
+            SetCommand::Trigger(args) => edits::set_trigger(connector, ui, globals, args),
+            SetCommand::Light(args) => edits::set_light(connector, ui, globals, args),
+            SetCommand::Key(args) => edits::set_key(connector, ui, globals, args),
+            SetCommand::Macro(args) => edits::set_macro(connector, ui, globals, args),
+            SetCommand::Advanced(args) => edits::set_advanced(connector, ui, globals, args),
+            SetCommand::Colors(args) => edits::set_colors(connector, ui, globals, args),
+            SetCommand::Deadband(args) => edits::set_dead_band(connector, ui, globals, args),
+            SetCommand::Socd(args) => edits::set_socd(connector, ui, globals, args),
+        },
         Command::Restore(args) => commands::restore(connector, ui, globals, args),
+        Command::Travel(args) => live::travel(connector, ui, globals, args),
+        Command::Monitor(args) => live::monitor(connector, ui, globals, args),
         Command::List
         | Command::Info { .. }
         | Command::Show { .. }
@@ -384,6 +420,8 @@ fn cmd_show(
             Section::Light => emit_json(&LightView::new(&backup), notes),
             Section::Keymap => emit_json(&KeymapView::new(&backup), notes),
             Section::Macros => emit_json(&MacrosView::new(&backup), notes),
+            Section::Advanced => emit_json(&AdvancedView::new(&backup), notes),
+            Section::Socd => emit_json(&SocdView::new(&backup), notes),
             Section::All => emit_json(&AllView::new(&backup, from), notes),
         };
     }
@@ -396,6 +434,8 @@ fn cmd_show(
         Section::Light => render::light(&LightView::new(&backup), model),
         Section::Keymap => render::keymap(&KeymapView::new(&backup), model),
         Section::Macros => render::macros(&MacrosView::new(&backup)),
+        Section::Advanced => render::with_legend(render::advanced(&AdvancedView::new(&backup))),
+        Section::Socd => render::with_legend(render::socd(&SocdView::new(&backup))),
         Section::All => render::all(&AllView::new(&backup, from), model, unit_um),
     };
     emit(&(text + &render::undecoded_footer(&notes)))
@@ -505,13 +545,15 @@ fn report_session<T: Transport>(cli: &Cli, session: &Session<T>) {
 /// [`OTHER_PROGRAM_WARNING`] if the session saw status reports it did not ask
 /// for (the vendor site's heartbeat replies), acknowledgements of writes it
 /// did not send (such as the site's empty-mask trigger write at connect) or
-/// unsolicited profile reports. Ignored reports alone do not count: late
-/// chunks of our own retried requests are ignored too. A false alarm is
-/// harmless.
+/// profile reports in the form of a reply to another program's `21/11`
+/// query (byte 7 `01`). The keyboard's own pushes after Fn + 1..4 (byte 7
+/// `00`) and its SOCD pushes are never another program. Ignored reports
+/// alone do not count: late chunks of our own retried requests are ignored
+/// too. A false alarm is harmless.
 fn other_program_warning(stats: &SessionStats, events: &[DeviceEvent]) -> Option<&'static str> {
     let profile_report = events
         .iter()
-        .any(|e| matches!(e, DeviceEvent::ProfileReport { .. }));
+        .any(|e| matches!(e, DeviceEvent::ProfileReport { extra, .. } if *extra != 0x00));
     (stats.status_reports > 0 || stats.foreign_acks > 0 || profile_report)
         .then_some(OTHER_PROGRAM_WARNING)
 }
@@ -585,6 +627,8 @@ fn hint(err: &anyhow::Error) -> Option<&'static str> {
             profiles_hint(e)
         } else if let Some(e) = cause.downcast_ref::<WriteError>() {
             write_hint(e)
+        } else if let Some(e) = cause.downcast_ref::<EditError>() {
+            edit_hint(e)
         } else if let Some(e) = cause.downcast_ref::<BackupError>() {
             backup_hint(e)
         } else if let Some(e) = cause.downcast_ref::<SessionError>() {
@@ -605,7 +649,8 @@ fn restore_hint(err: &RestoreError) -> Option<&'static str> {
         ),
         RestoreError::ProfileNotInBackup { .. } => Some(
             "`openwraith info --from FILE` shows which profiles a backup holds; \
-             `openwraith backup --all-profiles` saves all four",
+             `openwraith backup --all-profiles` saves all four (`profile import --profile N` \
+             picks one of them)",
         ),
         RestoreError::InvalidBackup { .. } => {
             Some("restore needs a backup written by `openwraith backup` (*.owbackup.json)")
@@ -671,7 +716,91 @@ fn write_hint(err: &WriteError) -> Option<&'static str> {
         WriteError::NotBackedUp { .. } => {
             Some("save a safety backup of the active profile first; nothing was written")
         }
-        WriteError::Build(_) | WriteError::UnsupportedModel { .. } => None,
+        WriteError::TravelTestMaybeOpen | WriteError::TravelTestOpen { .. } => Some(
+            "a live key-depth test may still be running on the keyboard; stop it with \
+             `openwraith travel --close`, then run the command again",
+        ),
+        WriteError::ChangedOnKeyboard { .. } => Some(
+            "the setting was changed on the keyboard while it was written; check it with \
+             `openwraith show` and run the command again",
+        ),
+        WriteError::EgressRefused { .. } => Some(
+            "OpenWraith refused to send a packet it does not allow; nothing more was sent. \
+             Please report this together with the output of the same command with --verbose",
+        ),
+        WriteError::Build(_)
+        | WriteError::UnsupportedModel { .. }
+        | WriteError::TravelOpenNotAcked
+        | WriteError::BaseKeymapUnsaved
+        | WriteError::ConsentOnlyForSelects => None,
+    }
+}
+
+fn edit_hint(err: &EditError) -> Option<&'static str> {
+    match err {
+        EditError::Placement(PlacementError::BuiltinNotAcknowledged {
+            critical: false, ..
+        }) => Some(
+            "this Fn-layer key has a built-in Fn function (see `openwraith show keymap`); add \
+                 --allow-builtin KEY to replace it in this profile, or choose another key",
+        ),
+        EditError::Placement(PlacementError::BuiltinNotAcknowledged { critical: true, .. }) => {
+            Some(
+                "this Fn-layer key switches profiles or resets the keyboard; replacing it needs \
+                 --allow-critical-builtin KEY (only on a spare profile; setting the entry back \
+                 to default brings the built-in back)",
+            )
+        }
+        EditError::Placement(_) => Some(
+            "the knob, the Fn key and the keys the keyboard locks on the Fn layer cannot be \
+             reassigned; choose another key",
+        ),
+        EditError::NoFreeSlot { .. } => Some(
+            "every slot of that kind is used; `openwraith show macros` / `show advanced` list \
+             them, and an unbound one can be cleared with `--slot N --clear`",
+        ),
+        EditError::SlotAlreadyBound { .. } => Some(
+            "one slot per key, as the vendor site does: leave out --slot (OpenWraith picks a free \
+             one) or choose a slot no other key uses",
+        ),
+        EditError::BindingToEmptySlot { .. } | EditError::SlotStillReferenced { .. } => Some(
+            "a key must never refer to an empty slot: bind it with its content (set macro KEY \
+             --steps ..., set advanced KEY KIND ...) or unbind the key first",
+        ),
+        EditError::UnsupportedCurrentTable { .. } => Some(
+            "the keyboard holds this table in a form OpenWraith cannot write back; replace it \
+             completely or restore a backup; nothing was written",
+        ),
+        EditError::DistanceUnit { .. } => {
+            Some("OpenWraith only writes the 0.02 mm unit; nothing was written")
+        }
+        EditError::Build(e) => build_hint(e),
+        EditError::Session(e) => session_hint(e),
+        EditError::Backup(e) => backup_hint(e),
+        EditError::Restore(e) => restore_hint(e),
+        EditError::Invalid { .. } => None,
+    }
+}
+
+fn build_hint(err: &WriteBuildError) -> Option<&'static str> {
+    match err {
+        WriteBuildError::DksPointOutOfRange { .. } => Some(
+            "the DKS press point is given in mm in steps of 0.1 (e.g. --point 1.5) and must lie \
+             above the keyboard's deep point (3.0 mm on the W75)",
+        ),
+        WriteBuildError::DksSteps { .. } => Some(
+            "DKS stages: 1st . t h, 2nd . t h r (r only after h), 3rd . t h r (r only after h or \
+             r), 4th . t; every row needs at least one",
+        ),
+        WriteBuildError::MtThresholdOutOfRange { .. } => {
+            Some("the Mod-Tap time is 150 ms to 1000 ms (--time 300ms)")
+        }
+        WriteBuildError::SocdDuplicateKey { .. } | WriteBuildError::SocdSameKey { .. } => Some(
+            "a SOCD pair needs two different keys, and no key may be in two pairs (see \
+             `openwraith show socd`)",
+        ),
+        WriteBuildError::TooManySocdPairs { .. } => Some("at most 20 SOCD pairs"),
+        _ => None,
     }
 }
 
@@ -713,6 +842,7 @@ fn backup_hint(err: &BackupError) -> Option<&'static str> {
         BackupError::UnsupportedModel { .. }
         | BackupError::UnsupportedSchema { .. }
         | BackupError::Io { .. }
+        | BackupError::TooLarge { .. }
         | BackupError::Cancelled => None,
     }
 }
@@ -753,7 +883,7 @@ fn transport_hint(err: &TransportError) -> Option<&'static str> {
             "reading was interrupted (Ctrl+C); check the keyboard with `openwraith profile` and \
              `openwraith show`",
         ),
-        TransportError::Init(_) | TransportError::Malformed(_) => None,
+        TransportError::Init(_) | TransportError::Malformed(_) | TransportError::Refused(_) => None,
     }
 }
 
@@ -796,18 +926,34 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(["openwraith", name]).is_err(), "{name}");
         }
-        // `set` only covers the confirmed writes (triggers, main light).
+        // `set` covers only the confirmed writes: the forbidden ones do not
+        // exist as subcommands at all...
         for what in [
-            "socd",
             "poll-rate",
             "switch",
             "side-light",
-            "deadband",
             "keymap",
+            "calibration",
+            "gamepad",
+            "win-lock",
+            "reset",
         ] {
-            assert!(
-                Cli::try_parse_from(["openwraith", "set", what, "--yes"]).is_err(),
-                "set {what}"
+            let err = Cli::try_parse_from(["openwraith", "set", what, "--yes"])
+                .expect_err("not a subcommand");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::InvalidSubcommand,
+                "set {what}: {err}"
+            );
+        }
+        // ...while the v0.2 editors exist and only need their arguments.
+        for what in ["socd", "deadband", "key", "colors", "macro"] {
+            let err = Cli::try_parse_from(["openwraith", "set", what, "--yes"])
+                .expect_err("arguments missing");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "set {what}: {err}"
             );
         }
     }
@@ -869,6 +1015,65 @@ mod tests {
             &["info", "--profile", "2"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `text` split into words like a shell would (double quotes group).
+    fn shell_words(text: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut quoted = false;
+        let mut started = false;
+        for c in text.chars() {
+            match c {
+                '"' => {
+                    quoted = !quoted;
+                    started = true;
+                }
+                c if c.is_whitespace() && !quoted => {
+                    if started {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                c => {
+                    word.push(c);
+                    started = true;
+                }
+            }
+        }
+        if started {
+            words.push(word);
+        }
+        words
+    }
+
+    #[test]
+    fn the_documented_commands_parse() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for doc in ["README.md", "docs/HARDWARE_TESTS.md"] {
+            let text = std::fs::read_to_string(root.join(doc)).expect("readable");
+            let mut in_block = false;
+            let mut checked = 0;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("```") {
+                    in_block = !in_block;
+                    continue;
+                }
+                if !in_block || !trimmed.starts_with("openwraith ") {
+                    continue;
+                }
+                // Without the comment and a redirection.
+                let command = trimmed.split(" # ").next().unwrap_or(trimmed);
+                let command = command.split(" > ").next().unwrap_or(command).trim();
+                let words = shell_words(command);
+                if let Err(e) = Cli::try_parse_from(&words) {
+                    panic!("{doc}: {command}\n{e}");
+                }
+                checked += 1;
+            }
+            assert!(checked >= 20, "{doc}: only {checked} commands found");
         }
     }
 
@@ -955,10 +1160,22 @@ mod tests {
             ..SessionStats::default()
         };
         assert!(other_program_warning(&heartbeat, &[]).is_some());
-        let profile = DeviceEvent::ProfileReport {
+        // Another program's 21/11 query reply (byte 7 = 01).
+        let query = DeviceEvent::ProfileReport {
+            profile: 2,
+            extra: 1,
+        };
+        assert!(other_program_warning(&quiet, &[query]).is_some());
+        // Fn + 2 on the keyboard (the push, byte 7 = 00) and Fn + Right
+        // Shift: the user's own keys, never another program.
+        let push = DeviceEvent::ProfileReport {
             profile: 2,
             extra: 0,
         };
-        assert!(other_program_warning(&quiet, &[profile]).is_some());
+        let socd = DeviceEvent::SocdPower {
+            power: 1,
+            rest: [0, 0, 0, 0xfa, 0xe5],
+        };
+        assert_eq!(other_program_warning(&quiet, &[push, socd]), None);
     }
 }

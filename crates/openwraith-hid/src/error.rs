@@ -53,6 +53,10 @@ pub enum ErrorKind {
     UnexpectedReply,
     /// The requested change is not valid (out of range, unknown key, ...).
     InvalidRequest,
+    /// A live travel test is open on the keyboard, or may be (its close was
+    /// not acknowledged, or the keyboard streams key depths from a test an
+    /// earlier run left open). Close it first.
+    TravelTestOpen,
 }
 
 /// An error flattened to its [`ErrorKind`] and message (serialisable).
@@ -105,6 +109,15 @@ pub enum TransportError {
     /// time; it does not mean the connection was lost.
     #[error("reading from the keyboard was interrupted by a signal")]
     Interrupted,
+    /// A write packet failed OpenWraith's egress allowlist
+    /// ([`is_permitted_packet`](openwraith_protocol::is_permitted_packet))
+    /// and was not sent: a programming error. The session sends nothing
+    /// more.
+    #[error(
+        "OpenWraith refused to send the write packet {0} (not an allowed write form); nothing \
+         more is sent"
+    )]
+    Refused(String),
 }
 
 impl TransportError {
@@ -116,6 +129,7 @@ impl TransportError {
             TransportError::Write(_) | TransportError::Read(_) => ErrorKind::Disconnected,
             TransportError::Malformed(_) => ErrorKind::UnexpectedReply,
             TransportError::Interrupted => ErrorKind::Timeout,
+            TransportError::Refused(_) => ErrorKind::InvalidRequest,
         }
     }
 }
@@ -296,6 +310,21 @@ pub enum BackupError {
         /// The saved file.
         path: PathBuf,
     },
+    /// The file is larger than any backup can be
+    /// ([`BACKUP_MAX_FILE_BYTES`](crate::backup::BACKUP_MAX_FILE_BYTES)); it
+    /// was not read.
+    #[error(
+        "{} is {bytes} bytes, larger than any backup ({max} bytes at most); it was not read",
+        path.display()
+    )]
+    TooLarge {
+        /// The file.
+        path: PathBuf,
+        /// Its size in bytes.
+        bytes: u64,
+        /// The largest size accepted.
+        max: u64,
+    },
 }
 
 impl BackupError {
@@ -309,7 +338,8 @@ impl BackupError {
             | BackupError::DuplicateEntry { .. }
             | BackupError::NotABackup { .. }
             | BackupError::UnsupportedSchema { .. }
-            | BackupError::InvalidSnapshot { .. } => ErrorKind::InvalidBackup,
+            | BackupError::InvalidSnapshot { .. }
+            | BackupError::TooLarge { .. } => ErrorKind::InvalidBackup,
             BackupError::AlreadyExists { .. }
             | BackupError::Io { .. }
             | BackupError::SafetyDirUnavailable { .. }
@@ -420,12 +450,9 @@ pub enum WriteError {
         active: u8,
     },
     /// The active onboard profile changed without us asking (keyboard-side
-    /// switch or another program).
-    #[error(
-        "the active onboard profile changed unexpectedly (expected {}, the keyboard reports \
-         {reported})",
-        expected.map_or_else(|| "unknown".to_string(), |p| p.to_string())
-    )]
+    /// switch or another program). `expected == reported`: it was switched
+    /// and back (or selected again on the keyboard), which reloads it.
+    #[error("{}", profile_changed_text(*expected, *reported))]
     ProfileChanged {
         /// The profile we expected, if known.
         expected: Option<u8>,
@@ -485,6 +512,68 @@ pub enum WriteError {
         /// The product code the keyboard reports, if any.
         product: Option<String>,
     },
+    /// A write packet failed the egress allowlist and was not sent (see
+    /// [`TransportError::Refused`]). The session sends nothing more.
+    #[error(
+        "OpenWraith refused to send the write packet {packet} (not an allowed write form); \
+         nothing more is sent in this session"
+    )]
+    EgressRefused {
+        /// Hex of the refused packet.
+        packet: String,
+    },
+    /// The close of a live travel test was not acknowledged, so the keyboard
+    /// may still stream key depths. Nothing is written until a close is
+    /// acknowledged
+    /// ([`Writer::close_stray_travel_test`](crate::Writer::close_stray_travel_test)).
+    #[error(
+        "a live key-depth test may still be running on the keyboard (its close was not \
+         acknowledged); stop it first (openwraith travel --close). Nothing was written"
+    )]
+    TravelTestMaybeOpen,
+    /// The keyboard streams key depths although no test of this session is
+    /// open (a test left open by an earlier run). Nothing is written until
+    /// it is closed.
+    #[error(
+        "the keyboard is streaming key depths ({stray_reports} report(s)) from a key-depth test \
+         that is still open; stop it first (openwraith travel --close). Nothing was written"
+    )]
+    TravelTestOpen {
+        /// Stream reports seen while no test of ours was open.
+        stray_reports: u64,
+    },
+    /// The keyboard did not acknowledge the travel-test open; a close was
+    /// sent right after it.
+    #[error("the keyboard did not acknowledge the start of the key-depth test")]
+    TravelOpenNotAcked,
+    /// The consent comes from a standing rule
+    /// ([`ConsentOrigin::StandingRule`](crate::ConsentOrigin::StandingRule),
+    /// an automatic profile switch), which covers profile selects only.
+    /// Nothing was sent.
+    #[error(
+        "this consent comes from a standing rule (an automatic profile switch) and covers \
+         profile selects only; nothing was written"
+    )]
+    ConsentOnlyForSelects,
+    /// The setting was changed on the keyboard while it was being written
+    /// (SOCD switched with Fn + Right Shift), and the read-back does not
+    /// match. It was not written again.
+    #[error(
+        "{table} was changed on the keyboard while OpenWraith wrote it (Fn + Right Shift), and \
+         the result does not match; it was not written again. Check it and try again"
+    )]
+    ChangedOnKeyboard {
+        /// The table.
+        table: TableId,
+    },
+    /// A base keymap written in this session waits for its Fn-keymap write;
+    /// a profile switch now would drop it (spec 4.8.2). Refused by automatic
+    /// switches ([`ProfileSwitcher`](crate::ProfileSwitcher)).
+    #[error(
+        "a base keymap written in this session is not saved yet (the Fn keymap must be written \
+         after it); not switching profiles"
+    )]
+    BaseKeymapUnsaved,
 }
 
 impl WriteError {
@@ -506,16 +595,41 @@ impl WriteError {
             WriteError::Build(_) => ErrorKind::InvalidRequest,
             WriteError::NotBackedUp { .. } => ErrorKind::InvalidBackup,
             WriteError::UnsupportedModel { .. } => ErrorKind::ModelMismatch,
+            WriteError::EgressRefused { .. }
+            | WriteError::BaseKeymapUnsaved
+            | WriteError::ConsentOnlyForSelects => ErrorKind::InvalidRequest,
+            WriteError::TravelTestMaybeOpen | WriteError::TravelTestOpen { .. } => {
+                ErrorKind::TravelTestOpen
+            }
+            WriteError::TravelOpenNotAcked => ErrorKind::Timeout,
+            WriteError::ChangedOnKeyboard { .. } => ErrorKind::ChangedSincePlan,
         }
     }
 
     /// Whether nothing at all may be sent any more in this session (keyboard
-    /// reset or lost connection).
+    /// reset, lost connection, or a packet refused by the egress check).
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
-            WriteError::KeyboardReset { .. } | WriteError::Disconnected { .. }
+            WriteError::KeyboardReset { .. }
+                | WriteError::Disconnected { .. }
+                | WriteError::EgressRefused { .. }
         )
+    }
+}
+
+/// The message of [`WriteError::ProfileChanged`].
+fn profile_changed_text(expected: Option<u8>, reported: u8) -> String {
+    match expected {
+        Some(expected) if expected == reported => format!(
+            "the active onboard profile was switched on the keyboard (it reports profile \
+             {reported} again, but it reloaded it meanwhile)"
+        ),
+        _ => format!(
+            "the active onboard profile changed unexpectedly (expected {}, the keyboard reports \
+             {reported})",
+            expected.map_or_else(|| "unknown".to_string(), |p| p.to_string())
+        ),
     }
 }
 
@@ -531,8 +645,11 @@ impl From<SessionError> for WriteError {
 
 impl From<TransportError> for WriteError {
     fn from(error: TransportError) -> Self {
-        WriteError::Disconnected {
-            message: error.to_string(),
+        match error {
+            TransportError::Refused(packet) => WriteError::EgressRefused { packet },
+            other => WriteError::Disconnected {
+                message: other.to_string(),
+            },
         }
     }
 }

@@ -2,14 +2,16 @@
 //! `mock`). No HID device is involved.
 //!
 //! The simulator holds four onboard profiles. Main light, per-key triggers,
-//! the base keymap and the macro slots are per profile (OBSERVED on
-//! hardware); every table whose scope is unknown can be configured as
-//! per-profile or global with a [`ScopeConfig`]. Device constants (`0D`,
+//! both keymap layers, the macro and advanced-key slots and custom colours 1
+//! are per profile by default (OBSERVED on hardware); every table whose
+//! scope was unknown can be configured as per-profile or global with a
+//! [`ScopeConfig`]. Device constants (`0D`,
 //! `0E`, `0A`, `02`, `21/04`, `25 00`) are replayed from the seed backup.
 //!
 //! Read requests are answered with exactly framed replies. Write packets are
-//! parsed by an implementation of the nine write forms written
-//! independently from the protocol crate's builders (design section 1);
+//! parsed by an implementation of the write forms (W1-W11, the travel-test
+//! open and close T1/T2) written independently from the protocol crate's
+//! builders (design section 1);
 //! applying them produces the acknowledgements and pushes the keyboard
 //! sends (the profile push after a select, the status push after a
 //! music-rhythm leave). **Any packet outside the allowed read and write
@@ -78,20 +80,36 @@
 //! themselves, the dead band, triggers, the main light and the colour tables
 //! keep the quiet-time commit. Whether macro (`19`) and advanced-key (`22`)
 //! edits need the `18 02` too is untested: by default they keep the
-//! quiet-time commit, and [`KeymapCommit::macros_and_advanced_need_fn_write`]
-//! makes them wait for a complete `18 02` as well (GUESS; both settings are
-//! tested). An edit made after the `18 02` waits for the next one.
+//! quiet-time commit, and [`KeymapCommit::macros_need_fn_write`] and
+//! [`KeymapCommit::advanced_need_fn_write`] make them wait for a complete
+//! `18 02` as well (GUESS; the advanced-key setting is contradicted by
+//! hardware for the site's order and exists to show that the persistence
+//! check reports such a loss). An edit made after the `18 02` waits for the
+//! next one.
+//!
+//! # Keyboard events
+//!
+//! [`press_socd_hotkey_at`](DeviceSim::press_socd_hotkey_at) switches SOCD
+//! on the keyboard and pushes the `24 02` report, as Fn + Right Shift does
+//! (c15). While a travel test is open (`21 .. 18 02`), a
+//! [`travel_script`](DeviceSim::travel_script) is streamed as short and long
+//! `21 .. (05|03) 01` reports (c14 shapes); reports due while the test is
+//! closed are not sent. [`leave_travel_open`](DeviceSim::leave_travel_open)
+//! models a test a crashed run left open, and [`DeviceSim::assert_clean`]
+//! refuses a test left open by the code under test (unless
+//! [`allow_travel_left_open`](DeviceSim::allow_travel_left_open)).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use openwraith_protocol::{
-    CustomTable, KeyPos, Layer, MacroSlotId, Model, OutPacket, ProfileId, REPORT_LEN, ReadRequest,
-    Report, W75, WritePacket, is_keyboard_reset,
+    CustomTable, KeyPos, KeymapData, KeymapReference, Layer, MacroSlotId, Model, OutPacket,
+    ProfileId, REPORT_LEN, RawResponse, ReadRequest, Report, W75, WritePacket, is_keyboard_reset,
 };
 
 use crate::backup::Backup;
 use crate::error::TransportError;
+use crate::group::SlotRef;
 use crate::transport::{Transport, UsbInfo, WriteTransport};
 
 /// Whether a simulated table belongs to each profile or is shared.
@@ -150,15 +168,17 @@ impl ScopeConfig {
 }
 
 impl Default for ScopeConfig {
-    /// A guess: the tables the vendor site re-reads after a profile switch
-    /// (Fn keymap, advanced keys, dead band, SOCD) per profile, the others
-    /// global.
+    /// The Fn keymap, advanced keys and custom colours 1 per profile
+    /// (OBSERVED, spec 7.3 and 7.4); dead band and SOCD per profile too (a
+    /// guess: the vendor site re-reads them after a profile switch); the
+    /// others global.
     fn default() -> Self {
         ScopeConfig {
             fn_keymap: Scope::PerProfile,
             advanced_keys: Scope::PerProfile,
             dead_band: Scope::PerProfile,
             socd: Scope::PerProfile,
+            custom_colors1: Scope::PerProfile,
             ..ScopeConfig::uniform(Scope::Global)
         }
     }
@@ -179,6 +199,10 @@ pub enum SimTable {
     AdvancedKeys,
     /// Dead band (264 bytes).
     DeadBand,
+    /// SOCD pairs (80 bytes, `24 01`).
+    SocdPairs,
+    /// SOCD power and hotkey (6 bytes, `24 02`; byte 0 = power).
+    SocdSettings,
 }
 
 impl SimTable {
@@ -190,6 +214,8 @@ impl SimTable {
             SimTable::Macro(_) => 256,
             SimTable::AdvancedKeys => 1600,
             SimTable::DeadBand => 264,
+            SimTable::SocdPairs => 80,
+            SimTable::SocdSettings => 6,
         }
     }
 
@@ -201,6 +227,8 @@ impl SimTable {
             ReadRequest::Macro(slot) => Some(SimTable::Macro(slot)),
             ReadRequest::AdvancedKeys => Some(SimTable::AdvancedKeys),
             ReadRequest::DeadBand => Some(SimTable::DeadBand),
+            ReadRequest::SocdPairs => Some(SimTable::SocdPairs),
+            ReadRequest::SocdSettings => Some(SimTable::SocdSettings),
             _ => None,
         }
     }
@@ -213,7 +241,15 @@ impl SimTable {
             SimTable::Macro(slot) => ReadRequest::Macro(slot),
             SimTable::AdvancedKeys => ReadRequest::AdvancedKeys,
             SimTable::DeadBand => ReadRequest::DeadBand,
+            SimTable::SocdPairs => ReadRequest::SocdPairs,
+            SimTable::SocdSettings => ReadRequest::SocdSettings,
         }
+    }
+
+    /// Whether the table is a single-report reply whose bytes are the
+    /// payload (not a chunked table).
+    fn is_record(self) -> bool {
+        matches!(self, SimTable::MainLight | SimTable::SocdSettings)
     }
 }
 
@@ -278,19 +314,25 @@ pub struct KeymapCommit {
     /// cycle before that commit loses them (CONFIRMED on hardware, spec
     /// 4.8.2). Default: on.
     pub base_needs_fn_write: bool,
-    /// Macro (`19`) and advanced-key (`22`) edits wait for a complete
-    /// `18 02` write too. Untested on hardware (GUESS), so off by default:
-    /// they are saved by the quiet-time commit like every other table.
-    pub macros_and_advanced_need_fn_write: bool,
+    /// Macro (`19`) edits wait for a complete `18 02` write too. Untested
+    /// on hardware (GUESS), so off by default: they are saved by the
+    /// quiet-time commit like every other table.
+    pub macros_need_fn_write: bool,
+    /// Advanced-key (`22`) edits wait for a complete `18 02` write **after
+    /// them**. Contradicted by hardware for the site's order (`22` after
+    /// `18 02` persisted twice, spec 4.8.2), so off by default; it exists to
+    /// show that the persistence check reports such a loss.
+    pub advanced_need_fn_write: bool,
 }
 
 impl Default for KeymapCommit {
     /// The hardware finding: the base keymap needs the `18 02`, macros and
-    /// advanced keys do not (their behaviour is unknown).
+    /// advanced keys do not (the macros' behaviour is unknown).
     fn default() -> Self {
         KeymapCommit {
             base_needs_fn_write: true,
-            macros_and_advanced_need_fn_write: false,
+            macros_need_fn_write: false,
+            advanced_need_fn_write: false,
         }
     }
 }
@@ -300,11 +342,14 @@ impl KeymapCommit {
     fn waits_for_fn_write(self, table: SimTable) -> bool {
         match table {
             SimTable::Keymap(Layer::Base) => self.base_needs_fn_write,
-            SimTable::Macro(_) | SimTable::AdvancedKeys => self.macros_and_advanced_need_fn_write,
+            SimTable::Macro(_) => self.macros_need_fn_write,
+            SimTable::AdvancedKeys => self.advanced_need_fn_write,
             SimTable::Keymap(Layer::Fn)
             | SimTable::MainLight
             | SimTable::CustomColors1
-            | SimTable::DeadBand => false,
+            | SimTable::DeadBand
+            | SimTable::SocdPairs
+            | SimTable::SocdSettings => false,
         }
     }
 }
@@ -338,10 +383,31 @@ enum Effect {
         data: Vec<u8>,
     },
     AdvancedClear(usize),
+    /// A non-empty advanced-key slot (DKS, MT, TGL): slot and 40 bytes.
+    AdvancedSlot(usize, [u8; 40]),
     Trigger {
         keys: Vec<KeyPos>,
         record: [u8; 9],
     },
+    /// SOCD power `24 03` (0 or 1).
+    SocdPower(u8),
+    /// Travel test open (`21 .. 18 02` + the layout mask).
+    TravelOpen,
+    /// Travel test close (`21 .. 18 03`).
+    TravelClose,
+}
+
+/// A scripted key movement for the travel stream: depth (trigger units)
+/// at a virtual time.
+#[derive(Debug, Clone, Copy)]
+struct TravelPoint {
+    due: Duration,
+    pos: KeyPos,
+    depth: u16,
+    /// Short (fast motion) or long (slow motion) report.
+    short: bool,
+    /// Depth of the key's previous point (for the long variant's motion).
+    previous: u16,
 }
 
 /// A stateful W75 simulator implementing [`Transport`] and
@@ -390,6 +456,22 @@ pub struct DeviceSim {
     reset_delivered: bool,
     disconnected: bool,
     usb: Option<UsbInfo>,
+    /// Whether the travel test is open.
+    travel_open: bool,
+    travel_opens: usize,
+    travel_closes: usize,
+    /// Whether a profile select keeps an open travel test running.
+    travel_survives_select: bool,
+    /// Whether a test left open at the end is accepted by `assert_clean`.
+    travel_left_open_allowed: bool,
+    /// Scripted stream reports, by due time.
+    travel_points: Vec<TravelPoint>,
+    /// Stream reports sent.
+    travel_reports_sent: usize,
+    /// Fn + Right Shift presses at a virtual time.
+    socd_hotkey_at: Vec<Duration>,
+    /// Whether the SOCD power write is acknowledged (never seen on hardware).
+    socd_power_acked: bool,
 }
 
 impl DeviceSim {
@@ -449,6 +531,15 @@ impl DeviceSim {
             reset_delivered: false,
             disconnected: false,
             usb: None,
+            travel_open: false,
+            travel_opens: 0,
+            travel_closes: 0,
+            travel_survives_select: true,
+            travel_left_open_allowed: false,
+            travel_points: Vec::new(),
+            travel_reports_sent: 0,
+            socd_hotkey_at: Vec::new(),
+            socd_power_acked: false,
         }
     }
 
@@ -463,9 +554,10 @@ impl DeviceSim {
                 continue;
             }
             if let Some(table) = SimTable::of_request(request) {
-                let bytes = match table {
-                    SimTable::MainLight => raw.payload(),
-                    _ => raw.table_bytes("sim").unwrap_or_else(|_| raw.payload()),
+                let bytes = if table.is_record() {
+                    raw.payload()
+                } else {
+                    raw.table_bytes("sim").unwrap_or_else(|_| raw.payload())
                 };
                 self.tables.insert((profile, table), bytes);
                 continue;
@@ -761,8 +853,8 @@ impl DeviceSim {
 
     /// Puts every profile (and every global table) into a factory-like
     /// state: factory triggers (except the knob's) and light, zero keymaps,
-    /// empty (`FF`) macros, zero advanced keys, dead band and colour table 1.
-    /// Unsaved edits are dropped.
+    /// empty (`FF`) macros, zero advanced keys, dead band and colour table 1,
+    /// SOCD off without pairs. Unsaved edits are dropped.
     pub fn factory_reset_all(&mut self) {
         self.unsaved_tables.clear();
         self.unsaved_triggers.clear();
@@ -783,6 +875,12 @@ impl DeviceSim {
                 self.tables
                     .insert((profile, SimTable::Macro(slot)), vec![0xFF; 256]);
             }
+            self.tables
+                .insert((profile, SimTable::SocdPairs), vec![0; 80]);
+            self.tables.insert(
+                (profile, SimTable::SocdSettings),
+                vec![0, 0, 0, 0, 0xfa, 0xe5],
+            );
             if profile > 0 {
                 self.tables
                     .insert((profile, SimTable::MainLight), FACTORY_LIGHT.to_vec());
@@ -894,6 +992,152 @@ impl DeviceSim {
         self.usb = usb;
     }
 
+    // ----- keyboard events -----
+
+    /// The user presses Fn + Right Shift `after` the current virtual time:
+    /// the keyboard switches SOCD (power byte of `24 02`, kept) and pushes
+    /// `24 02 00 00 06 PP 00 00 00 fa e5` with the new power (c15 #218,
+    /// #231).
+    pub fn press_socd_hotkey_at(&mut self, after: Duration) {
+        let due = self.clock.saturating_add(after);
+        self.socd_hotkey_at.push(due);
+    }
+
+    /// Whether the SOCD power write (`24 03`) is acknowledged with
+    /// `24 00 00 00 00` (never seen on hardware; default off).
+    pub fn set_socd_power_acked(&mut self, acked: bool) {
+        self.socd_power_acked = acked;
+    }
+
+    /// Scripts the movement of the key at `pos` for the travel stream:
+    /// `(offset from now, depth in trigger units)` points. A point at most
+    /// 3 ms after the previous one that moves 3 units or more is a short
+    /// report (fast motion), any other a long one (slow motion, c14 shapes);
+    /// a final depth-0 report follows a script that does not end at 0.
+    /// Reports due while the travel test is closed are not sent.
+    pub fn travel_script(&mut self, pos: KeyPos, points: &[(Duration, u16)]) {
+        let mut previous: Option<(Duration, u16)> = None;
+        let add = |sim: &mut Self, at: Duration, depth: u16, previous: Option<(Duration, u16)>| {
+            let (short, last) = match previous {
+                Some((was_at, was)) => (
+                    at.saturating_sub(was_at) <= Duration::from_millis(3)
+                        && depth.abs_diff(was) >= 3,
+                    was,
+                ),
+                None => (false, 0),
+            };
+            sim.travel_points.push(TravelPoint {
+                due: sim.clock.saturating_add(at),
+                pos,
+                depth,
+                short,
+                previous: last,
+            });
+        };
+        for &(at, depth) in points {
+            add(self, at, depth, previous);
+            previous = Some((at, depth));
+        }
+        if let Some((at, depth)) = previous.filter(|(_, depth)| *depth != 0) {
+            add(self, at + Duration::from_millis(72), 0, Some((at, depth)));
+        }
+        self.travel_points.sort_by_key(|point| point.due);
+    }
+
+    /// Whether a profile select keeps an open travel test running (default
+    /// true; untested on hardware, H13).
+    pub fn set_travel_survives_select(&mut self, survives: bool) {
+        self.travel_survives_select = survives;
+    }
+
+    /// Opens the travel test without a packet: a test an earlier run left
+    /// open (the keyboard streams scripted movements from now on).
+    pub fn leave_travel_open(&mut self) {
+        self.travel_open = true;
+        self.travel_left_open_allowed = true;
+    }
+
+    /// Accepts a travel test left open at the end ([`assert_clean`](Self::assert_clean)
+    /// refuses one by default), for tests of a crashed run.
+    pub fn allow_travel_left_open(&mut self) {
+        self.travel_left_open_allowed = true;
+    }
+
+    /// Whether the travel test is open.
+    pub fn travel_open(&self) -> bool {
+        self.travel_open
+    }
+
+    /// How many travel-test opens (`21 .. 18 02`) were received.
+    pub fn travel_opens(&self) -> usize {
+        self.travel_opens
+    }
+
+    /// How many travel-test closes (`21 .. 18 03`) were received (a close
+    /// while closed is acknowledged and counted).
+    pub fn travel_closes(&self) -> usize {
+        self.travel_closes
+    }
+
+    /// How many stream reports the simulator sent.
+    pub fn travel_reports_sent(&self) -> usize {
+        self.travel_reports_sent
+    }
+
+    /// The keymap entries of `profile` that refer to an empty macro or
+    /// advanced-key slot: in the working copy, or (`persisted`) in what
+    /// survives a profile switch made now.
+    pub fn dangling_references(
+        &self,
+        profile: ProfileId,
+        persisted: bool,
+    ) -> Vec<(Layer, u8, SlotRef)> {
+        let view = |table| {
+            if persisted {
+                self.persisted_table(profile, table)
+            } else {
+                self.table(profile, table)
+            }
+        };
+        let empty = |bytes: Option<&[u8]>| {
+            bytes.is_none_or(|b| b.iter().all(|x| *x == 0) || b.iter().all(|x| *x == 0xFF))
+        };
+        let mut out = Vec::new();
+        for layer in Layer::ALL {
+            let Some(bytes) = view(SimTable::Keymap(layer)) else {
+                continue;
+            };
+            let Ok(raw) = RawResponse::from_reports(
+                ReadRequest::Keymap(layer),
+                frame(ReadRequest::Keymap(layer), bytes),
+            ) else {
+                continue;
+            };
+            let Ok((_, data)) = KeymapData::from_response(&raw) else {
+                continue;
+            };
+            for reference in data.references() {
+                match reference {
+                    KeymapReference::Macro { index, slot } => {
+                        if empty(view(SimTable::Macro(slot))) {
+                            out.push((layer, index, SlotRef::Macro(slot)));
+                        }
+                    }
+                    KeymapReference::Advanced { index, slot } => {
+                        let start = usize::from(slot.get()) * 40;
+                        let bytes =
+                            view(SimTable::AdvancedKeys).and_then(|b| b.get(start..start + 40));
+                        if empty(bytes) {
+                            out.push((layer, index, SlotRef::Advanced(slot)));
+                        }
+                    }
+                    KeymapReference::Malformed { .. } => {}
+                }
+            }
+        }
+        out
+    }
+
     // ----- what happened -----
 
     /// Every packet the host sent, in order.
@@ -942,6 +1186,10 @@ impl DeviceSim {
             self.violations.len(),
             self.violations
         );
+        assert!(
+            !self.travel_open || self.travel_left_open_allowed,
+            "the travel test was left open"
+        );
     }
 
     // ----- protocol -----
@@ -968,6 +1216,7 @@ impl DeviceSim {
             ));
         }
         self.apply_switches_until(self.clock);
+        self.apply_keyboard_events_until(self.clock);
         self.commit_if_due();
         let bytes = *packet.as_bytes();
         self.log.push(packet);
@@ -1068,6 +1317,21 @@ impl DeviceSim {
                             Err("profile select outside 1-4 or with extra bytes".into())
                         }
                     }
+                    (0x18, 0x02) => {
+                        let mask = self.model.layout_mask();
+                        if b[6..28] == mask.as_bytes()[..] && zero_from(28) {
+                            Ok(Effect::TravelOpen)
+                        } else {
+                            Err("travel-test open with another mask or extra bytes".into())
+                        }
+                    }
+                    (0x18, 0x03) => {
+                        if zero_from(6) {
+                            Ok(Effect::TravelClose)
+                        } else {
+                            Err("travel-test close with extra bytes".into())
+                        }
+                    }
                     (0x18, mode @ (0x00 | 0x0C | 0x0D)) => {
                         let selectable = self.model.selectable_mask();
                         let mut keys = Vec::new();
@@ -1130,11 +1394,47 @@ impl DeviceSim {
                 None => Err("macro write to a slot outside 0-9".into()),
             },
             0x22 => {
-                if b[1] < 40 && b[2..5] == [0, 0, 0x32] && zero_from(5) {
-                    Ok(Effect::AdvancedClear(usize::from(b[1])))
-                } else {
-                    Err("advanced-key write with content, a bad slot or a bad header".into())
+                if b[1] >= 40 || b[2..5] != [0, 0, 0x32] {
+                    return Err("advanced-key write with a bad slot or a bad header".into());
                 }
+                if zero_from(5) {
+                    return Ok(Effect::AdvancedClear(usize::from(b[1])));
+                }
+                let mut slot = [0u8; 40];
+                slot.copy_from_slice(&b[5..45]);
+                advanced_slot_violation(&slot)
+                    .map_or(Ok(()), Err)
+                    .and_then(|()| {
+                        if zero_from(45) {
+                            Ok(Effect::AdvancedSlot(usize::from(b[1]), slot))
+                        } else {
+                            Err("advanced-key write with bytes after byte 44".into())
+                        }
+                    })
+            }
+            0x24 if b[1] == 0x03 => {
+                if b[2..5] == [0, 0, 0x01] && b[5] <= 1 && zero_from(6) {
+                    Ok(Effect::SocdPower(b[5]))
+                } else {
+                    Err("SOCD power write with a bad header, a value above 1 or extra bytes".into())
+                }
+            }
+            0x24 if b[1] == 0x00 => {
+                if b[2] != 0 || b[3] > 1 || b[4] != 0x28 || !zero_from(45) {
+                    return Err("SOCD pair chunk with a bad index, length or extra bytes".into());
+                }
+                for entry in b[5..45].chunks_exact(4) {
+                    let valid = entry == [0, 0, 0, 0]
+                        || (entry[0] == 0x01
+                            && entry[1] <= 3
+                            && entry[2] != 0
+                            && entry[3] != 0
+                            && entry[2] != entry[3]);
+                    if !valid {
+                        return Err(format!("SOCD pair entry {entry:02x?} is not allowed"));
+                    }
+                }
+                chunk(b, SimTable::SocdPairs, 40)
             }
             0x26 if b[1] == 0x01 => {
                 let max = self.model.write_ceilings.max_dead_band;
@@ -1189,7 +1489,9 @@ impl DeviceSim {
             Effect::Light(_)
                 | Effect::Chunk { .. }
                 | Effect::AdvancedClear(_)
+                | Effect::AdvancedSlot(..)
                 | Effect::Trigger { .. }
+                | Effect::SocdPower(_)
         ) {
             // Every write that changes a setting restarts the commit delay.
             self.last_edit = Some(self.clock);
@@ -1204,6 +1506,9 @@ impl DeviceSim {
                     // The profile is reloaded from its saved state.
                     self.discard_unsaved();
                     self.active = profile;
+                    if !self.travel_survives_select {
+                        self.travel_open = false;
+                    }
                 }
                 let mut out = vec![report(&[0x21, 0, 0, 0, 0x02, 0x12, 0x01])];
                 if self.faults.omit_pushes > 0 {
@@ -1248,9 +1553,44 @@ impl DeviceSim {
                     SimTable::Keymap(_) => &[0x18, 0, 0, 0, 0],
                     SimTable::Macro(_) => &[0x19, 0, 0, 0, 0],
                     SimTable::DeadBand => &[0x26, 0x01, 0, 0, 0],
-                    SimTable::MainLight | SimTable::AdvancedKeys => &[],
+                    SimTable::SocdPairs => &[0x24, 0, 0, 0, 0],
+                    SimTable::MainLight | SimTable::AdvancedKeys | SimTable::SocdSettings => &[],
                 };
                 vec![report(ack)]
+            }
+            Effect::AdvancedSlot(slot, data) => {
+                if !blocked(self, SimTable::AdvancedKeys) {
+                    let bytes = self.table_mut(SimTable::AdvancedKeys);
+                    if let Some(dst) = bytes.get_mut(slot * 40..slot * 40 + 40) {
+                        dst.copy_from_slice(&data);
+                    }
+                    self.note_edit(self.key_of(SimTable::AdvancedKeys), slot * 40);
+                }
+                vec![report(&[0x22, 0, 0, 0, 0])]
+            }
+            Effect::SocdPower(power) => {
+                if !blocked(self, SimTable::SocdSettings) {
+                    let bytes = self.table_mut(SimTable::SocdSettings);
+                    if let Some(first) = bytes.first_mut() {
+                        *first = power;
+                    }
+                    self.note_edit(self.key_of(SimTable::SocdSettings), 0);
+                }
+                if self.socd_power_acked {
+                    vec![report(&[0x24, 0, 0, 0, 0])]
+                } else {
+                    Vec::new()
+                }
+            }
+            Effect::TravelOpen => {
+                self.travel_open = true;
+                self.travel_opens += 1;
+                vec![report(&[0x21, 0, 0, 0, 0x01, 0x00])]
+            }
+            Effect::TravelClose => {
+                self.travel_open = false;
+                self.travel_closes += 1;
+                vec![report(&[0x21, 0, 0, 0, 0x01, 0x00])]
             }
             Effect::AdvancedClear(slot) => {
                 if !blocked(self, SimTable::AdvancedKeys) {
@@ -1272,6 +1612,43 @@ impl DeviceSim {
                 vec![report(&[0x21, 0, 0, 0, 0x01, 0x00])]
             }
         }
+    }
+}
+
+/// Why 40 bytes of an advanced-key write are not a DKS, MT or TGL slot in
+/// the site's form (independent of the protocol crate), if they are not.
+fn advanced_slot_violation(slot: &[u8; 40]) -> Option<String> {
+    let zero_from = |i: usize| slot[i..].iter().all(|x| *x == 0);
+    let action_ok = |a: &[u8]| a[0] == 0 && a[2] == 0 && a[3] == 0;
+    match slot[0] {
+        1 => {
+            let (r1, r2, r3, r4) = (slot[1], slot[2], slot[3], slot[4]);
+            if r1 == 0 || r1 > r2 || r2 != r3 || r4 != r1 || r2 > 30 {
+                return Some(format!("DKS routes {r1} {r2} {r3} {r4} are not allowed"));
+            }
+            for row in slot[5..37].chunks_exact(8) {
+                if !action_ok(&row[..4]) || row[4..].iter().any(|s| *s > 3) {
+                    return Some("DKS row with a bad action or step".into());
+                }
+            }
+            (!zero_from(37)).then(|| "DKS slot with bytes after byte 36".into())
+        }
+        2 => {
+            if !action_ok(&slot[1..5]) || !action_ok(&slot[5..9]) {
+                return Some("Mod-Tap with a bad action".into());
+            }
+            if !(15..=100).contains(&slot[9]) {
+                return Some(format!("Mod-Tap threshold {} is not allowed", slot[9]));
+            }
+            (!zero_from(10)).then(|| "Mod-Tap slot with bytes after byte 9".into())
+        }
+        3 => {
+            if !action_ok(&slot[1..5]) || slot[2] == 0 {
+                return Some("Toggle with a bad action".into());
+            }
+            (!zero_from(5)).then(|| "Toggle slot with bytes after byte 4".into())
+        }
+        other => Some(format!("advanced-key type {other} is never written")),
     }
 }
 
@@ -1300,6 +1677,33 @@ fn chunk(b: &[u8; REPORT_LEN], table: SimTable, chunk_len: usize) -> Result<Effe
         offset: start,
         data: b[5..5 + len].to_vec(),
     })
+}
+
+/// A travel-stream report of `point` in the shapes of c14: short
+/// `21 00 00 00 05 01 RR CC DL DH`, or long (#999) with the per-key
+/// constants `9b 09`, `ad 09`, `87 06`, the motion byte and two sensor
+/// readings that fall as the key goes down.
+fn travel_report(point: &TravelPoint) -> Report {
+    let [lo, hi] = point.depth.to_le_bytes();
+    let (row, col) = (point.pos.row(), point.pos.col());
+    if point.short {
+        return report(&[0x21, 0, 0, 0, 0x05, 0x01, row, col, lo, hi]);
+    }
+    let motion = match point.depth.cmp(&point.previous) {
+        _ if point.depth == 0 => 0x00,
+        std::cmp::Ordering::Greater => 0x01,
+        _ => 0x02,
+    };
+    let sensor = 2459u16
+        .saturating_sub(point.depth.saturating_mul(4))
+        .to_le_bytes();
+    let mut bytes = vec![
+        0x21, 0x00, 0x00, 0x00, 0x03, 0x01, row, col, lo, hi, 0xff, 0xff, 0x9b, 0x09, 0xad, 0x09,
+        motion, 0x11, 0x00, sensor[0], sensor[1], sensor[0], sensor[1],
+    ];
+    bytes.resize(31, 0);
+    bytes.extend_from_slice(&[0x87, 0x06, 0xff, 0xff, 0x00, 0x00]);
+    report(&bytes)
 }
 
 /// A report from its leading bytes (rest zero).
@@ -1366,16 +1770,24 @@ impl Transport for DeviceSim {
             ));
         }
         self.apply_switches_until(self.clock);
+        self.apply_keyboard_events_until(self.clock);
         self.release_scheduled(self.clock);
         let mut next = self.queue.pop_front();
         if next.is_none() {
             let deadline = self.clock.saturating_add(timeout);
-            // The wait ends at the next report: a scheduled one, or the push
-            // of a switch on the keyboard.
+            // The wait ends at the next report: a scheduled one, a keyboard
+            // event, or the push of a switch on the keyboard.
             let report_due = self
                 .scheduled
                 .iter()
                 .map(|(due, _)| *due)
+                .chain(self.socd_hotkey_at.iter().copied())
+                .chain(
+                    self.travel_points
+                        .iter()
+                        .filter(|_| self.travel_open)
+                        .map(|point| point.due),
+                )
                 .filter(|due| *due <= deadline)
                 .min();
             let push_due = self
@@ -1392,6 +1804,7 @@ impl Transport for DeviceSim {
             // Silent switches on the way happen at their own time.
             self.apply_switches_until(until);
             self.clock = self.clock.max(until);
+            self.apply_keyboard_events_until(self.clock);
             self.release_scheduled(self.clock);
             next = self.queue.pop_front();
         }
@@ -1438,6 +1851,51 @@ impl DeviceSim {
             if push {
                 self.queue
                     .push_back(report(&[0x21, 0, 0, 0, 0x03, 0x11, profile, 0x00]));
+            }
+        }
+    }
+
+    /// Makes the keyboard events due at or before `time` happen: Fn + Right
+    /// Shift presses (SOCD switched and pushed) and travel-stream reports
+    /// (sent only while the test is open; dropped otherwise).
+    fn apply_keyboard_events_until(&mut self, time: Duration) {
+        let presses: Vec<Duration> = self
+            .socd_hotkey_at
+            .iter()
+            .copied()
+            .filter(|due| *due <= time)
+            .collect();
+        self.socd_hotkey_at.retain(|due| *due > time);
+        for _ in presses {
+            let key = self.key_of(SimTable::SocdSettings);
+            let mut settings = self
+                .unsaved_tables
+                .get(&key)
+                .or_else(|| self.tables.get(&key))
+                .cloned()
+                .unwrap_or_else(|| vec![0, 0, 0, 0, 0xfa, 0xe5]);
+            if let Some(power) = settings.first_mut() {
+                *power = u8::from(*power == 0);
+            }
+            // A switch on the keyboard is kept at once.
+            if let Some(unsaved) = self.unsaved_tables.get_mut(&key) {
+                unsaved.clone_from(&settings);
+            }
+            self.tables.insert(key, settings.clone());
+            let mut push = vec![0x24, 0x02, 0x00, 0x00, 0x06];
+            push.extend_from_slice(&settings);
+            self.queue.push_back(report(&push));
+        }
+        let due = self
+            .travel_points
+            .iter()
+            .take_while(|point| point.due <= time)
+            .count();
+        let points: Vec<TravelPoint> = self.travel_points.drain(..due).collect();
+        for point in points {
+            if self.travel_open {
+                self.queue.push_back(travel_report(&point));
+                self.travel_reports_sent += 1;
             }
         }
     }
@@ -1589,6 +2047,43 @@ mod tests {
             out.push(WriteRequest::Macro(slot, data));
         }
         out.extend(AdvancedSlotId::all().map(WriteRequest::AdvancedKeyClear));
+        {
+            use openwraith_protocol::write::{ModTap, Toggle};
+            use openwraith_protocol::{AdvancedKeyDef, AdvancedLimits, AdvancedSlotData, HidUsage};
+            let global = TriggerGlobal::from_response(&raw(
+                ReadRequest::TriggerGlobal,
+                &[0x04, 0xaa, 0x02, 0x02, 0x00, 0x05],
+            ))
+            .expect("21/04");
+            let limits = AdvancedLimits::new(&W75, &global, 20).expect("limits");
+            let usage = |u| HidUsage::new(u).expect("usage");
+            for def in [
+                AdvancedKeyDef::Toggle(Toggle { key: usage(0x0b) }),
+                AdvancedKeyDef::ModTap(ModTap {
+                    hold: usage(0xe0),
+                    tap: usage(0x0a),
+                    threshold_10ms: 30,
+                }),
+            ] {
+                let data = AdvancedSlotData::from_def(&def, &limits).expect("valid");
+                out.push(WriteRequest::AdvancedKey(
+                    AdvancedSlotId::new(7).expect("slot"),
+                    data,
+                ));
+            }
+            use openwraith_protocol::{SocdMode, SocdPair, SocdPairsData, SocdWrite};
+            let pairs = SocdPairsData::from_pairs(
+                &W75,
+                &[SocdPair {
+                    mode: SocdMode::M2,
+                    key1: usage(0x04),
+                    key2: usage(0x07),
+                }],
+            )
+            .expect("pairs");
+            out.push(WriteRequest::Socd(SocdWrite::new(true, pairs.clone())));
+            out.push(WriteRequest::Socd(SocdWrite::new(false, pairs)));
+        }
         let global = TriggerGlobal::from_response(&raw(
             ReadRequest::TriggerGlobal,
             &[0x04, 0xaa, 0x02, 0x02, 0x00, 0x05],
@@ -1641,6 +2136,16 @@ mod tests {
             }
         }
         assert!(count > 200, "{count}");
+        use openwraith_protocol::{TravelTestMask, TravelTestRequest};
+        for request in [
+            TravelTestRequest::Open(TravelTestMask::full_layout(&W75).expect("mask")),
+            TravelTestRequest::Close,
+        ] {
+            assert!(
+                sim.parse_write(request.step().packet.as_bytes()).is_ok(),
+                "{request}"
+            );
+        }
     }
 
     #[test]
@@ -1673,8 +2178,22 @@ mod tests {
             ("music enter", packet(&[0x17, 0, 0, 0, 0x02, 0x01, 0x01])),
             ("side light", packet(&[0x08, 0, 0, 0, 0x0e, 0x01])),
             ("custom 2", packet(&[0x09, 0x01, 0, 0, 0x36])),
-            ("socd pairs", packet(&[0x24, 0x00, 0, 0, 0x28])),
-            ("socd power", packet(&[0x24, 0x03, 0, 0, 0x01, 0x01])),
+            ("socd pairs chunk 2", packet(&[0x24, 0x00, 0, 2, 0x28])),
+            (
+                "socd pair same key",
+                packet(&[0x24, 0x00, 0, 0, 0x28, 1, 0, 4, 4]),
+            ),
+            (
+                "socd pair mode 4",
+                packet(&[0x24, 0x00, 0, 0, 0x28, 1, 4, 4, 7]),
+            ),
+            ("socd pairs read", packet(&[0x24, 0x01, 0, 0, 0x28])),
+            ("socd settings read", packet(&[0x24, 0x02, 0, 0, 0x06])),
+            ("socd power 2", packet(&[0x24, 0x03, 0, 0, 0x01, 0x02])),
+            (
+                "socd power extra",
+                packet(&[0x24, 0x03, 0, 0, 0x01, 0x01, 0x01]),
+            ),
             ("switch types", packet(&[0x25, 0x01, 0, 0, 0x3a])),
             ("reset triggers", packet(&[0x21, 0, 0, 0, 0x18, 0x06])),
             ("calibrate key", packet(&[0x21, 0, 0, 0, 0x18, 0x07, 2, 2])),
@@ -1682,7 +2201,21 @@ mod tests {
             ("any-key start", packet(&[0x21, 0, 0, 0, 0x18, 0x0f, 0x00])),
             ("any-key stop", packet(&[0x21, 0, 0, 0, 0x18, 0x10, 0x00])),
             ("travel open", packet(&[0x21, 0, 0, 0, 0x18, 0x02, 0x3f])),
-            ("travel close", packet(&[0x21, 0, 0, 0, 0x18, 0x03])),
+            (
+                "travel close extra",
+                packet(&[0x21, 0, 0, 0, 0x18, 0x03, 0x01]),
+            ),
+            ("advanced type 4", packet(&[0x22, 0x00, 0, 0, 0x32, 0x04])),
+            (
+                "advanced mt threshold",
+                packet(&[
+                    0x22, 0x00, 0, 0, 0x32, 0x02, 0, 0xe0, 0, 0, 0, 0x0a, 0, 0, 0x0e,
+                ]),
+            ),
+            (
+                "advanced dks r1 > r2",
+                packet(&[0x22, 0x00, 0, 0, 0x32, 0x01, 0x10, 0x0f, 0x0f, 0x10]),
+            ),
             (
                 "poll rate",
                 packet(&[0x21, 0, 0, 0, 0x00, 0x09, 0x01, 0x01]),
@@ -2128,7 +2661,7 @@ mod tests {
         for waits in [false, true] {
             let mut s = sim();
             s.set_keymap_commit(KeymapCommit {
-                macros_and_advanced_need_fn_write: waits,
+                macros_need_fn_write: waits,
                 ..KeymapCommit::default()
             });
             for p in [p1, p2] {

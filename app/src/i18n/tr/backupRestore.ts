@@ -274,14 +274,21 @@ export const backupRestore: Messages<typeof en> = {
       `Tuş atamaları, makrolar ve gelişmiş tuşlar ancak birlikte geri yüklenebilir ve burada bu güvenli değil: ${p.cause}`,
     not_in_keyboard: "Klavyede bu ayar yok.",
     unusable: "Yedeğin bu bölümü kullanılamıyor.",
+    read_only_bytes: "Yalnızca OpenWraith'in hiç yazmadığı değerler farklı (SOCD kısayolu).",
+    unwritable_socd_pairs: "Yedekteki SOCD çiftleri OpenWraith'in yazabileceği biçimde değil.",
+    not_imported: "Bu ayar içe aktarmaya dahil değil.",
   },
   blockCauses: {
-    non_empty_advanced_key: (p) =>
-      `yedekteki ${p.slot} numaralı gelişmiş tuş kullanımda ve gelişmiş tuşların yazılması klavyede henüz doğrulanmadı.`,
+    unwritable_advanced_key: (p) =>
+      `yedekteki ${p.slot} numaralı gelişmiş tuş, OpenWraith'in yazabildiği bir DKS, dokun ya da basılı tut veya aç/kapa tuşu değil.`,
     non_canonical_macro: (p) => `yedekteki ${p.slot} numaralı makro alışılmadık bir biçimde.`,
     malformed_reference: (p) => `yedekteki ${p.layer} içinde bozuk bir kayıt var (${p.index} numaralı).`,
     incomplete: (p) => `şu bölüm tam okunamadı: ${p.table}.`,
     fn_keymap_not_writable: "Fn katmanı tuş atamaları yazılamıyor; bu yüzden klavye tuş atamalarını kaydetmez.",
+    critical_fn_override: (p) =>
+      `içe aktarılan Fn katmanı klavyenin kendi kısayollarından birinin yerini alıyor (profil değiştirme ya da sıfırlama, ${p.index} numaralı tuş) ve buna izin verilmedi.`,
+    unwritable_imported_entry: (p) =>
+      `dosyadaki ${p.layer} içinde OpenWraith'in yazmadığı bir kayıt var (${p.index} numaralı tuş). Yalnızca tuşlar, medya tuşları, fare düğmeleri, tuş kombinasyonları, makrolar ve gelişmiş tuşlar içe aktarılır.`,
   },
   layers: {
     base: "tuş atamaları",
@@ -295,6 +302,14 @@ export const backupRestore: Messages<typeof en> = {
       `Şu ayarlar profiller arasında ortak olabilir: ${p.tables}. Bunları geri yüklemek şu profilleri de değiştirebilir: ${p.profiles}.`,
     likely_shared_table_differs: (p) =>
       `Profiller arasında büyük olasılıkla ortak olan bir ayar yedekten farklı: ${p.table}.`,
+    imported: (p) => `Dosyadaki profil ${p.from}, klavyedeki profil ${p.into} üzerine yazılır.`,
+    imported_macros: (p) => `Dosyadaki makrolar yazılır: ${p.slots}.`,
+    fn_builtin_overridden: (p) =>
+      `Fn katmanı klavyenin kendi Fn kısayollarından birinin yerini alıyor (${p.index} numaralı tuş).`,
+    import_kept_as_read: (p) =>
+      `Dosyadaki ${p.layer}, hiçbir zaman içe aktarılmayan konumlarda farklı (döner düğme, Fn tuşu, klavyenin kilitlediği tuşlar): ${p.keys}. Klavyedeki kayıtlar korunur.`,
+    unverified: (p) =>
+      `${p.layer} içindeki içe aktarılan bir kayıt (${p.index} numaralı tuş) henüz bir W75'te doğrulanmadı. Wraith web sitesi de aynı baytları gönderir.`,
   },
   safetyReasons: {
     set_trigger: "Aktivasyon değişikliğinden önce",

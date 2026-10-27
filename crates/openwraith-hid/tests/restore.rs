@@ -135,6 +135,8 @@ fn assert_matches(sim: &DeviceSim, target: &Backup) {
             SimTable::Keymap(Layer::Fn),
             SimTable::AdvancedKeys,
             SimTable::DeadBand,
+            SimTable::SocdPairs,
+            SimTable::SocdSettings,
         ];
         tables.extend(MacroSlotId::all().map(SimTable::Macro));
         for table in tables {
@@ -145,6 +147,8 @@ fn assert_matches(sim: &DeviceSim, target: &Backup) {
                 SimTable::Macro(s) => ReadRequest::Macro(s),
                 SimTable::AdvancedKeys => ReadRequest::AdvancedKeys,
                 SimTable::DeadBand => ReadRequest::DeadBand,
+                SimTable::SocdPairs => ReadRequest::SocdPairs,
+                SimTable::SocdSettings => ReadRequest::SocdSettings,
             };
             let expected = content(view.response(request).expect("reply"));
             let got = sim.table(p, table).expect("sim table");
@@ -871,7 +875,8 @@ fn a_base_keymap_restore_re_sends_the_fn_keymap_so_that_the_keyboard_saves_it() 
         let mut sim = DeviceSim::from_backup(&target);
         assert!(sim.keymap_commit().base_needs_fn_write);
         sim.set_keymap_commit(KeymapCommit {
-            macros_and_advanced_need_fn_write: macros_wait,
+            macros_need_fn_write: macros_wait,
+            advanced_need_fn_write: macros_wait,
             ..KeymapCommit::default()
         });
         // The keyboard holds the vendor site's knob defaults (c10); the
@@ -994,12 +999,14 @@ fn macro_backup() -> Backup {
 }
 
 /// The keymap group is written in the vendor site's order: macro slots,
-/// base keymap, Fn keymap, advanced-key clears (spec 4.8.2). With the
+/// base keymap, Fn keymap, advanced-key slots (spec 4.8.2). With the
 /// default commit model everything persists. If macro and advanced-key
-/// slots also needed a following `18 02` (untested; the simulator's
-/// switch), the advanced-key clear after the Fn keymap would be lost: the
-/// persistence check reports it, and running the restore again writes the
-/// clear followed by the unchanged Fn keymap, which persists.
+/// slots also needed a following `18 02` (contradicted by hardware for
+/// advanced keys; the simulator's switch), the advanced-key clear after the
+/// Fn keymap would be lost: the persistence check reports it. Running the
+/// restore again keeps the site's order (the unchanged Fn keymap between
+/// the macro and the advanced-key slots), so in that model the clear is
+/// reported lost again, never silently taken as saved.
 #[test]
 fn the_keymap_group_is_written_in_the_vendor_sites_order() {
     let target = macro_backup();
@@ -1008,7 +1015,8 @@ fn the_keymap_group_is_written_in_the_vendor_sites_order() {
         // 5 in use.
         let mut sim = DeviceSim::from_backup(&c06_backup());
         sim.set_keymap_commit(KeymapCommit {
-            macros_and_advanced_need_fn_write: macros_wait,
+            macros_need_fn_write: macros_wait,
+            advanced_need_fn_write: macros_wait,
             ..KeymapCommit::default()
         });
         patch(
@@ -1071,20 +1079,30 @@ fn the_keymap_group_is_written_in_the_vendor_sites_order() {
             .map(|(_, i)| i.table)
             .collect();
         assert_eq!(lost, [advanced5]);
-        // Again: the clear, then the unchanged Fn keymap ends the group.
+        // Again: the unchanged Fn keymap, then the clear (the site's order
+        // for a slot-only group); in this model the clear is lost again and
+        // reported.
         let first = sim.writes_sent();
         let again = restore(&mut sim, &target, &options());
-        assert!(again.is_success(), "{:#?}", again.error);
-        let mut expected = vec![(0x22, 0x05, 0)];
-        expected.extend((0..10).map(|c| (0x18, 0x02, c)));
+        let mut expected: Vec<(u8, u8, u8)> = (0..10).map(|c| (0x18, 0x02, c)).collect();
+        expected.push((0x22, 0x05, 0));
         assert_eq!(heads(&table_packets(&sim, first)), expected);
-        let (_, trigger) = again.items().nth(1).expect("Fn keymap");
+        let (_, trigger) = again.items().next().expect("Fn keymap");
         assert_eq!(
             trigger.commit_trigger,
             Some(CommitTriggerReason::MacrosOrAdvancedKeys)
         );
         assert!(trigger.resent_unchanged);
-        assert_eq!(persisted(&sim, SimTable::AdvancedKeys), Some(vec![0; 1600]));
+        assert_eq!(
+            again.error.as_ref().map(|e| e.kind),
+            Some(ErrorKind::NotPersisted)
+        );
+        let lost: Vec<TableId> = again
+            .items()
+            .filter(|(_, i)| matches!(i.result, ItemResult::Lost { .. }))
+            .map(|(_, i)| i.table)
+            .collect();
+        assert_eq!(lost, [advanced5]);
         sim.assert_clean();
     }
 }
@@ -1098,7 +1116,8 @@ fn macro_slots_alone_end_with_the_unchanged_fn_keymap() {
     for macros_wait in [false, true] {
         let mut sim = DeviceSim::from_backup(&target);
         sim.set_keymap_commit(KeymapCommit {
-            macros_and_advanced_need_fn_write: macros_wait,
+            macros_need_fn_write: macros_wait,
+            advanced_need_fn_write: macros_wait,
             ..KeymapCommit::default()
         });
         sim.set_table(profile(1), SimTable::Macro(slot(4)), c13_macro());
@@ -1267,7 +1286,8 @@ fn a_cancellation_inside_the_keymap_group_skips_to_the_fn_keymap() {
     for macros_wait in [false, true] {
         let mut sim = DeviceSim::from_backup(&c06_backup());
         sim.set_keymap_commit(KeymapCommit {
-            macros_and_advanced_need_fn_write: macros_wait,
+            macros_need_fn_write: macros_wait,
+            advanced_need_fn_write: macros_wait,
             ..KeymapCommit::default()
         });
         let prepared = prepare(&mut sim, &target, &options());
@@ -1635,7 +1655,8 @@ fn advanced_keys_are_only_cleared_and_after_the_keymaps() {
         Some(&[0u8; 1600][..])
     );
 
-    // The other way round, a non-empty slot in the backup blocks the group.
+    // The other way round, a slot in the backup that is not a DKS, Mod-Tap
+    // or Toggle OpenWraith can write (type 9) blocks the group.
     let mut source = DeviceSim::from_backup(&target);
     patch(
         &mut source,
@@ -1653,7 +1674,7 @@ fn advanced_keys_are_only_cleared_and_after_the_keymaps() {
         &item.action,
         PlanAction::Skip {
             reason: SkipReason::KeymapGroupBlocked {
-                cause: BlockCause::NonEmptyAdvancedKey { slot: 3 }
+                cause: BlockCause::UnwritableAdvancedKey { slot: 3, .. }
             },
             ..
         }
@@ -2193,21 +2214,20 @@ fn another_distance_unit_on_the_keyboard_writes_no_trigger_or_dead_band() {
 
 #[test]
 fn a_shared_table_written_in_one_profile_is_checked_in_the_others() {
-    // The backup was made where custom colour table 1 is per profile:
-    // profile 1 has a blue slot, profiles 2-4 do not.
+    // The backup was made where the dead band (whose profile scope is
+    // unknown) is per profile: profile 1 has W 0.10/0.20 mm, profiles 2-4
+    // have none.
     let mut source = sim_with_profiles(ScopeConfig::uniform(Scope::PerProfile));
     customise(&mut source);
     let target = snapshot(&mut source);
-    // The keyboard shares the table between all profiles (another firmware)
-    // and holds the copy of profiles 2-4.
+    // The keyboard shares the table between all profiles and holds the copy
+    // of profiles 2-4.
     let mut sim = sim_with_profiles(ScopeConfig {
-        custom_colors1: Scope::Global,
+        dead_band: Scope::Global,
         ..ScopeConfig::uniform(Scope::PerProfile)
     });
     let prepared = prepare(&mut sim, &target, &options());
-    let colours = TableId::CustomColors {
-        table: CustomTable::Custom1,
-    };
+    let colours = TableId::DeadBand;
     // The plan says so: the copies of the backup differ, the keyboard's do
     // not.
     assert!(
@@ -2224,7 +2244,7 @@ fn a_shared_table_written_in_one_profile_is_checked_in_the_others() {
         .save_safety(dir.path(), "restore")
         .expect("safety");
     let report = execute(&mut sim, &prepared, &saved);
-    // Only the colours of profile 1 were written; that changed the copy of
+    // Only the dead band of profile 1 was written; that changed the copy of
     // profile 2, which the plan left unchanged. The final check reads it
     // again.
     assert_eq!(report.outcome, Outcome::Failed);
@@ -2471,5 +2491,181 @@ fn an_interrupted_read_mid_table_is_retried() {
     // Back on the original profile.
     assert_eq!(report.active_profile_now, Some(2));
     assert_eq!(sim.active_profile(), 2);
+    sim.assert_clean();
+}
+
+/// SOCD on with one pair `key1`/`key2` (mode 1) in profile `p` of `sim`.
+fn socd_on_in(sim: &mut DeviceSim, p: u8, key1: u8, key2: u8) {
+    sim.set_table(
+        profile(p),
+        SimTable::SocdSettings,
+        vec![1, 0, 0, 0, 0xfa, 0xe5],
+    );
+    let mut pairs = vec![0u8; 80];
+    pairs[..4].copy_from_slice(&[0x01, 0x00, key1, key2]);
+    sim.set_table(profile(p), SimTable::SocdPairs, pairs);
+}
+
+/// A keyboard whose SOCD tables are shared by all profiles.
+fn global_socd() -> ScopeConfig {
+    ScopeConfig {
+        socd: Scope::Global,
+        ..ScopeConfig::default()
+    }
+}
+
+/// The results of the SOCD items of a report, per profile.
+fn socd_results(report: &RestoreReport) -> Vec<(u8, ItemResult)> {
+    report
+        .items()
+        .filter(|(_, i)| i.table == TableId::Socd)
+        .map(|(p, i)| (p, i.result.clone()))
+        .collect()
+}
+
+#[test]
+fn shared_socd_is_written_once_when_every_profile_agrees() {
+    // The backup: SOCD on with A/D in every profile.
+    let mut source = sim_with_profiles(ScopeConfig::default());
+    for p in 1..=4 {
+        socd_on_in(&mut source, p, 0x04, 0x07);
+    }
+    let target = snapshot(&mut source);
+    let mut sim = sim_with_profiles(global_socd());
+    let report = restore(&mut sim, &target, &options());
+    assert!(report.is_success(), "{:#?}", report.error);
+    let results = socd_results(&report);
+    assert_eq!(results.len(), 4, "{results:#?}");
+    // Written in profile 1, where the persistence check found it kept; the
+    // other profiles already held it (the same shared table).
+    assert!(matches!(
+        results[0],
+        (
+            1,
+            ItemResult::Written {
+                persistence: Persistence::Persisted,
+                ..
+            }
+        )
+    ));
+    assert!(
+        results[1..]
+            .iter()
+            .all(|(_, r)| matches!(r, ItemResult::AlreadyMatched)),
+        "{results:#?}"
+    );
+    let check = report.final_check.as_ref().expect("final check");
+    assert!(check.mismatches.is_empty(), "{:#?}", check.mismatches);
+    let bursts = write_bytes(&sim)
+        .iter()
+        .filter(|b| b[..2] == [0x24, 0x03])
+        .count();
+    assert_eq!(bursts, 1);
+    sim.assert_clean();
+}
+
+#[test]
+fn shared_socd_cannot_hold_different_copies_and_the_final_check_says_so() {
+    // The backup: A/D in profile 1, W/S in profile 2, off elsewhere.
+    let mut source = sim_with_profiles(ScopeConfig::default());
+    socd_on_in(&mut source, 1, 0x04, 0x07);
+    socd_on_in(&mut source, 2, 0x1a, 0x16);
+    let target = snapshot(&mut source);
+    let mut sim = sim_with_profiles(global_socd());
+    let prepared = prepare(&mut sim, &target, &options());
+    assert!(
+        prepared
+            .plan()
+            .warnings
+            .contains(&openwraith_hid::PlanWarning::LikelySharedTableDiffers {
+                table: TableId::Socd
+            }),
+        "{:?}",
+        prepared.plan().warnings
+    );
+    let report = restore(&mut sim, &target, &options());
+    assert_eq!(report.outcome, Outcome::Failed);
+    assert_eq!(
+        report.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::VerifyFailed)
+    );
+    let results = socd_results(&report);
+    // Profile 1 was overwritten by profile 2's copy before the persistence
+    // check: what it holds is this restore's own write, not a lost one.
+    assert!(
+        results.iter().any(|(p, r)| *p == 1
+            && matches!(
+                r,
+                ItemResult::Written {
+                    persistence: Persistence::NotChecked,
+                    ..
+                }
+            )),
+        "{results:#?}"
+    );
+    assert!(
+        results.iter().any(|(p, r)| *p == 2
+            && matches!(
+                r,
+                ItemResult::Written {
+                    persistence: Persistence::Persisted,
+                    ..
+                }
+            )),
+        "{results:#?}"
+    );
+    assert_eq!(report.lost(), 0);
+    let check = report.final_check.as_ref().expect("final check");
+    let socd_mismatches: Vec<u8> = check
+        .mismatches
+        .iter()
+        .filter(|m| m.mismatch.table == TableId::Socd)
+        .map(|m| m.profile)
+        .collect();
+    assert_eq!(socd_mismatches, [1, 3, 4], "{:#?}", check.mismatches);
+    sim.assert_clean();
+}
+
+#[test]
+fn importing_shared_socd_warns_that_other_profiles_change_too() {
+    let mut source = DeviceSim::from_backup(&c06_backup());
+    socd_on_in(&mut source, 1, 0x04, 0x07);
+    let file = read_all(&mut Session::new(&mut source))
+        .expect("backup")
+        .export_profile(profile(1), None)
+        .expect("export");
+    let mut sim = sim_with_profiles(global_socd());
+    let import = RestoreOptions {
+        import: Some(openwraith_hid::ImportOptions {
+            from: profile(1),
+            into: profile(3),
+            include: openwraith_hid::ImportSelection {
+                triggers: false,
+                lighting: false,
+                socd: true,
+                ..openwraith_hid::ImportSelection::default()
+            },
+            allow_critical_fn_overrides: false,
+        }),
+        ..options()
+    };
+    let prepared = prepare(&mut sim, &file, &import);
+    assert!(prepared.plan().warnings.iter().any(|w| matches!(
+        w,
+        openwraith_hid::PlanWarning::SharedTablesMayChangeOtherProfiles { tables, .. }
+            if tables.contains(&TableId::Socd)
+    )));
+    let report = restore(&mut sim, &file, &import);
+    assert!(report.is_success(), "{:#?}", report.error);
+    assert!(matches!(
+        socd_results(&report)[..],
+        [(3, ItemResult::Written { .. })]
+    ));
+    // Shared: profile 1 holds it too.
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::SocdSettings)
+            .map(|b| b[0]),
+        Some(1)
+    );
     sim.assert_clean();
 }

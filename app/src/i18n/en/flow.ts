@@ -154,6 +154,7 @@ export const flow = {
     dead_band: "Dead band",
     socd_pairs: "SOCD pairs",
     socd_settings: "SOCD settings",
+    socd: "SOCD",
     switch_types: "Switch types",
     poll_rate: "Polling rate",
     win_lock_and_rollover: "Win lock and rollover",
@@ -175,6 +176,10 @@ export const flow = {
       `OpenWraith first waited ${p.seconds} for the keyboard to save an earlier change.`,
     base_keymap_not_saved:
       "The key assignments were written, but the step that makes the keyboard save them didn't complete.",
+    unexpected_ack: (p: { packet: number }) =>
+      `The keyboard acknowledged packet ${p.packet}, which it usually doesn't.`,
+    socd_toggled_on_keyboard: (p: { on: boolean }) =>
+      `SOCD was switched on the keyboard (Fn + Right Shift) during the write or right after it, so that switch may have been overwritten. SOCD is now ${p.on ? "on" : "off"}.`,
   } satisfies Record<Code, unknown>,
   commitTrigger: {
     base_keymap: "Fn layer key assignments: re-sent unchanged so the keyboard keeps the key assignments",

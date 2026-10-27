@@ -118,6 +118,10 @@ export const errors: Messages<typeof en> = {
       title: "OpenWraith içinde bir sorun oluştu",
       body: "Sorun sürerse teknik ayrıntılarla birlikte bildirin.",
     },
+    travel_test_open: {
+      title: "Bir tuş derinliği testi hâlâ çalışıyor",
+      body: "Klavye hâlâ tuş derinliği gönderiyor olabilir. Önce testi durdurun, sonra yeniden deneyin.",
+    },
   },
   detail: {
     other_program: (p) => `OpenWraith'in istemediği ${evidenceText(p)} geldi.`,
