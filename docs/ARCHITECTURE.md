@@ -1257,6 +1257,46 @@ Still open:
 - multi-key trigger masks (`TriggerGrouping::SameSetting`, CODE-ONLY until
   hardware test H10 in [HARDWARE_TESTS.md](HARDWARE_TESTS.md)).
 
+Still open from capture session 3 (spec 7.4), for v0.2:
+
+- the keyboard's unsolicited `24 02` SOCD push (Fn + R-Shift, spec 2.5 and
+  4.15): `DeviceEvent::classify` returns `None` for cmd `0x24`, so
+  `Session::classify_unrelated` counts it as `Unrelated::Other`. That is
+  correctly not foreign activity, but the app misses the toggle, so any SOCD
+  state it shows or backs up can be stale. Add a
+  `DeviceEvent::SocdPower { enabled }` (cmd `0x24`, sub `0x02`, length 6),
+  refresh the SOCD view on it and never count it as another program (it is
+  a user action on the keyboard, like Fn + 1..4). While our own `24 02`
+  read is pending, the push is taken as the reply, which is harmless: it
+  carries the current state;
+- live travel-stream reports (`21 .. 01`, spec 4.11.7) also end up as
+  `Unrelated::Other`. Seen while our own travel test is closed, they show
+  that some program has a test open, so count them as foreign activity (or
+  give them their own `DeviceEvent`);
+- `is_write_ack` does not know the SOCD chunk ack `24 00 00 00 00` (spec
+  2.7), so another program writing SOCD without a heartbeat goes unnoticed.
+  Add it together with the SOCD writer, after confirming that `24 03` is
+  never acked (an ack of our own power write would otherwise look foreign);
+- new write paths, each copying the captured bytes, stop-and-wait: SOCD
+  (`24 03` with no ack expected plus a short settle, then the two `24 00`
+  chunks; the site's pair rules; spec 4.15), advanced keys (DKS/MT/TGL
+  encode and decode, lowest free slot, binding by read-modify-write of
+  `18 00` plus the `18 02` commit, unbound slots shown; spec 4.14), Fn-layer
+  remaps (warn that an entry hides the built-in Fn function; spec 4.8.4) and
+  a custom-colour editor (`09 00` by key index, non-layout slots preserved,
+  the `0x07` foreground left alone; spec 4.7.6);
+- a travel-test live view (spec 4.11.7): open with the 82-position mask,
+  decode the long variant past byte 4, keep per-key depth from 0, coalesce
+  per frame, drain input continuously (one tap is about 30 reports; hidapi
+  2.6.7 keeps 64 reports per handle), close the test on leaving the view, on
+  exit and on error paths. Slow presses update only about every 72 ms, so
+  present it as a visualiser and diagnostic, not as analog input;
+- capture tests: c15 cannot join `CAPTURES` as it is (three tests would
+  fail: no OPEN entry and only 377 entries, no `0x0D` exchange, and its
+  `24 00` pair writes are not in the write list of
+  `crates/openwraith-protocol/tests/captures.rs`); c16 and c17 have no OPEN
+  entry either.
+
 ## Adding a model
 
 All four Wraith models (W60, W65, W75, W100) share the vendor ID and the
