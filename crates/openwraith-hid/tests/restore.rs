@@ -2247,6 +2247,36 @@ fn a_shared_table_written_in_one_profile_is_checked_in_the_others() {
 }
 
 #[test]
+fn a_profile_outside_the_restore_does_not_make_a_table_look_shared() {
+    // Found on hardware (2026-10-27): the backup's profile 1 has its own
+    // custom colours, profiles 2-4 hold the factory copy; restoring only
+    // profiles 2 and 3 with profile 3 active read two identical copies from
+    // the keyboard and wrongly warned that the table is probably shared.
+    let mut source = sim_with_profiles(ScopeConfig::uniform(Scope::PerProfile));
+    customise(&mut source);
+    let target = snapshot(&mut source);
+    let mut sim = sim_with_profiles(ScopeConfig::uniform(Scope::PerProfile));
+    customise(&mut sim);
+    sim.set_active_profile(profile(3));
+    let mut profiles = ProfileSet::only(profile(2));
+    profiles.insert(profile(3));
+    let options = RestoreOptions {
+        profiles: Some(profiles),
+        ..options()
+    };
+    let prepared = prepare(&mut sim, &target, &options);
+    assert!(
+        prepared.plan().warnings.iter().all(|w| !matches!(
+            w,
+            openwraith_hid::PlanWarning::LikelySharedTableDiffers { .. }
+        )),
+        "{:?}",
+        prepared.plan().warnings
+    );
+    sim.assert_clean();
+}
+
+#[test]
 fn a_final_check_mismatch_fails_the_restore() {
     // Per-profile dead bands in the backup: profile 1 `05 0a`, profile 2
     // `07 0b` on W.

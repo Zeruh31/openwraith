@@ -2191,10 +2191,15 @@ fn scope_warnings(target: &Backup, current: &Backup, profiles: &[ProfilePlan]) -
             ReadRequest::Keymap(Layer::Fn),
         ),
     ];
+    // Only the profiles read from the keyboard are compared: a backup copy
+    // of a profile outside the restore (say profile 1, with its own
+    // colours) says nothing about whether the keyboard shares the table.
+    let read_profiles = current.profile_numbers();
     let copies = |backup: &Backup, read: ReadRequest| -> Vec<Vec<u8>> {
         backup
             .snapshots()
             .into_iter()
+            .filter(|view| view.profile().is_some_and(|p| read_profiles.contains(&p)))
             .filter_map(|view| view.response(read).map(content))
             .collect()
     };

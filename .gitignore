@@ -11,6 +11,8 @@ process_whitelist.json
 
 # Device backups made with the CLI (personal data)
 *.owbackup.json
+# Hardware-test working folder (backups, CLI output of the user's keyboard)
+/hw/
 # Temporary files of an interrupted `openwraith backup`
 .openwraith-*.partial
 

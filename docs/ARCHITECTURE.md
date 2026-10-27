@@ -309,8 +309,8 @@ base keymap, which the keyboard does not save on a timer at all:
    `PersistenceCheck::not_checked` counts them).
 4. **A switch before the save is never reported as done.** The keyboard
    can be switched on its own keys (or by another program) during the
-   settle, and whether it reports such a switch is open (PROTOCOL.md Q2).
-   So: a profile report during a wait ends the wait at once
+   settle. The W75 reports such a switch (PROTOCOL.md Q2, observed in app
+   test A9), but the code does not rely on it. So: a profile report during a wait ends the wait at once
    (`Session::listen_until` stops at it); every wait ends with a `21/11`
    read, and another profile than the one the last write went to
    (`Session::last_write_profile`) fails it; a `21/11` read
@@ -870,7 +870,8 @@ Starting -> Searching --1--> Opening -> Observing (2 s, listen only) -quiet-> Re
   describes the old profile).
 - **Profile changes on the keyboard.** Only profile reports, and still only
   profile reports 500 ms later: the gate is re-armed, the plan invalidated,
-  the settings read again and a notice sent. A silent switch (PROTOCOL Q2)
+  the settings read again and a notice sent (A9: the W75 reports Fn + N at
+  once, PROTOCOL Q2). A silent switch, should another firmware not report it,
   is caught by a single `21/11` read when the window gets the focus after
   30 s without traffic, and in any case by the drift check of every write.
 - **ResetSeen.** The reset notification drops the session at once; nothing

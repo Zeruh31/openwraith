@@ -425,3 +425,13 @@ Wraith W75, PID `0xC368`, firmware V3.22.07, Windows 11, USB cable.
 | 2026-10-24 | H9 (base keymap restore) | **fail** -> fixed | base keymap alone not saved; fixed by the `18 02` commit trigger (`5542432`), PROTOCOL 4.8.2 |
 | 2026-10-27 | H9 (again) | pass | 20 packets (base + Fn re-sent), `persisted`; knob and Fn shortcuts work with all knob slots back at `00` |
 | 2026-10-27 | H8 (USB power cycle) | pass | all four profiles byte-identical before and after |
+| 2026-10-27 | A1 (install, connect, observe, read) | pass | NSIS installer, no admin; 2 s listen-only check, then ready with FW 3.22.07 "Tested"; app state matched the CLI baseline taken just before |
+| 2026-10-27 | A2 (trigger edits) | pass | W, A, S, D 1.70 -> 0.10 mm, then 1.70 mm + RT 0.10 mm; each safety backup held the previous state; kept after the A6 profile round trip |
+| 2026-10-27 | A3 (RT modes on Q) | pass | `0D` 0.30 / 0.50, `0C` 0.30, `00`; each read back from the next safety backup |
+| 2026-10-27 | A4 (light mode change and Undo) | pass | Custom -> Breath kept after the A6 round trip; Undo by restoring the `set-light` safety backup brought Custom back (`persisted`) |
+| 2026-10-27 | A5 (switch right after an edit) | pass | Q RT 0.30 kept after an immediate switch to profile 2 and back |
+| 2026-10-27 | A6 (all-profile backup) | pass | lighting went through profiles 2-4 and back; against the CLI baseline only the edits made in A2/A4 differed |
+| 2026-10-27 | A7 (restore profiles 2 and 3 from profile 3) | pass | switch consent, 2 light writes, both `persisted`; found a false "probably shared" warning (custom colours 1, also dead band in the simulator), fixed in the planner |
+| 2026-10-27 | A8 (vendor site connected) | pass | "Another program is using the keyboard", writing paused, values marked stale; "I closed it, check again" returned to ready; an all-profile backup afterwards showed the site wrote nothing |
+| 2026-10-27 | A9 (Fn + 2 while idle and unfocused) | pass | the app followed at once (the W75 pushes the profile report, PROTOCOL Q2) and discarded the profile-1 draft with a notice |
+| 2026-10-27 | A10 (unplug during the save wait) | pass | report "written and verified, but may not have been saved", disconnected, Undo disabled until reconnect; after reconnect Q still had RT 0.30 mm: the write was really lost (PROTOCOL 4.5.3). The close-guard half was not run on hardware |
