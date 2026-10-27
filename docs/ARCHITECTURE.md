@@ -45,7 +45,7 @@ the same two libraries.
 | `hid` | `HidBackend` (hidapi; enumerates and filters supported interfaces, nothing is opened), `HidTransport` (read-only) and `WritableHidTransport` (opened with `HidBackend::open_writable`). |
 | `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). `last_write_at()` / `last_write_profile()`: when and to which profile the last write that changes a setting was sent (for the commit settle; kept per session, so it spans writers). |
 | `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` and `openwraith profile`, with the model check shared with `read_all`. |
-| `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable`, save/load, typed accessors. |
+| `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable` / `read_all_observed` (for a long-lived session: before every request it classifies what arrived, sending nothing, and asks a callback about the foreign activity since the gate mark, so a GUI can stop a read as soon as another program is heard), save/load, typed accessors. |
 | `writer` | `WriteConsent`, `WriteOptions` (with `CommitSettle`), the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`) and `write_commit_trigger` (the same guards, for a `CommitTrigger`, the Fn keymap only, sent even when the keyboard holds it: the keyboard keeps a base keymap only when the Fn keymap is written after it; every packet must be acknowledged, else one more send of the whole table, then `WriteError::CommitTriggerIncomplete`), `base_keymap_unsaved()` (a base keymap sent without a complete Fn-keymap write after it; a profile switch then reports `WriteWarning::BaseKeymapNotSaved`), stop-and-wait writes with read-back verification, profile selection behind the commit settle (`select_profile[_observed]`, `commit_pending`, `wait_for_commit[_observed]`, `CommitWait`), detection of a profile change or lost connection before the keyboard saved (`commit_interrupted`, `WriteError::ProfileChangedBeforeSave`), poisoning after a reset or a lost connection. |
 | `profiles` | `read_profiles` / `read_all_profiles`: the all-profile backup (switches profiles and back). |
 | `safety` | `default_dir`, `Backup::save_safety` and `SavedBackup` (the proof that a verified safety backup exists). |
@@ -848,7 +848,15 @@ Starting -> Searching --1--> Opening -> Observing (2 s, listen only) -quiet-> Re
   the keyboard is known to be quiet. This also satisfies the writer's gate,
   so later writes start at once.
 - **OtherProgram.** Status reports or acknowledgements we did not cause:
-  the worker sends **nothing**, reads included; the snapshot is marked
+  the worker sends **nothing**, reads included. Every full read (connect,
+  refresh, the safety read before a write, the reads after a switch or a
+  restore, a backup of the active profile) goes through
+  `read_all_observed`: before each request what arrived is classified
+  (nothing is sent for that), and the read stops once another program was
+  heard, so at most the request in flight when its report arrived is
+  completed, and nothing at all is sent when the evidence was there before
+  the read. The focus check and the view refresh after an edit (the edited
+  keys, the light) stop the same way. The snapshot is marked
   stale, the plan invalidated and writes blocked until "check again"
   (`Session::rearm_gate`, observe again, read everything again). The gate
   is re-armed only when profile reports are the *only* activity since the
@@ -908,11 +916,11 @@ fresh `21/11`).
 
 | UI action | Library calls | Writes |
 |---|---|---|
-| connect / refresh / focus check | `read_all_cancellable`, `Session::read` | none |
+| connect / refresh / focus check | `read_all_observed`, `Session::read` | none |
 | trigger edit | `read_summary` (unit 0.02 mm), `plan_trigger_edit`; `apply_trigger_edit` (`WriteOptions::default()`) | W8, one key per packet |
 | light edit | `plan_light_edit`; `apply_light_edit` | W3 (+ W2 on a mode change) |
 | profile switch | `Session::writer` + `Writer::select_profile_observed` | W1 |
-| backup of the active profile | `read_all_cancellable`, `Backup::save` | none |
+| backup of the active profile | `read_all_observed`, `Backup::save` | none |
 | backup of all profiles | `read_all_profiles` | W1 only |
 | restore (and Undo) | `prepare_restore`; `save_safety`, `execute_restore` | as planned by the library |
 
@@ -935,10 +943,15 @@ and are never deleted; every report carries its safety backup, and Undo
 restores it through the normal restore flow. The **journal**
 (`<app local data>/state/operation-journal.json`) is written atomically
 after the safety backup and before the first write packet of a trigger
-edit, a light edit or a restore, and removed when the report is built; a
-journal left behind is shown at the next start with its safety backup. A
-journal that cannot be written stops the operation before anything is
-written.
+edit, a light edit or a restore, and removed when the report is built. A
+journal left behind is moved at the next start to
+`state/interrupted-operation.json` and shown with its safety backup at
+every start until the user dismisses it: later writes use
+`operation-journal.json` again and never overwrite or delete it, and
+"Dismiss" deletes only the interrupted one (never the journal of a write
+that runs). A newer interruption replaces an older one that was never
+dismissed. A journal that cannot be written stops the operation before
+anything is written.
 
 `open_safety_backup(file)` loads a safety backup, and also summarizes again
 any backup file token the app handed out (a safety backup or a file the user
@@ -955,7 +968,7 @@ copy, and a deleted file is an error, not a plan.
 | What | Where (Windows) |
 |---|---|
 | Safety backups | the CLI's folder: `OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups` |
-| Operation journal | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\operation-journal.json` |
+| Operation journal | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\operation-journal.json`; an interrupted one: `interrupted-operation.json` next to it |
 | Settings (language, theme) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` |
 | WebView2 data | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\EBWebView\` |
 | Simulator safety backups and journal | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` |
@@ -1109,12 +1122,19 @@ or i18n library.
   - the snapshot, refetched when `snapshot_revision` changes;
   - the settings, the toasts and the per-page drafts;
   - the local operation lock, taken in click handlers so that a double click
-    never opens two flows;
+    never opens two flows. It only disables and guards the controls; the
+    "busy" texts come from the backend's status (a review dialog that is
+    merely open is not "Another operation is running"). A flow releases it
+    in the event that closes it, so the opener is enabled again when the
+    dialog returns the focus to it (the dialog also retries for a few
+    frames, then falls back to the page's main region, never the body);
   - the vendor-site acknowledgement, required for the first write of a run
     and again after any `OtherProgram` episode. A tick belongs to the
     episode it was given in, so a dialog that stayed open across an episode
     asks again; the restore's switch-consent dialog asks for it too (its
-    comparison switches profiles).
+    comparison switches profiles), and Retry or "Review again" of a
+    comparison that switches profiles goes back to that dialog when the
+    tick is needed again.
 - **Writes.** Every write goes through `flow/WriteFlow` (prepare, review,
   Write, progress, result). The review's title asks the question ("Change
   the lighting of profile 1?"); while it runs and on the result the dialog
@@ -1139,22 +1159,34 @@ or i18n library.
     `LastReportDialog` fetches `get_last_report` once the status shows the
     operation ended and shows the report with its safety backup and Undo.
     F5 / Ctrl+R are refused while a flow watches a running operation.
+    There "Run the restore again" is a hint (the backup is no longer
+    loaded), and a write that ends after its page went away still spends
+    its draft (the page's apply call clears it).
 - **Pages.** Pages are lazy routes (`#/device`, `#/actuation`, `#/lighting`,
   `#/backup`, `#/settings`), each in its own error boundary. The W75 drawing
   is `components/keyboard`:
   - our own key-unit geometry, from PROTOCOL.md section 5;
   - a pure selection model, where the knob is never selectable;
-  - a multi-select listbox component. Each key's accessible name is its
-    visible text (name, value, chip); longer text is its accessible
-    description. Pages mark keys through `KeyVisual.flag` (`data-flag`) and
+  - a multi-select listbox component. Each key's accessible name starts
+    with its visible text: the legend (followed by the full name in
+    parentheses when the legend is not the full name, e.g. "ESC (Escape)",
+    "SPACE (Boşluk)"), the value and the chip, separated by spaces; longer
+    text is its accessible description. Pages mark keys through `KeyVisual.flag` (`data-flag`) and
     `KeyVisual.tooltip`.
 - **Drafts.** Unwritten changes register with `state/drafts` (the nav dot,
-  and the profile-switch confirmation lists them): `useDraft` for a draft
-  that lives in a page component (Actuation), `registerDraft` for one kept
-  in a module store that survives leaving the page (Lighting).
+  and the profile-switch confirmation lists them): `registerDraft` for a
+  draft kept in a module store that survives leaving the page (Actuation,
+  with its key selection, and Lighting), `useDraft` for one that lives in a
+  page component (no page uses it at the moment). The stores follow the snapshot themselves: a draft made
+  on another profile or connection is discarded (with a toast) whether its
+  page is shown or not, and never comes back.
 - **Layout.** `.ow-main` is the only scroll container and the containing
   block of absolutely positioned descendants (`position: relative`), so the
-  window itself never scrolls and the header stays in place.
+  window itself never scrolls and the header stays in place. A page's
+  sticky apply bar sets `--applybar-height` on it (a `ResizeObserver`), and
+  its `scroll-padding-bottom` keeps a focused control above the bar
+  (WCAG 2.4.11). In Windows high contrast, colour swatches keep their
+  colour (`forced-color-adjust: none`) with a `CanvasText` boundary.
 - **i18n.** `i18n/en/*.ts` are the shape source. Every `i18n/tr/*.ts` is
   typed `Messages<typeof en>`, so a missing key is a compile error. Tests
   check that Turkish is complete and that no `.tsx` contains UI literals.
@@ -1167,10 +1199,10 @@ or i18n library.
 | Test | Checks |
 |---|---|
 | `tests::connection`, `tests::gate` | observation, other programs (zero packets), profile changes, the focus check, unplug and replug, reset (zero packets until reconnect), several keyboards, open backoff, unsupported model, drift check, stale and single-use tokens, panic -> fault |
-| `tests::foreign` | another program heard during a read is never re-armed away (refresh and the first read); after a trigger edit, light edit, profile switch or restore that heard another program, nothing more is sent |
+| `tests::foreign` | another program heard during a read is never re-armed away (refresh and the first read); a read stops sending once another program is heard (connect, refresh, the safety read: at most the request in flight), and sends nothing when it was heard before; the focus check and the view refresh after an edit stop the same way; after a trigger edit, light edit, profile switch or restore that heard another program, nothing more is sent |
 | `tests::fault` | nothing leaves `Fault`; a panic in the worker's own read releases the busy flag, a panic in a tick keeps a queued request's admission; "Stop safely and close" during the worker's own read exits once |
 | `tests::trigger`, `tests::light`, `tests::profile`, `tests::backup`, `tests::restore` | the operations end to end on the simulator: one key per packet, the journal during the write, the wait for the save, persisted / lost / may be lost, cancellation (keymap group included), the consent echo, Undo |
-| `tests::admission` | a second operation is refused at once; close deferral; the interrupted-operation journal |
+| `tests::admission` | a second operation is refused at once; close deferral; the interrupted-operation journal (kept by later writes until dismissed; dismissing never deletes a running write's journal) |
 | `tests::interleavings` | 150 seeded random sequences of commands and keyboard events against the write-path invariants (`INTERLEAVING_SEEDS=5000` runs more) |
 | `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, and the simulator's configuration and scripts |
 | `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
@@ -1195,6 +1227,9 @@ breaks the other crates' doctests in debug test runs).
 Done in Phase 2: serialisable error kinds (`ErrorKind`, `ErrorInfo`),
 cancellable progress (`read_all_cancellable`, `WriteProgress`,
 `ProfilesProgress`, all `ControlFlow` based), serialisable plans and reports.
+
+Also done: `read_all_observed` (a read that stops as soon as another
+program is heard; the desktop app's full reads use it).
 
 Also done: `execute_restore` uses the options the restore was prepared with
 (`PreparedRestore::options`), `WriteProgress::Writing` carries `send` (2

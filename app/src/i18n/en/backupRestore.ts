@@ -270,6 +270,7 @@ export const backupRestore = {
     },
     nextSteps: "Next steps",
     runAgain: "Run the restore again",
+    runAgainHint: "To run it again, choose the backup on the Backup & Restore page and compare it with the keyboard.",
     connectFirst: "Connect the keyboard first.",
   },
   safety: {

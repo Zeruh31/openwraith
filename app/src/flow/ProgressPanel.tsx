@@ -152,23 +152,18 @@ export interface StopControlProps {
 export function StopControl({ cancel, requested, onStop }: StopControlProps) {
   const dict = useDict();
   const state: CancelState = requested && (cancel === "available" || cancel === null) ? "requested" : (cancel ?? "not_now");
-  if (state === "available") {
-    return (
-      <Button icon="stop" onClick={onStop}>
-        {dict.flow.cancel.available}
-      </Button>
-    );
-  }
-  if (state === "not_cancellable") {
-    return <p className="ow-muted ow-small">{dict.flow.cancel.not_cancellable}</p>;
-  }
+  const message = state === "available" ? "" : dict.flow.cancel[state];
+  // One live region for the whole run: it exists before its text changes,
+  // so every new reason is announced (only its text changes).
   return (
     <div className="ow-stop">
-      <Button icon="stop" disabled>
-        {dict.flow.cancel.available}
-      </Button>
-      <p className="ow-muted ow-small" aria-live="polite">
-        {dict.flow.cancel[state]}
+      {state === "not_cancellable" ? null : (
+        <Button icon="stop" disabled={state !== "available"} onClick={onStop}>
+          {dict.flow.cancel.available}
+        </Button>
+      )}
+      <p className={message === "" ? "sr-only" : "ow-muted ow-small"} aria-live="polite">
+        {message}
       </p>
     </div>
   );
@@ -199,6 +194,10 @@ export function ProgressPanel({ model, waitingText, onStop, stopRequested = fals
   const dict = useDict();
   return (
     <div className="ow-progress-panel">
+      {/* Mounted before the first phase arrives, so that phase is announced too. */}
+      <p className="sr-only" aria-live="polite" data-testid="progress-live">
+        {phaseAnnouncement(model, dict)}
+      </p>
       {model.current === null ? (
         <p className="ow-row">
           <Spinner />
@@ -207,9 +206,6 @@ export function ProgressPanel({ model, waitingText, onStop, stopRequested = fals
       ) : (
         <>
           <StepTimeline phases={model.phases} />
-          <p className="sr-only" aria-live="polite" data-testid="progress-live">
-            {phaseAnnouncement(model, dict)}
-          </p>
           <CurrentStep event={model.current} />
         </>
       )}

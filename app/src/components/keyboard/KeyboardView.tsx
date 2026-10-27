@@ -281,9 +281,16 @@ export function KeyboardView({
           if (visual === undefined) return null;
           const isKnob = shape.shape === "knob" || shape.index === KNOB_INDEX;
           const isSelected = !isKnob && shown.has(shape.index);
-          // The name holds the visible text (value, chip); the longer
-          // description is the accessible description.
-          const spoken = [visual.name, visual.value, visual.chip].filter(Boolean).join(", ");
+          // The name starts with the visible text (legend, value, chip, in
+          // that order, so speech input finds the key by what it shows); a
+          // legend that is not the key's full name ("ESC", "⌫", a Turkish
+          // name for an English legend) is followed by the name. The longer
+          // text is the accessible description.
+          const named =
+            visual.legend.toLowerCase() === visual.name.toLowerCase()
+              ? visual.name
+              : `${visual.legend} (${visual.name})`;
+          const spoken = [named, visual.value, visual.chip].filter(Boolean).join(" ");
           const hasDescription = !isKnob && typeof visual.description === "string" && visual.description !== "";
           const descriptionId = `${idPrefix}-d${shape.index}`;
           const tooltip = isKnob ? knobLabel : (visual.tooltip ?? undefined);

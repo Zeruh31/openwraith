@@ -30,7 +30,7 @@ export const lighting: Messages<typeof en> = {
   perProfile: {
     title: "Işık ayarları her profil için ayrı saklanır",
     body: (p) =>
-      `Şu anda ${p.n} numaralı profili değiştiriyorsunuz. Her profil kendi ışığını saklar; profil değiştirmek (üst çubuktan ya da Fn + 1–4 ile) ışığı da değiştirir.`,
+      `Şu anda ${p.n} numaralı profilin ışığını düzenliyorsunuz. Her profil kendi ışığını saklar; profil değiştirmek (üst çubuktan ya da Fn + 1–4 ile) ışığı da değiştirir.`,
   },
   empty: {
     title: "Işığı değiştirmek için klavyeyi bağlayın",
@@ -40,7 +40,7 @@ export const lighting: Messages<typeof en> = {
   disabled: {
     title: "Işık değiştirilemiyor",
     reasons: {
-      not_read: "Işık ayarları klavyeden okunamadı. Klavyeyi yeniden okuyun.",
+      not_read: "Işık ayarları klavyeden okunmadı. Klavyeyi yeniden okuyun.",
       invalid_record: "Klavyenin ışık ayarları çözümlenemedi; OpenWraith bu yüzden onlara dokunmuyor.",
       limits_unknown:
         "Klavye hangi efektleri ve değerleri kabul ettiğini bildirmedi; OpenWraith bu yüzden ışığı değiştirmiyor.",
@@ -79,7 +79,7 @@ export const lighting: Messages<typeof en> = {
   },
   brightness: {
     label: "Parlaklık",
-    zeroHint: "0 en karanlık değerdir; tuşlar sönük ya da kapalı görünebilir.",
+    zeroHint: "0 en düşük parlaklıktır; tuşlar kapalı gibi görünebilir.",
   },
   speed: {
     label: "Hız",
@@ -92,7 +92,7 @@ export const lighting: Messages<typeof en> = {
     after: "Yazıldıktan sonra",
     describe: (p) => `${p.effect}, renk ${p.color}, parlaklık ${p.brightness}`,
     describeCustom: (p) => `${p.effect}, kayıtlı tuş renkleri, parlaklık ${p.brightness}`,
-    note: "Kabaca bir durağan görüntüdür; klavyedeki animasyon gösterilmez.",
+    note: "Yaklaşık, durağan bir görüntüdür; klavyedeki animasyon gösterilmez.",
   },
   applyBar: {
     notWritten: "Henüz yazılmadı",
@@ -123,6 +123,6 @@ export const lighting: Messages<typeof en> = {
   },
   discarded: {
     title: "Yazılmamış ışık değişiklikleri atıldı",
-    body: "Klavye artık başka bir profilde ya da yeniden bağlandı; her profilin kendi ışığı vardır.",
+    body: "Klavye başka bir profile geçti ya da yeniden bağlandı; her profilin kendi ışığı vardır.",
   },
 };

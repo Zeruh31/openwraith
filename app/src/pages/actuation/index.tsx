@@ -15,25 +15,32 @@ import { Card, PageHeader } from "../../components/Layout";
 import type { KeyVisual } from "../../components/keyboard";
 import { notEditableText } from "../../flow/labels";
 import { EditReportView } from "../../flow/Report";
-import { WriteFlow } from "../../flow/WriteFlow";
+import { WriteFlow, type OnProgress } from "../../flow/WriteFlow";
 import { keyName, useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
-import type { AppError, EditReportView as EditReport, TriggerEditPreview } from "../../ipc/bindings";
+import type { AppError, EditReportView as EditReport, PlanToken, TriggerEditPreview } from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { previewUi } from "../../preview/ui";
 import { readAgain } from "../../shell/actions";
-import { useDraft } from "../../state/drafts";
 import { isLocked, useOperationLock } from "../../state/operation";
 import { useSnapshot } from "../../state/snapshot";
 import { useStatus } from "../../state/status";
-import { toast } from "../../state/toasts";
 import { ActuationKeyboard } from "./ActuationKeyboard";
+import {
+  discardDraft,
+  effectiveDraft,
+  ownerOf,
+  seedState,
+  setDraft as storeDraft,
+  setFlowOpen,
+  setSelection,
+  useActuationState,
+} from "./draftStore";
 import { Inspector } from "./Inspector";
 import {
   basicActuation,
   buildIntent,
   changedKeys,
-  clearDraft,
   differsFromBasic,
   isDirty,
   isEditable,
@@ -57,18 +64,6 @@ import { Toolbar } from "./Toolbar";
 import { NothingToChange, TriggerReview } from "./TriggerReview";
 import "./actuation.css";
 
-/** The draft and the connection and profile it was made for. */
-interface OwnedDraft {
-  /** `generation/profile` of the snapshot it was made on; `null` adopts the first one. */
-  owner: string | null;
-  draft: TriggerDraft;
-}
-
-interface Identity {
-  key: string;
-  profile: number;
-}
-
 /** The Actuation & Rapid Trigger page. */
 export default function ActuationPage() {
   const dict = useDict();
@@ -79,56 +74,38 @@ export default function ActuationPage() {
   const t = dict.actuation;
 
   const [seed] = useState(() => seedFrom(previewUi<ActuationPreviewUi>("actuation")));
-  const [selection, setSelection] = useState<ReadonlySet<number>>(seed.selection);
   const [show, setShow] = useState<ShowMode>(seed.show);
-  const identity: Identity | null =
-    snapshot === null ? null : { key: `${snapshot.generation}/${snapshot.profile}`, profile: snapshot.profile };
-  const identityKey = identity?.key ?? null;
-
-  const [owned, setOwned] = useState<OwnedDraft>(() => ({ owner: identityKey, draft: seed.draft }));
-  const [flowOpen, setFlowOpen] = useState(false);
+  const identityKey = ownerOf(snapshot);
+  const stored = useActuationState();
+  const selection = stored.selection;
+  const [flowOpen, setFlowShown] = useState(false);
   const [autoOpen, setAutoOpen] = useState(seed.open);
 
-  // A draft belongs to one connection and profile: on another profile or
-  // after a reconnect it no longer applies (the toast below says so).
-  const draft = owned.owner === null || owned.owner === identityKey ? owned.draft : clearDraft(owned.draft);
+  // The draft and the selection live in a store that survives leaving the
+  // page; it drops a draft made on another profile or connection itself
+  // (with a toast), whether this page is shown or not.
+  const draft = effectiveDraft(stored, identityKey);
   const dirty = isDirty(draft);
 
   const setDraft = (next: TriggerDraft) => {
-    setOwned({ owner: identityKey, draft: next });
+    storeDraft(identityKey, next);
   };
-  const discard = useCallback(() => {
-    setOwned((current) => ({ ...current, draft: clearDraft(current.draft) }));
-  }, []);
-  useDraft("actuation", dirty, discard);
+  const discard = discardDraft;
 
-  const lastIdentity = useRef<Identity | null>(identity);
+  // Browser-preview scenarios preset a selection and a draft (never outside
+  // `vite --mode mock`); the review they may open waits for them.
   useEffect(() => {
-    if (identity === null) return;
-    const previous = lastIdentity.current;
-    lastIdentity.current = identity;
-    if (previous === null || previous.key === identity.key) return;
-    // The draft is dropped for good: going back to the first profile later
-    // must not bring back a draft the user was told was discarded.
-    const discarded = (owned.owner === previous.key || owned.owner === null) && isDirty(owned.draft);
-    setOwned((current) =>
-      current.owner === previous.key || current.owner === null
-        ? { owner: identity.key, draft: clearDraft(current.draft) }
-        : current,
-    );
-    // While a write flow is open, the change comes from that flow's own
-    // operation (or its report explains it): no "discarded" toast then.
-    if (discarded && !flowOpen) {
-      toast({
-        kind: "info",
-        title:
-          previous.profile === identity.profile
-            ? dict.actuation.draftDiscardedReconnect
-            : dict.actuation.draftDiscarded({ n: identity.profile }),
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the connection or profile changes
-  }, [identityKey]);
+    seedState(seed.draft, seed.selection);
+  }, [seed]);
+  const seeded = !isDirty(seed.draft) || isDirty(stored.draft);
+
+  // A flow that went away with the page counts as closed (no toast then).
+  useEffect(
+    () => () => {
+      setFlowOpen(false);
+    },
+    [],
+  );
 
   // "Set values": the inspector is below the keyboard, out of view on most
   // windows; the apply bar (always in view) jumps to it.
@@ -215,7 +192,7 @@ export default function ActuationPage() {
   } else if (!status.write_gate.allowed) {
     const reason = status.write_gate.reasons[0];
     blockReason = dict.errors.writeBlocked[reason ?? "not_connected"];
-  } else if (lock.busy) {
+  } else if (status.busy !== null) {
     blockReason = dict.errors.writeBlocked.busy;
   } else if (selection.size === 0) {
     blockReason = t.apply.reasons.selectKeys;
@@ -227,7 +204,7 @@ export default function ActuationPage() {
 
   const onApply = () => {
     if (flowOpen || isLocked() || blockReason !== null) return;
-    setFlowOpen(true);
+    setFlowShown(true);
   };
 
   // The intent is built when the flow prepares (and again on "Review again"),
@@ -250,13 +227,25 @@ export default function ActuationPage() {
     return api.prepareTriggerEdit(intent);
   };
 
-  const closeFlow = (result: EditReport | null) => {
-    setFlowOpen(false);
+  const closeFlow = () => {
+    setFlowShown(false);
     setAutoOpen(false);
-    if (result?.headline === "done") discard();
   };
 
-  const showFlow = flowOpen || (autoOpen && snapshot !== null);
+  // A complete write makes the draft spent, also when the result arrives
+  // after the flow went away (history navigation during the write; the
+  // shell shows the report then).
+  const apply = (token: PlanToken, onProgress: OnProgress) =>
+    api.applyTriggerEdit(token, onProgress).then((report) => {
+      if (report.headline === "done") discardDraft();
+      return report;
+    });
+
+  const showFlow = flowOpen || (autoOpen && seeded && snapshot !== null);
+  // The store's "discarded" toast is not shown for changes the flow makes.
+  useEffect(() => {
+    setFlowOpen(showFlow);
+  }, [showFlow]);
   const leftOut = summary.leftOut.length;
   const parts = [t.apply.willChange({ n: summary.changing.length })];
   if (summary.unchanged.length > 0) parts.push(t.apply.already({ n: summary.unchanged.length }));
@@ -419,7 +408,7 @@ export default function ActuationPage() {
           nothingToDo={() => <NothingToChange />}
           confirmLabel={() => dict.common.actions.writeToKeyboard}
           writesSettings
-          apply={(token, onProgress) => api.applyTriggerEdit(token, onProgress)}
+          apply={apply}
           result={(report) => <EditReportView report={report} />}
           onClose={closeFlow}
         />

@@ -26,7 +26,7 @@ export const shell: Messages<typeof en> = {
   skipToContent: "İçeriğe geç",
   lastReport: {
     title: "Son işlemin sonucu",
-    intro: "Bu işlem, penceresi kapalıyken ya da yeniden yüklenirken bitti. Olanlar aşağıda.",
+    intro: "Bu işlem, sayfası açık değilken bitti. Olanlar aşağıda.",
   },
   nav: {
     label: "Sayfalar",
@@ -77,7 +77,7 @@ export const shell: Messages<typeof en> = {
     readAgain: "Yeniden oku",
     chooseKeyboard: "Klavye seç…",
     release: "Klavyeyi bırak",
-    releaseHint: "OpenWraith bağlantıyı kapatır; klavyeyi yalnızca diğer programlar kullanır.",
+    releaseHint: "OpenWraith bağlantısını kapatır; böylece klavyeyi diğer programlar tek başına kullanabilir.",
     connect: "Bağlan",
   },
   busy: {
@@ -111,7 +111,7 @@ export const shell: Messages<typeof en> = {
     staleBody: "Klavye okunduktan sonra klavyede bir şey değişti. Bir şey değiştirmeden önce klavyeyi yeniden okuyun.",
     untestedTitle: "Firmware henüz test edilmedi",
     untestedBody: (p) =>
-      `Bu klavyede ${p.firmware} sürümlü firmware var; OpenWraith ${p.tested} sürümüyle denendi. Okumak güvenli. Her değişiklikten sonra sonucu denetleyin.`,
+      `Bu klavyede ${p.firmware} sürümlü firmware var; OpenWraith ${p.tested} sürümüyle test edildi. Okuma güvenlidir. Her değişiklikten sonra sonucu denetleyin.`,
   },
   closeGuard: {
     title: "OpenWraith klavyeye yazıyor",
@@ -123,10 +123,10 @@ export const shell: Messages<typeof en> = {
   },
   switcher: {
     title: (p) => `${p.n} numaralı profile geçilsin mi?`,
-    body: "Klavyenin ışığı o profilinkine döner; hiçbir ayar değişmez.",
+    body: "Klavye o profilin ışığına geçer; hiçbir ayar değiştirilmez.",
     saveWait: (p) => `OpenWraith önce klavyenin son değişikliğinizi kaydetmesi için ${p.seconds} bekler.`,
     drafts: (p) => `Şu sayfalardaki yazılmamış değişiklikler atılacak: ${p.pages}.`,
-    confirm: () => "Profile geç",
+    confirm: (p) => `${p.n} numaralı profile geç`,
     already: (p) => `Klavye zaten profil ${p.n} üzerinde.`,
   },
   notices: {
@@ -145,7 +145,7 @@ export const shell: Messages<typeof en> = {
     heartbeat: "Üretici sitesi trafiği",
     switchReport: "Fn + 2 (bildirimli)",
     switchSilent: "Fn + 3 (sessiz)",
-    reset: "Fabrika ayarları",
+    reset: "Fabrika ayarlarına sıfırla",
     slowSave: "Yavaş kaydetme (5 sn)",
     dropAck: "Sonraki yanıtı düşür",
     unplugAfter: "3 paketten sonra çıkar",

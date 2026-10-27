@@ -2,7 +2,7 @@
 // and write…". Pages keep a local draft and write only through this bar
 // (which opens the confirmation flow), never while a control is dragged.
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { useDict } from "../i18n";
 import { Button } from "./Button";
@@ -34,8 +34,30 @@ export function ApplyBar({
   applyLabel,
 }: ApplyBarProps) {
   const dict = useDict();
+  const ref = useRef<HTMLDivElement>(null);
+
+  // The bar is sticky at the bottom of the page's scroll container: the
+  // container keeps that much room (`scroll-padding-bottom` in shell.css),
+  // so a control that gets the focus is scrolled above the bar, never under
+  // it. The bar's height changes when it wraps.
+  useEffect(() => {
+    const bar = ref.current;
+    const scroller = bar?.closest<HTMLElement>(".ow-main") ?? null;
+    if (bar === null || scroller === null) return undefined;
+    const update = () => {
+      scroller.style.setProperty("--applybar-height", `${String(bar.offsetHeight)}px`);
+    };
+    update();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+    observer?.observe(bar);
+    return () => {
+      observer?.disconnect();
+      scroller.style.removeProperty("--applybar-height");
+    };
+  }, []);
+
   return (
-    <div className="ow-applybar" role="region" aria-label={applyLabel ?? dict.common.actions.reviewAndWrite}>
+    <div ref={ref} className="ow-applybar" role="region" aria-label={applyLabel ?? dict.common.actions.reviewAndWrite}>
       <div className="ow-applybar__summary" aria-live="polite">
         {summary}
       </div>

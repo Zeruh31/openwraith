@@ -100,7 +100,66 @@ describe("BusyIndicator", () => {
   });
 });
 
+describe("a save wait inside a phase", () => {
+  it("keeps the persistence check current while its select waits, and the next phase closes it", () => {
+    const steps: ProgressStep[] = [
+      { step: "checking_persistence", profile: 2 },
+      { step: "waiting_for_keyboard_save", profile: 2, wait_ms: 1980 },
+    ];
+    const model = steps.map((step, i) => event(i + 1, step)).reduce(reduceProgress, EMPTY_PROGRESS);
+    expect(model.phases.map((p) => p.key)).toEqual(["checking_persistence:2"]);
+    expect(model.current?.step.step).toBe("waiting_for_keyboard_save");
+    render(<ProgressPanel model={model} />);
+    const items = screen.getByRole("list", { name: DICTIONARIES.en.flow.progress.steps }).querySelectorAll("li");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.textContent).toContain(DICTIONARIES.en.flow.steps.checking_persistence({ n: 2 }));
+    expect(items[0]?.textContent).toContain(DICTIONARIES.en.flow.progress.current);
+    // The wait's meter shows under the check.
+    expect(screen.getByText("Waiting for the keyboard to save profile 2…")).toBeTruthy();
+    const next = reduceProgress(model, event(3, { step: "checking_persistence", profile: 1 }));
+    expect(next.phases.map((p) => p.key)).toEqual(["checking_persistence:2", "checking_persistence:1"]);
+  });
+
+  it("does the same for a profile select and a return", () => {
+    for (const host of [
+      { step: "selecting_profile", profile: 3 },
+      { step: "returning_to_profile", profile: 1 },
+    ] as const) {
+      const model = [event(1, host), event(2, waiting)].reduce(reduceProgress, EMPTY_PROGRESS);
+      expect(model.phases).toHaveLength(1);
+      expect(model.phases[0]?.step).toEqual(host);
+    }
+    // A wait on its own (a write's save wait) is a phase of its own.
+    const alone = [event(1, reading(113)), event(2, waiting)].reduce(reduceProgress, EMPTY_PROGRESS);
+    expect(alone.phases).toHaveLength(2);
+  });
+});
+
 describe("the progress live region", () => {
+  it("exists before the first phase arrives, so that phase is announced", () => {
+    setLang("en");
+    const { rerender } = render(<ProgressPanel model={EMPTY_PROGRESS} />);
+    const live = screen.getByTestId("progress-live");
+    expect(live.textContent).toBe("");
+    rerender(<ProgressPanel model={reduceProgress(EMPTY_PROGRESS, event(1, reading(1)))} />);
+    // The same element, now with the first phase.
+    expect(screen.getByTestId("progress-live")).toBe(live);
+    expect(live.textContent).toBe(DICTIONARIES.en.flow.steps.reading.safety_backup);
+  });
+
+  it("keeps the Stop control's live region while its state changes", () => {
+    const stop = vi.fn();
+    const { rerender, container } = render(<StopControl cancel="available" requested={false} onStop={stop} />);
+    const live = container.querySelector("[aria-live]");
+    expect(live?.textContent).toBe("");
+    rerender(<StopControl cancel="not_now" requested={false} onStop={stop} />);
+    expect(container.querySelector("[aria-live]")).toBe(live);
+    expect(live?.textContent).toBe(DICTIONARIES.en.flow.cancel.not_now);
+    rerender(<StopControl cancel="not_cancellable" requested={false} onStop={stop} />);
+    expect(container.querySelector("[aria-live]")).toBe(live);
+    expect(live?.textContent).toBe(DICTIONARIES.en.flow.cancel.not_cancellable);
+  });
+
   it("announces phases, not counters", () => {
     setLang("en");
     const first = [event(1, reading(10))].reduce(reduceProgress, EMPTY_PROGRESS);

@@ -78,7 +78,7 @@ export const common: Messages<typeof en> = {
     increase: (p) => `Artır: ${p.label}`,
     stepHint: "Daha büyük adımlar için Shift tuşunu basılı tutun.",
     invalidMm: (p) => `Bir mesafe girin, örneğin ${p.example}.`,
-    roundedTo: (p) => `Değer yuvarlandı: ${p.value} (0,02 mm adımlar).`,
+    roundedTo: (p) => `Değer ${p.value} olarak yuvarlandı (adım: 0,02 mm).`,
     clampedMin: (p) => `En düşük değere ayarlandı: ${p.value}.`,
     clampedMax: (p) => `En yüksek değere ayarlandı: ${p.value}.`,
     colorPicker: (p) => `${p.label}: renk seçici`,

@@ -16,7 +16,7 @@ import { getDict, useDict } from "../i18n";
 import { getFormat } from "../i18n/format";
 import type { LastReport, OpInfo, OpKind } from "../ipc/bindings";
 import { api } from "../ipc/commands";
-import { href, navigate, useRoute } from "../routes";
+import { href, useRoute } from "../routes";
 import { appliesPending, isReportSeen, markReportSeen, reportOf } from "../state/reports";
 import { statusStore } from "../state/status";
 import { toast } from "../state/toasts";
@@ -126,10 +126,6 @@ export function LastReportDialog() {
       body = (
         <RestoreResult
           report={shown.report}
-          onRunAgain={() => {
-            close();
-            navigate("backup");
-          }}
           onReadAgain={() => {
             close();
             readAgain();

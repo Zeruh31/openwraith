@@ -8,7 +8,7 @@ use openwraith_hid::{
 };
 
 use super::progress::CancelPolicy;
-use super::snapshot::{ReadFail, ReadVia};
+use super::snapshot::{ReadFail, ReadVia, may_send};
 use super::{consent, invalid};
 use crate::backend::DeviceBackend;
 use crate::dto::{
@@ -220,7 +220,9 @@ impl<B: DeviceBackend> Worker<B> {
         )
     }
 
-    /// Reads the main light again and patches the snapshot.
+    /// Reads the main light again and patches the snapshot. Stops before
+    /// the next request once another program is heard (the snapshot stays
+    /// as it was, marked stale; the state becomes `OtherProgram`).
     fn refresh_light(&mut self) {
         let Some(mut snapshot) = self.snapshot.clone() else {
             return;
@@ -228,10 +230,15 @@ impl<B: DeviceBackend> Worker<B> {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if session.keyboard_reset_seen() || session.connection_lost() {
+        if !may_send(session) {
+            self.stale = true;
             return;
         }
         let modes = session.request(ReadRequest::MainLightModes);
+        if !may_send(session) {
+            self.stale = true;
+            return;
+        }
         let light = session.request(ReadRequest::MainLight);
         match (modes, light) {
             (Ok(modes), Ok(light)) => {

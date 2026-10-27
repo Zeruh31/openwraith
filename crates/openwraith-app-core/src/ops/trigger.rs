@@ -10,7 +10,7 @@ use openwraith_hid::{
 };
 
 use super::progress::CancelPolicy;
-use super::snapshot::ReadVia;
+use super::snapshot::{ReadVia, may_send};
 use super::{consent, invalid};
 use crate::backend::DeviceBackend;
 use crate::dto::{
@@ -314,6 +314,9 @@ impl<B: DeviceBackend> Worker<B> {
     }
 
     /// Reads the trigger settings of `keys` again and patches the snapshot.
+    /// Stops before the next request once another program is heard (the
+    /// snapshot stays as it was, marked stale; the state becomes
+    /// `OtherProgram`).
     fn refresh_keys(&mut self, keys: impl Iterator<Item = KeyPos>) {
         let Some(mut snapshot) = self.snapshot.clone() else {
             return;
@@ -321,10 +324,11 @@ impl<B: DeviceBackend> Worker<B> {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if session.keyboard_reset_seen() || session.connection_lost() {
-            return;
-        }
         for pos in keys {
+            if !may_send(session) {
+                self.stale = true;
+                return;
+            }
             let Ok(raw) = session.request(ReadRequest::KeyTrigger(pos)) else {
                 self.reread = true;
                 return;

@@ -1,20 +1,20 @@
 // Whether the page's keyboard actions (backing up, comparing) can start now.
 // The backend is the authority (it refuses with `not_connected` or
-// `operation_running`); this only disables the buttons with a reason.
+// `operation_running`); this only disables the buttons with a reason. "Busy"
+// means the backend runs an operation: a review dialog open in this window
+// covers the page anyway, and the click handlers check the local lock.
 
 import { useDict } from "../../i18n";
-import { useOperationLock } from "../../state/operation";
 import { useStatus } from "../../state/status";
 
 /** Why the keyboard actions are unavailable now, or `null` when they can start. */
 export function useDeviceBlock(): string | null {
   const dict = useDict();
   const status = useStatus();
-  const lock = useOperationLock();
   const reasons = dict.backupRestore.reasons;
   switch (status.connection.state) {
     case "ready":
-      return lock.busy ? reasons.busy : null;
+      return status.busy !== null ? reasons.busy : null;
     case "other_program":
       return reasons.otherProgram;
     case "reset_seen":

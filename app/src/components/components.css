@@ -724,6 +724,21 @@
   outline-offset: 2px;
 }
 
+/* Windows high contrast: a colour swatch shows a colour the user chooses
+   or reads, so it keeps its own colour (the system would paint every swatch
+   the same), with a boundary in the system's text colour. */
+@media (forced-colors: active) {
+  .ow-swatch,
+  .ow-colorfield__swatch {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+
+  .ow-colorfield__swatch[aria-pressed="true"] {
+    outline-color: Highlight;
+  }
+}
+
 /* ---------- dialogs ---------- */
 
 .ow-dialog {

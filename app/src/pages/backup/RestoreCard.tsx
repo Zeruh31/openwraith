@@ -17,11 +17,13 @@ import { useVendorConfirmation, VendorNote } from "../../flow/vendorTick";
 import { WriteFlow, type OnProgress } from "../../flow/WriteFlow";
 import { useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
-import type { BackupFileSummary, RestoreIntent, RestorePreview, RestoreReportView } from "../../ipc/bindings";
+import type { AppError, BackupFileSummary, RestoreIntent, RestorePreview, RestoreReportView } from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { toAppError } from "../../ipc/errors";
 import { readAgain } from "../../shell/actions";
 import { safetyDirPath, useAppInfo } from "../../state/appInfo";
+import { isLocked } from "../../state/operation";
+import { vendorTickRequired } from "../../state/session";
 import { useStatus } from "../../state/status";
 import { useDeviceBlock } from "./availability";
 import { useDemoAction, type BackupDemo } from "./demo";
@@ -135,14 +137,28 @@ function RestoreSteps({ summary, demo, autoCompare, onRestored }: RestoreStepsPr
   };
 
   const onCompare = () => {
-    if (reason !== null || flow !== null || consent !== null) return;
+    if (reason !== null || flow !== null || consent !== null || isLocked()) return;
     begin();
   };
 
   useDemoAction(autoCompare, onCompare);
 
-  const prepare = (intent: RestoreIntent, onProgress: OnProgress): Promise<RestorePreview> =>
-    api.prepareRestore(intent, onProgress).catch((error: unknown) => {
+  const prepare = async (intent: RestoreIntent, onProgress: OnProgress): Promise<RestorePreview> => {
+    if (intent.confirmed_switches.length > 0 && vendorTickRequired()) {
+      // Another program used the keyboard since the switches were agreed to
+      // (Retry or "Review again" in a dialog that stayed open): the
+      // comparison switches profiles, so the consent dialog asks again, with
+      // the vendor tick, before anything is sent.
+      setFlow(null);
+      setConsent([...intent.confirmed_switches]);
+      const error: AppError = {
+        kind: "writes_blocked",
+        detail: null,
+        message: "the vendor-site confirmation is needed again",
+      };
+      throw error;
+    }
+    return api.prepareRestore(intent, onProgress).catch((error: unknown) => {
       const appError = toAppError(error);
       const detail = appError.detail;
       if (detail?.detail === "needs_switch_consent") {
@@ -154,6 +170,7 @@ function RestoreSteps({ summary, demo, autoCompare, onRestored }: RestoreStepsPr
       }
       throw appError;
     });
+  };
 
   const dir = safetyDirPath(info) ?? "";
   const scopeOf = (preview: RestorePreview) => preview.plan.profiles.map((p) => p.profile);

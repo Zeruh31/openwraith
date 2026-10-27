@@ -10,9 +10,8 @@ import { Card, KeyValueList, PageHeader, TechnicalDetails, type KeyValueItem } f
 import { ErrorView } from "../../flow/ErrorView";
 import { useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
-import { api } from "../../ipc/commands";
 import { navigate } from "../../routes";
-import { readAgain, reconnect, release, revealSafetyDir, toastError } from "../../shell/actions";
+import { readAgain, reconnect, release, revealSafetyDir, selectDevice } from "../../shell/actions";
 import { useAppInfo } from "../../state/appInfo";
 import { useOperationLock } from "../../state/operation";
 import { useSnapshot } from "../../state/snapshot";
@@ -88,7 +87,7 @@ function ConnectionCard() {
                     disabled={lock.busy}
                     aria-describedby={rowId}
                     onClick={() => {
-                      api.selectDevice(entry.id).catch(toastError);
+                      selectDevice(entry.id);
                     }}
                   >
                     {t.choose({ n })}

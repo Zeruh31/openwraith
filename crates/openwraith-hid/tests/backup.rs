@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::ops::ControlFlow;
+
 use common::{
     C06, C07, W, assert_only_reads, captured_reset_report, captured_status_report, fixed_options,
     mock, report, unknown_model_mock,
@@ -10,8 +12,8 @@ use openwraith_hid::protocol::{
     CustomTable, Decoded, KeyPos, LightMode, REPORT_LEN, ReadRequest, Rgb, TriggerMode, W75,
 };
 use openwraith_hid::{
-    BACKUP_FORMAT, BACKUP_SCHEMA_VERSION, Backup, BackupError, MockTransport, Session,
-    SessionError, read_all, read_all_with,
+    BACKUP_FORMAT, BACKUP_SCHEMA_VERSION, Backup, BackupError, DeviceSim, MockTransport,
+    ScopeConfig, Session, SessionError, read_all, read_all_observed, read_all_with,
 };
 
 fn c06_backup() -> (Backup, MockTransport) {
@@ -436,4 +438,80 @@ fn progress_is_reported_for_every_request() {
         backup.decoded().next(),
         Some(Decoded::DeviceInfo(_))
     ));
+}
+
+#[test]
+fn an_observed_read_of_a_quiet_keyboard_is_a_plain_read() {
+    let (clean, _) = c06_backup();
+    let mut session = Session::new(mock(C06));
+    let mut checks = 0u64;
+    let backup = read_all_observed(
+        &mut session,
+        &fixed_options(),
+        |_| ControlFlow::Continue(()),
+        |activity| {
+            checks += 1;
+            assert_eq!(activity.status_reports, 0);
+            assert_eq!(activity.foreign_acks, 0);
+            ControlFlow::Continue(())
+        },
+    )
+    .expect("backup");
+    assert_eq!(backup, clean);
+    assert_eq!(checks, session.stats().requests, "one check per request");
+    assert_only_reads(session.transport());
+}
+
+#[test]
+fn an_observed_read_stops_before_its_next_request_once_another_program_is_heard() {
+    let mut sim = DeviceSim::from_backup_with(&common::c06_backup(), ScopeConfig::default());
+    // The vendor site's heartbeat reply, right behind the reply to the
+    // fifth request.
+    sim.inject_after_packets(5, captured_status_report(C06));
+    let mut heard = None;
+    let error = {
+        let mut session = Session::new(&mut sim);
+        read_all_observed(
+            &mut session,
+            &fixed_options(),
+            |_| ControlFlow::Continue(()),
+            |activity| {
+                if activity.status_reports > 0 {
+                    heard = Some(*activity);
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
+        )
+        .unwrap_err()
+    };
+    assert!(matches!(error, BackupError::Cancelled), "{error}");
+    assert_eq!(heard.map(|a| a.status_reports), Some(1));
+    assert_eq!(sim.written().len(), 5, "nothing after the heartbeat");
+    sim.assert_clean();
+}
+
+#[test]
+fn an_observed_read_sends_nothing_when_another_program_was_heard_before() {
+    let mut sim = DeviceSim::from_backup_with(&common::c06_backup(), ScopeConfig::default());
+    sim.push_input(captured_status_report(C06));
+    let error = {
+        let mut session = Session::new(&mut sim);
+        read_all_observed(
+            &mut session,
+            &fixed_options(),
+            |_| ControlFlow::Continue(()),
+            |activity| {
+                if activity.status_reports > 0 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
+        )
+        .unwrap_err()
+    };
+    assert!(matches!(error, BackupError::Cancelled), "{error}");
+    assert!(sim.written().is_empty());
 }

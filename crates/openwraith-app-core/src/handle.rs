@@ -58,9 +58,12 @@ pub(crate) fn app_info(config: &CoreConfig, sim: bool) -> AppInfo {
     }
 }
 
-/// The operation a journal left behind.
+/// The operation a journal left behind (at start). The journal is first
+/// moved to its own file ([`CoreConfig::interrupted_path`]), so that the
+/// next write cannot overwrite or delete it before the user dismissed it.
 pub(crate) fn interrupted(shared: &Shared, config: &CoreConfig) -> Option<InterruptedOp> {
-    let entry = journal::read(&config.journal_path())?;
+    let path = journal::adopt_left_behind(&config.journal_path(), &config.interrupted_path());
+    let entry = journal::read(&path)?;
     Some(match entry {
         Ok(entry) => {
             let path = PathBuf::from(&entry.safety_backup_path);
@@ -295,9 +298,10 @@ impl WorkerHandle {
         }
     }
 
-    /// `dismiss_interrupted`: deletes the journal.
+    /// `dismiss_interrupted`: deletes the interrupted operation's journal
+    /// (never the journal of a write that is running now).
     pub fn dismiss_interrupted(&self) -> Result<(), AppError> {
-        journal::remove(&self.config.journal_path())?;
+        journal::remove(&self.config.interrupted_path())?;
         self.shared.set_interrupted(None);
         self.shared.republish();
         Ok(())

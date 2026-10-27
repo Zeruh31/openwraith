@@ -30,7 +30,7 @@ export const backupRestore: Messages<typeof en> = {
     all: "Dört profilin hepsini yedekle…",
     recommended: "Önerilen",
     allHint:
-      "Okuma sırasında klavye profilleri tek tek dolaşır (ışık kısa süre değişir) ve bulunduğu profile geri döner. Hiçbir ayar değiştirilmez.",
+      "Okuma sırasında klavye profilleri tek tek dolaşır (ışık kısa süre değişir), sonra okuma başladığında bulunduğu profile geri döner. Hiçbir ayar değiştirilmez.",
     active: "Yalnızca etkin profili yedekle…",
     activeHint: (p) => `Profil değiştirmeden profil ${p.n} okunur.`,
     activeHintUnknown: "Profil değiştirmeden etkin profil okunur.",
@@ -39,7 +39,7 @@ export const backupRestore: Messages<typeof en> = {
       `Klavye sırayla ${p.visits} numaralı profillere geçer (ışık kısa süre değişir), ardından ${p.original} numaralı profile döner. Hiçbir ayar değiştirilmez.`,
     reviewNoSwitches: "Yalnızca etkin profilin okunması gerekiyor; profil değiştirilmez.",
     reviewSaveWait: (p) => `OpenWraith önce klavyenin daha önceki bir değişikliği kaydetmesi için ${p.seconds} bekler.`,
-    reviewStop: "İstediğiniz an durdurabilirsiniz; klavye o zaman bulunduğu profile geri döner.",
+    reviewStop: "İstediğiniz an durdurabilirsiniz; bu durumda da klavye, yedekleme başladığında bulunduğu profile geri döner.",
     reviewFile: "Dosya",
     confirm: "Tüm profilleri yedekle",
     saved: "Yedek kaydedildi",
@@ -188,8 +188,8 @@ export const backupRestore: Messages<typeof en> = {
     headline: {
       done: (p) =>
         p.n === 1
-          ? "Geri yükleme tamamlandı. Değişiklik yazıldı, doğrulandı ve klavye onu sakladı (profil değiştirilip denetlendi)."
-          : `Geri yükleme tamamlandı. ${p.n} değişikliğin hepsi yazıldı, doğrulandı ve klavye bunları sakladı (profil değiştirilip denetlendi).`,
+          ? "Geri yükleme tamamlandı. Değişiklik yazıldı, doğrulandı ve klavye onu sakladı (profil değişiminden sonra denetlendi)."
+          : `Geri yükleme tamamlandı. ${p.n} değişikliğin hepsi yazıldı, doğrulandı ve klavye bunları sakladı (profil değişiminden sonra denetlendi).`,
       doneUnchecked: (p) =>
         p.n === 1
           ? "Geri yükleme tamamlandı. Değişiklik yazıldı ve doğrulandı."
@@ -209,8 +209,8 @@ export const backupRestore: Messages<typeof en> = {
         p.count === 1
           ? `Başka bir profile geçildikten sonra profil ${p.list} yeniden seçildi.`
           : `Başka bir profile geçildikten sonra ${p.list} numaralı profiller yeniden seçildi.`,
-      kept: (p) => `${p.n} değişiklik profil değiştirildikten sonra da yerinde.`,
-      lost: (p) => `${p.n} değişiklik profil değiştirildikten sonra kayboldu.`,
+      kept: (p) => `${p.n} değişiklik, profile geri dönüldüğünde hâlâ yerindeydi.`,
+      lost: (p) => `${p.n} değişiklik, profile geri dönüldüğünde kaybolmuştu.`,
       notChecked: (p) => `Profiller arasında ortak olan ayarlardaki ${p.n} değişiklik ayrıca denetlenemedi.`,
     },
     finalTitle: "Son denetim",
@@ -234,6 +234,7 @@ export const backupRestore: Messages<typeof en> = {
     },
     nextSteps: "Sonraki adımlar",
     runAgain: "Geri yüklemeyi yeniden çalıştır",
+    runAgainHint: "Yeniden çalıştırmak için Yedekle ve geri yükle sayfasında yedeği seçip klavyeyle karşılaştırın.",
     connectFirst: "Önce klavyeyi bağlayın.",
   },
   safety: {

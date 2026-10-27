@@ -5,11 +5,11 @@
 //!
 //! | UI action | Library calls | Writes |
 //! |---|---|---|
-//! | connect / refresh / focus check | `read_all_cancellable`, `Session::read` | none |
+//! | connect / refresh / focus check | `read_all_observed`, `Session::read` | none |
 //! | trigger edit | `read_summary`, `plan_trigger_edit`; `apply_trigger_edit` | W8, one key per packet |
 //! | light edit | `plan_light_edit`; `apply_light_edit` | W3 (+ W2) |
 //! | profile switch | `Session::writer` + `Writer::select_profile_observed` | W1 |
-//! | backup of the active profile | `read_all_cancellable`, `Backup::save` | none |
+//! | backup of the active profile | `read_all_observed`, `Backup::save` | none |
 //! | backup of all profiles | `read_all_profiles` | W1 only |
 //! | restore | `prepare_restore`; `save_safety`, `execute_restore` | as planned |
 

@@ -44,7 +44,8 @@ export default defineConfig(({ mode }) => ({
     setupFiles: ["src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     restoreMocks: true,
-    // Process CSS so that `?raw` imports of stylesheets (the contrast test) return their text.
-    css: { include: [/tokens\.css/] },
+    // Process CSS so that `?raw` imports of stylesheets (the contrast and
+    // layout tests) return their text. Only main.tsx imports these sheets.
+    css: { include: [/tokens\.css/, /shell\.css/, /components\.css/] },
   },
 }));

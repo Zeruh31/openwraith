@@ -17,7 +17,7 @@ import { api } from "../ipc/commands";
 import { navigate, type PageId } from "../routes";
 import { useAppInfo } from "../state/appInfo";
 import { useDraftPages } from "../state/drafts";
-import { useOperationLock } from "../state/operation";
+import { isLocked, useOperationLock } from "../state/operation";
 import { useStatus } from "../state/status";
 import { toast } from "../state/toasts";
 import { readAgain, reconnect, release } from "./actions";
@@ -233,10 +233,12 @@ export function ProfileSwitcher() {
   const reasonId = useId();
   const [target, setTarget] = useState<number | null>(null);
   const opening = useRef(false);
-  const blocked = switcherBlock(status, lock.busy, dict);
+  // "Busy" only while the backend runs something; a review dialog open here
+  // only disables the switcher (it sits behind the dialog then).
+  const blocked = switcherBlock(status, status.busy !== null, dict);
 
   const open = (profile: number) => {
-    if (blocked !== null || opening.current || profile === status.active_profile) return;
+    if (blocked !== null || opening.current || isLocked() || profile === status.active_profile) return;
     opening.current = true;
     setTarget(profile);
   };
@@ -248,7 +250,7 @@ export function ProfileSwitcher() {
         size="sm"
         selectOnFocus={false}
         value={status.active_profile}
-        disabled={blocked !== null && target === null}
+        disabled={(blocked !== null || lock.local) && target === null}
         describedBy={blocked === null ? undefined : reasonId}
         options={[1, 2, 3, 4].map((n) => ({ value: n, label: <span className="ow-num">{n}</span> }))}
         onChange={open}

@@ -5,7 +5,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AppError } from "../ipc/bindings";
-import { readAgain, recheckOtherProgram, resetActions } from "../shell/actions";
+import { readAgain, recheckOtherProgram, resetActions, selectDevice } from "../shell/actions";
 import { isLocked } from "../state/operation";
 import { clearToasts, getToasts } from "../state/toasts";
 
@@ -44,6 +44,29 @@ describe("shell actions", () => {
     readAgain();
     await settle();
     expect(calls).toEqual(["refresh", "refresh"]);
+    finish(null);
+    await settle();
+  });
+
+  it("open a chosen keyboard once for a double click, without an error toast", async () => {
+    const calls: string[] = [];
+    let finish: (value: unknown) => void = () => undefined;
+    mockIPC((command) => {
+      calls.push(command);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    selectDevice("dev-1");
+    selectDevice("dev-1");
+    // The buttons are disabled at once (the local lock), before the status says busy.
+    expect(isLocked()).toBe(true);
+    await settle();
+    expect(calls).toEqual(["select_device"]);
+    finish(null);
+    await settle();
+    expect(isLocked()).toBe(false);
+    expect(getToasts()).toEqual([]);
   });
 
   it("keep harmless refusals quiet but report real errors", async () => {

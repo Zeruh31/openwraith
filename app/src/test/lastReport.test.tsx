@@ -98,6 +98,28 @@ describe("LastReportDialog", () => {
     expect(screen.queryByText(en.shell.lastReport.title)).toBeNull();
   });
 
+  it("says how to run a LOST restore again instead of offering a button it can't honour", async () => {
+    const call = FIXTURES["restore_lost"]?.calls.find((c) => c.command === "apply_restore");
+    if (call?.command !== "apply_restore" || call.ok === null) throw new Error("no restore report");
+    expect(call.ok.headline).toBe("lost");
+    render(<LastReportDialog />);
+    await flush();
+    const end = beginApply();
+    act(() => {
+      statusStore.set({ ...INITIAL_STATUS, busy: { ...BUSY, kind: "restore" } });
+    });
+    end();
+    last = { kind: "restore", report: call.ok };
+    act(() => {
+      statusStore.set({ ...INITIAL_STATUS, busy: null });
+    });
+    await flush();
+    expect(await screen.findByText(en.backupRestore.result.runAgainHint)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.backupRestore.result.runAgain })).toBeNull();
+    // The window was neither closed nor reloaded: the intro says only that the page wasn't open.
+    expect(screen.getByText(en.shell.lastReport.intro).textContent).not.toMatch(/reloaded|closed/);
+  });
+
   it("never shows a report that existed before the window started", async () => {
     last = { kind: "edit", report: editReport() };
     render(<LastReportDialog />);

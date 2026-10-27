@@ -65,7 +65,7 @@ use std::collections::HashSet;
 use std::io::Write as _;
 use std::ops::ControlFlow;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use openwraith_protocol::{
     ActiveCustomTable, ActiveProfile, AdvancedKeys, ColorTable, DeadBandTable, Decoded,
@@ -75,8 +75,8 @@ use openwraith_protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::error::{BackupError, SessionError};
-use crate::session::Session;
+use crate::error::{BackupError, ListenError, SessionError};
+use crate::session::{ForeignActivity, Session};
 use crate::summary::identify;
 use crate::transport::{Transport, UsbInfo};
 
@@ -1095,6 +1095,35 @@ pub fn read_all_cancellable<T: Transport>(
     ))
 }
 
+/// [`read_all_cancellable`] for a session that stays open while another
+/// program may start using the keyboard (a GUI that must stop sending as
+/// soon as it hears one).
+///
+/// Before every request, the reports that arrived since the previous one
+/// are classified without sending anything (as [`Session::listen`] does),
+/// and `heard` gets the foreign activity counted since the gate mark
+/// ([`Session::activity_since_gate`]). Returning [`ControlFlow::Break`] from
+/// either callback stops the read before its next request with
+/// [`BackupError::Cancelled`]: once another program's report has arrived,
+/// at most the request in flight at that moment is completed.
+pub fn read_all_observed<T: Transport>(
+    session: &mut Session<T>,
+    options: &BackupOptions,
+    mut progress: impl FnMut(Progress) -> ControlFlow<()>,
+    mut heard: impl FnMut(&ForeignActivity) -> ControlFlow<()>,
+) -> Result<Backup, BackupError> {
+    let created_at = rfc3339_utc(options.created_at.unwrap_or_else(SystemTime::now));
+    let snapshot = read_snapshot_with(session, None, &mut progress, Some(&mut heard))?;
+    let usb = session.transport().usb_info();
+    Ok(Backup::from_snapshots(
+        snapshot,
+        Vec::new(),
+        options.tool.clone(),
+        created_at,
+        usb,
+    ))
+}
+
 /// One complete read of the active profile.
 pub(crate) struct Snapshot {
     /// Decoded device info.
@@ -1115,9 +1144,50 @@ pub(crate) fn read_snapshot<T: Transport>(
     expected_profile: Option<u8>,
     progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
 ) -> Result<Snapshot, BackupError> {
+    read_snapshot_with(session, expected_profile, progress, None)
+}
+
+/// What [`read_all_observed`] asks before each request.
+type Heard<'a> = Option<&'a mut dyn FnMut(&ForeignActivity) -> ControlFlow<()>>;
+
+/// Before `next` is sent: classifies what arrived meanwhile (sending
+/// nothing) and asks `heard` whether to go on.
+fn check_heard<T: Transport>(
+    session: &mut Session<T>,
+    heard: &mut Heard<'_>,
+    next: ReadRequest,
+) -> Result<(), BackupError> {
+    let Some(heard) = heard.as_mut() else {
+        return Ok(());
+    };
+    session
+        .listen(Duration::ZERO)
+        .map_err(|error| match error {
+            ListenError::Transport(e) => SessionError::Transport(e),
+            ListenError::KeyboardReset { report } => SessionError::KeyboardReset {
+                request: next,
+                report,
+            },
+        })?;
+    if heard(&session.activity_since_gate()).is_break() {
+        return Err(BackupError::Cancelled);
+    }
+    Ok(())
+}
+
+/// [`read_snapshot`]; with `heard`, the read checks for another program
+/// before every request (see [`read_all_observed`]).
+fn read_snapshot_with<T: Transport>(
+    session: &mut Session<T>,
+    expected_profile: Option<u8>,
+    progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
+    mut heard: Heard<'_>,
+) -> Result<Snapshot, BackupError> {
     let events_before = session.events().len();
 
+    check_heard(session, &mut heard, ReadRequest::DeviceInfo)?;
     let (info_raw, info, model) = identify(session)?;
+    check_heard(session, &mut heard, ReadRequest::Status)?;
     let status_raw = session.request(ReadRequest::Status)?;
     let status = Status::from_response(&status_raw).map_err(|source| SessionError::Decode {
         request: ReadRequest::Status,
@@ -1132,7 +1202,10 @@ pub(crate) fn read_snapshot<T: Transport>(
     for (i, request) in plan.iter().copied().enumerate() {
         let raw = match prefetched.iter().position(|r| r.request() == request) {
             Some(pos) => prefetched.swap_remove(pos),
-            None => session.request(request)?,
+            None => {
+                check_heard(session, &mut heard, request)?;
+                session.request(request)?
+            }
         };
         let entry = BackupEntry::new(raw);
         if let (Some(expected), Some(Decoded::ActiveProfile(p))) =
@@ -1160,6 +1233,7 @@ pub(crate) fn read_snapshot<T: Transport>(
         Some(Decoded::ActiveProfile(p)) => Some(p.profile),
         _ => None,
     });
+    check_heard(session, &mut heard, ReadRequest::ActiveProfile)?;
     let check: ActiveProfile = session.read(ReadRequest::ActiveProfile)?;
     let step = Progress {
         done: total,

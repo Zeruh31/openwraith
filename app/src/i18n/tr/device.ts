@@ -30,7 +30,7 @@ export const device: Messages<typeof en> = {
       "Klavye fabrika ayarlarına döndü (Fn + Boşluk). OpenWraith durdu ve hiçbir şey göndermedi. Devam etmek için klavyeyi yeniden okuyun.",
     unsupported: (p) =>
       `Bu klavye (${p.product}) desteklenmiyor. OpenWraith yalnızca Wraith W75 ile çalışır.`,
-    released: "OpenWraith klavyeyi bıraktı. Klavyeyi artık yalnızca diğer programlar kullanıyor.",
+    released: "OpenWraith klavyeyi bıraktı. Artık klavyeyi diğer programlar tek başına kullanabilir.",
     fault: "OpenWraith bir iç hatayla karşılaştı ve klavyeyi kullanmayı bıraktı. Uygulamayı yeniden başlatın.",
     connect: "Bağlan",
     reconnect: "Klavyeyi yeniden oku",

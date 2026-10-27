@@ -177,13 +177,21 @@ impl<B: DeviceBackend> Worker<B> {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        if !session.activity_since_gate().is_quiet() {
+        // What arrived since the last tick decides first (classified
+        // without sending anything): any activity is the tick's business.
+        let listened = session.listen(Duration::ZERO);
+        if listened.is_err() || !session.activity_since_gate().is_quiet() {
+            self.after_op_state();
             return;
         }
         let read = session.read::<openwraith_hid::protocol::ActiveProfile>(
             openwraith_hid::protocol::ReadRequest::ActiveProfile,
         );
+        // What arrived with the reply, too: another program heard now means
+        // nothing more is sent (D5), not even the re-read.
+        let _ = session.listen(Duration::ZERO);
         self.last_traffic = Some(Transport::now(session.transport()));
+        self.after_op_state();
         match read {
             Ok(active) if Some(active.profile) != shown => {
                 self.invalidate(PlanInvalidation::ProfileChanged);
@@ -191,10 +199,17 @@ impl<B: DeviceBackend> Worker<B> {
                     from: shown,
                     to: active.profile,
                 });
-                self.connect_read(OpKind::Refresh);
+                if self.conn == Conn::Ready && !self.foreign_heard() {
+                    self.connect_read(OpKind::Refresh);
+                } else if matches!(self.conn, Conn::OtherProgram { .. }) {
+                    // The snapshot describes the old profile: it is
+                    // dropped, as after a profile switch that heard
+                    // another program.
+                    self.clear_snapshot();
+                    self.active_profile = Some(active.profile);
+                }
             }
-            Ok(_) => {}
-            Err(_) => self.after_op_state(),
+            Ok(_) | Err(_) => {}
         }
     }
 }

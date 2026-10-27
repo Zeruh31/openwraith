@@ -71,6 +71,22 @@ pub(crate) fn remove(path: &Path) -> Result<(), AppError> {
     }
 }
 
+/// At start: moves a journal left behind at `journal` (a write that never
+/// finished) to `interrupted`, where only the user's dismissal deletes it;
+/// the next write uses `journal` again and cannot overwrite or remove it.
+/// The newest interruption replaces an older one that was never dismissed.
+/// Returns the file that holds the interrupted operation: `journal` itself
+/// when it cannot be moved.
+pub(crate) fn adopt_left_behind(journal: &Path, interrupted: &Path) -> PathBuf {
+    if !journal.exists() {
+        return interrupted.to_path_buf();
+    }
+    match std::fs::rename(journal, interrupted) {
+        Ok(()) => interrupted.to_path_buf(),
+        Err(_) => journal.to_path_buf(),
+    }
+}
+
 /// The journal left behind, if any (an unreadable one counts too: it can
 /// only come from an interrupted write).
 pub(crate) fn read(path: &Path) -> Option<Result<JournalEntry, String>> {
@@ -107,6 +123,38 @@ mod tests {
         remove(&path).unwrap();
         assert!(read(&path).is_none());
         remove(&path).unwrap();
+    }
+
+    #[test]
+    fn a_journal_left_behind_moves_to_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("operation-journal.json");
+        let interrupted = dir.path().join("interrupted-operation.json");
+        assert_eq!(adopt_left_behind(&journal, &interrupted), interrupted);
+        assert!(read(&interrupted).is_none());
+        let mut entry = JournalEntry {
+            op: OpKind::Restore,
+            started_at: "2026-10-24T07:30:00Z".into(),
+            profiles: vec![2],
+            device: JournalDevice {
+                product: None,
+                firmware: None,
+            },
+            safety_backup_path: "a.owbackup.json".into(),
+            app_version: "0.1.0".into(),
+        };
+        write(&journal, &entry).unwrap();
+        assert_eq!(adopt_left_behind(&journal, &interrupted), interrupted);
+        assert!(!journal.exists());
+        assert_eq!(read(&interrupted).unwrap().unwrap(), entry);
+        // Nothing new: the older entry stays.
+        assert_eq!(adopt_left_behind(&journal, &interrupted), interrupted);
+        assert_eq!(read(&interrupted).unwrap().unwrap(), entry);
+        // A newer interruption replaces it.
+        entry.op = OpKind::LightEdit;
+        write(&journal, &entry).unwrap();
+        adopt_left_behind(&journal, &interrupted);
+        assert_eq!(read(&interrupted).unwrap().unwrap().op, OpKind::LightEdit);
     }
 
     #[test]

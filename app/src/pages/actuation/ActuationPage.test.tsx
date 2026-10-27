@@ -23,6 +23,7 @@ import { acknowledgeVendor, resetSession } from "../../state/session";
 import { snapshotStore } from "../../state/snapshot";
 import { INITIAL_STATUS, statusStore } from "../../state/status";
 import { clearToasts } from "../../state/toasts";
+import { resetActuationStore } from "./draftStore";
 import ActuationPage from "./index";
 
 const en = DICTIONARIES.en;
@@ -149,6 +150,7 @@ function preparedIntent(): TriggerEditIntent {
 
 beforeEach(() => {
   setLang("en");
+  resetActuationStore();
   resetSession();
   acknowledgeVendor();
   calls = [];
@@ -496,6 +498,40 @@ describe("blocked states", () => {
     expect(screen.getByText(en.actuation.draftDiscardedReconnect)).toBeTruthy();
     expect(screen.getByText(en.actuation.apply.idle)).toBeTruthy();
     expect(draftPages()).not.toContain("actuation");
+  });
+
+  it("keeps the draft and the selection when the page is left and shown again", () => {
+    install("trigger_ready_mixed");
+    const page = renderPage();
+    fireEvent.click(button(en.actuation.select.wasd));
+    setActuation(50);
+    expect(screen.getByText(/4 keys will change/)).toBeTruthy();
+    // Another page is shown (the route's lazy page unmounts).
+    page.unmount();
+    expect(draftPages()).toContain("actuation");
+    renderPage();
+    expect(screen.getByText(/4 keys will change/)).toBeTruthy();
+    expect(screen.getByText(en.actuation.inspector.count({ n: 4 }))).toBeTruthy();
+    expect(calls).toEqual([]);
+  });
+
+  it("drops the draft on a profile change made while the page is not shown", () => {
+    const source = install("trigger_ready_mixed");
+    const page = renderPage();
+    fireEvent.click(button(en.actuation.select.wasd));
+    setActuation(50);
+    page.unmount();
+    act(() => {
+      snapshotStore.set({ snapshot: { ...snapshotOf(source), profile: 2, revision: 2 }, loading: false, error: null });
+    });
+    expect(draftPages()).not.toContain("actuation");
+    // Back on profile 1: the discarded draft does not come back.
+    act(() => {
+      snapshotStore.set({ snapshot: { ...snapshotOf(source), profile: 1, revision: 3 }, loading: false, error: null });
+    });
+    renderPage();
+    expect(screen.getByText(en.actuation.apply.idle)).toBeTruthy();
+    expect(screen.getByText(en.actuation.draftDiscarded({ n: 2 }))).toBeTruthy();
   });
 
   it("keeps the draft when the same profile is read again", () => {

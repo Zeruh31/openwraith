@@ -107,7 +107,8 @@ SOCD, polling rate and Win-Lock.
 - **Another program (the vendor site).** While idle the app only listens. If
   another program talks to the keyboard, OpenWraith stops sending anything,
   reads included, shows a banner and pauses writing until you close the
-  site and press "I closed it, check again".
+  site and press "I closed it, check again". A read in progress stops
+  too, so a backup of the active profile fails instead of being saved.
 - **Profile changes on the keyboard** (Fn + 1-4) are noticed: the app reads
   the keyboard again and refuses any plan made for the old profile.
 - **A keyboard reset** (Fn + Space) stops the app at once; it sends nothing
@@ -115,8 +116,8 @@ SOCD, polling rate and Win-Lock.
 - **Closing during a write** is deferred: the window asks whether to keep it
   open or to stop safely (at the next safe point, after the save wait) and
   close.
-- **An interrupted write** (a crash or a power loss) is shown at the next
-  start, with Undo for its safety backup.
+- **An interrupted write** (a crash or a power loss) is shown at every
+  start until you dismiss it, with Undo for its safety backup.
 - **Don't run the CLI while the app is open:** both would talk to the
   keyboard. "Release keyboard" (header) closes it without quitting the app.
 - Firmware other than 3.22.07 is marked "not tested yet" on the Keyboard
@@ -627,7 +628,8 @@ v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, 
 - **Başka bir program (üreticinin sitesi):** Boştayken uygulama yalnızca
   dinler. Klavyeyle başka bir program konuşursa OpenWraith okumalar dahil
   hiçbir şey göndermez, bir uyarı gösterir ve siz siteyi kapatıp "Kapattım,
-  yeniden denetle" düğmesine basana kadar yazmayı duraklatır.
+  yeniden denetle" düğmesine basana kadar yazmayı duraklatır. Süren bir okuma
+  da durur; bu yüzden aktif profilin yedeği kaydedilmez, hata verir.
 - **Klavyeden profil değiştirme** (Fn + 1-4) fark edilir: uygulama klavyeyi
   yeniden okur ve eski profil için yapılmış bir planı reddeder.
 - **Klavye sıfırlanırsa** (Fn + Boşluk) uygulama hemen durur ve siz "Klavyeyi
@@ -635,8 +637,9 @@ v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, 
 - **Yazma sürerken pencereyi kapatmak** ertelenir: pencere açık mı kalsın,
   yoksa güvenli bir noktada (kaydetme beklendikten sonra) durdurulup kapatılsın
   mı diye sorulur.
-- **Yarıda kalan bir yazma** (çökme ya da elektrik kesintisi) bir sonraki
-  açılışta, güvenlik yedeğini geri almak için bir düğmeyle gösterilir.
+- **Yarıda kalan bir yazma** (çökme ya da elektrik kesintisi), siz kapatana
+  kadar her açılışta, güvenlik yedeğini geri almak için bir düğmeyle
+  gösterilir.
 - **Uygulama açıkken komut satırı aracını çalıştırmayın;** ikisi birden
   klavyeyle konuşur. Üst çubuktaki "Klavyeyi bırak" uygulamayı kapatmadan
   klavyeyi serbest bırakır.

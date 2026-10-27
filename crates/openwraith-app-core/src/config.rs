@@ -89,9 +89,16 @@ impl CoreConfig {
         }
     }
 
-    /// The journal file.
+    /// The journal file of the running write.
     pub(crate) fn journal_path(&self) -> PathBuf {
         self.state_dir.join("operation-journal.json")
+    }
+
+    /// Where a journal left behind by an interrupted write is kept until the
+    /// user dismisses it (moved there at start, so that later writes, which
+    /// use [`journal_path`](Self::journal_path), never touch it).
+    pub(crate) fn interrupted_path(&self) -> PathBuf {
+        self.state_dir.join("interrupted-operation.json")
     }
 
     /// Now, or the fixed time.

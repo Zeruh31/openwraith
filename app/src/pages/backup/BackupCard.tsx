@@ -15,6 +15,7 @@ import { useFormat } from "../../i18n/format";
 import type { AllProfilesPreview, BackupKind, BackupSaved, FileRef } from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { toastError } from "../../shell/actions";
+import { isLocked } from "../../state/operation";
 import { useStatus } from "../../state/status";
 import { useDeviceBlock } from "./availability";
 import { useDemoAction, type BackupDemo } from "./demo";
@@ -113,7 +114,7 @@ export function BackupCard({ demo }: BackupCardProps) {
   const choosing = useRef(false);
 
   const start = (kind: BackupKind) => {
-    if (choosing.current || running !== null || block !== null) return;
+    if (choosing.current || running !== null || block !== null || isLocked()) return;
     choosing.current = true;
     const titles = dict.backupRestore.dialog;
     const dialog = { title: kind === "all_profiles" ? titles.saveAll : titles.saveActive, filter: titles.filter };

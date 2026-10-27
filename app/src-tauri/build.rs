@@ -38,15 +38,15 @@ fn main() {
     if text.trim().is_empty() || text.starts_with(NOTICES_PLACEHOLDER) {
         if release {
             eprintln!(
-                "{} is missing: run `npm --prefix app run build:web` (or `npm --prefix app run                  tauri build`), which writes it",
+                "{} is missing: run `npm --prefix app run build:web` (or `npm --prefix app run \
+                 tauri build`), which writes it",
                 notices.display()
             );
             std::process::exit(1);
         }
         let placeholder = format!(
-            "{NOTICES_PLACEHOLDER}
-The third-party notices were not generated (debug build).              Run `npm --prefix app run build:notices`.
-"
+            "{NOTICES_PLACEHOLDER}\nThe third-party notices were not generated (debug build). \
+             Run `npm --prefix app run build:notices`.\n"
         );
         if let Err(e) =
             std::fs::create_dir_all("legal").and_then(|()| std::fs::write(&notices, placeholder))

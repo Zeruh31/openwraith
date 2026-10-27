@@ -1,7 +1,7 @@
 // Shell actions that call the backend and report failures as toasts.
 
 import { getDict } from "../i18n";
-import type { AppError } from "../ipc/bindings";
+import type { AppError, DeviceId } from "../ipc/bindings";
 import { api } from "../ipc/commands";
 import { toAppError } from "../ipc/errors";
 import { tryLock, unlock } from "../state/operation";
@@ -55,6 +55,11 @@ export function readAgain(): void {
 /** Closes and reopens the connection (also "read the keyboard again" after a reset). */
 export function reconnect(): void {
   run("reconnect", () => api.reconnect(), ["operation_running"]);
+}
+
+/** Opens the chosen keyboard (several are connected); a double click opens it once. */
+export function selectDevice(id: DeviceId): void {
+  run("select-device", () => api.selectDevice(id), ["operation_running"]);
 }
 
 /** Releases the keyboard. */

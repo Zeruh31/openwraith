@@ -47,10 +47,22 @@ export function phaseKey(step: ProgressStep): string {
   }
 }
 
+/**
+ * Phases whose profile select may first wait for the keyboard to save: the
+ * library reports that wait inside them (and nothing for the read-back that
+ * follows a persistence check's select), so the wait belongs to them.
+ */
+const WAIT_HOSTS: readonly ProgressStep["step"][] = ["checking_persistence", "selecting_profile", "returning_to_profile"];
+
 /** The model after one more event. */
 export function reduceProgress(model: ProgressModel, event: ProgressEvent): ProgressModel {
   const key = phaseKey(event.step);
   const last = model.phases[model.phases.length - 1];
+  if (event.step.step === "waiting_for_keyboard_save" && last !== undefined && WAIT_HOSTS.includes(last.step.step)) {
+    // The phase stays current (with its spinner); the wait's meter shows
+    // under it, and the next phase closes it.
+    return { op: event.op, phases: model.phases, current: event, cancel: event.cancel };
+  }
   const phases =
     last?.key === key
       ? [...model.phases.slice(0, -1), { key, step: event.step, seq: last.seq }]

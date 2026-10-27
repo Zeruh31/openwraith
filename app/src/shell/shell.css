@@ -285,6 +285,10 @@
   min-width: 0;
   overflow-y: auto;
   outline: none;
+  /* A page with a sticky apply bar sets --applybar-height (ApplyBar): a
+     control that gets the focus is scrolled into view above the bar, not
+     under it (WCAG 2.4.11). */
+  scroll-padding-bottom: calc(var(--applybar-height, 0px) + var(--space-4));
 }
 
 .ow-banners {

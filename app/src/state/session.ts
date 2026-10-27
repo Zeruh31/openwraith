@@ -68,3 +68,8 @@ export function useVendorTick(): VendorTick {
   const state = useStore(sessionStore);
   return { required: !state.vendorAcknowledged, episode: state.episode, acknowledge: acknowledgeVendor };
 }
+
+/** Whether the next write needs the vendor tick (outside React, at call time). */
+export function vendorTickRequired(): boolean {
+  return !sessionStore.get().vendorAcknowledged;
+}

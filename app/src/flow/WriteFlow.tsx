@@ -111,7 +111,8 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
     propsRef.current = props;
   });
 
-  // The local operation lock, held while the flow is open.
+  // The local operation lock, held while the flow is open (released by
+  // `close`, or here when the flow unmounts otherwise).
   useEffect(() => {
     tryLock(owner);
     return () => {
@@ -126,6 +127,9 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
   const close = (result: R | null) => {
     if (closed.current) return;
     closed.current = true;
+    // Released in the same event that removes the flow: the opener is
+    // enabled again when the dialog gives the focus back to it.
+    unlock(owner);
     propsRef.current.onClose(result);
   };
 
@@ -475,6 +479,8 @@ export function OperationRunner<R>(props: OperationRunnerProps<R>) {
   const close = () => {
     if (closed.current) return;
     closed.current = true;
+    // As in WriteFlow: the opener is enabled when the focus returns to it.
+    unlock(owner);
     propsRef.current.onClose(phase.s === "result" ? phase.result : null);
   };
 

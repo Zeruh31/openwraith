@@ -28,7 +28,7 @@ export const shell = {
   skipToContent: "Skip to content",
   lastReport: {
     title: "Result of the last operation",
-    intro: "This operation finished while its window was closed or reloaded. Here is what happened.",
+    intro: "This operation finished while its page wasn't open. Here is what happened.",
   },
   nav: {
     label: "Pages",

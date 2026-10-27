@@ -194,10 +194,105 @@ fn a_journal_left_behind_shows_the_interrupted_operation() {
         interrupted.safety_backup.unwrap().file_name,
         "safety-file.owbackup.json"
     );
+    // Moved to its own file at start: later writes never touch it.
+    let state = dir.path().join("state");
+    assert!(journal::read(&state.join("operation-journal.json")).is_none());
+    assert!(journal::read(&state.join("interrupted-operation.json")).is_some());
     handle.dismiss_interrupted().unwrap();
     assert!(handle.status().interrupted.is_none());
-    assert!(journal::read(&dir.path().join("state").join("operation-journal.json")).is_none());
+    assert!(journal::read(&state.join("interrupted-operation.json")).is_none());
     handle.shutdown();
+}
+
+/// A journal left behind by an interrupted restore.
+fn left_behind(h: &Harness) -> crate::config::CoreConfig {
+    let config = h.worker.config.clone();
+    let safety = h.dir.path().join("older-safety.owbackup.json");
+    std::fs::write(&safety, "{}").unwrap();
+    journal::write(
+        &config.journal_path(),
+        &JournalEntry {
+            op: OpKind::Restore,
+            started_at: "2026-10-24T07:30:00Z".into(),
+            profiles: vec![2],
+            device: JournalDevice {
+                product: Some("W75HEARGB".into()),
+                firmware: Some("3.22.07".into()),
+            },
+            safety_backup_path: safety.display().to_string(),
+            app_version: "0.1.0".into(),
+        },
+    )
+    .unwrap();
+    // What `spawn` does at start.
+    h.shared
+        .set_interrupted(crate::handle::interrupted(&h.shared, &config));
+    assert!(h.status().interrupted.is_some(), "the banner is shown");
+    config
+}
+
+#[test]
+fn a_later_write_keeps_an_interrupted_operation_that_was_not_dismissed() {
+    let mut h = Harness::ready();
+    let config = left_behind(&h);
+    // A trigger edit without dismissing the banner: its own journal comes
+    // and goes.
+    let preview = h
+        .prepare_trigger(h.trigger_intent(&[W], Some(60), None))
+        .unwrap();
+    let watch = h.watch();
+    h.apply_trigger(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert_eq!(*watch.journal_seen.lock().unwrap(), Some(true));
+    assert!(!config.journal_path().exists());
+    assert!(h.status().interrupted.is_some());
+    // At the next start the interrupted restore is still shown.
+    let again = crate::handle::interrupted(&h.shared, &config).expect("still shown");
+    assert_eq!(again.kind, OpKind::Restore);
+    assert_eq!(again.profiles, vec![2]);
+}
+
+#[test]
+fn dismissing_during_a_write_keeps_that_write_s_journal() {
+    let mut h = Harness::ready();
+    let config = left_behind(&h);
+    let handle = Arc::new(WorkerHandle::from_parts(
+        h.tx.clone(),
+        Arc::clone(&h.shared),
+        config.clone(),
+        None,
+        None,
+    ));
+    let preview = h
+        .prepare_trigger(h.trigger_intent(&[W, 47, 48], Some(60), None))
+        .unwrap();
+    let watch = h.watch();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    {
+        let seen = Arc::clone(&seen);
+        let handle = Arc::clone(&handle);
+        let path = config.journal_path();
+        watch.on_event(move |event, _| {
+            let first = matches!(
+                event.step,
+                crate::dto::ProgressStep::Writing { packet: 1, .. }
+            );
+            let mut seen = seen.lock().unwrap();
+            if first && seen.is_none() {
+                handle.dismiss_interrupted().unwrap();
+                *seen = Some(path.exists());
+            }
+        });
+    }
+    h.apply_trigger(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        Some(true),
+        "the running write's journal is still there"
+    );
+    assert!(h.status().interrupted.is_none());
+    assert!(!config.interrupted_path().exists());
 }
 
 #[test]

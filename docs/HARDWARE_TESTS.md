@@ -385,9 +385,11 @@ Safety backups go to the same folder as the CLI's.
   CLI or the app, then restore the A6 backup for profile 2 only from profile
   1. Pass: the report says "kept after a profile switch" (persisted).
 - **A8. Vendor site open.** Open wraith.software and connect it while the app
-  runs. Pass: the app shows "Another program is talking to the keyboard",
-  writing is paused and nothing is sent; after closing the tab completely,
-  "I closed it, check again" returns to ready.
+  runs, once while it is idle and once right after pressing "Read again"
+  (while it reads). Pass: the app shows "Another program is talking to the
+  keyboard", writing is paused and nothing is sent (a read in progress stops
+  at once instead of finishing); after closing the tab completely, "I closed
+  it, check again" returns to ready.
 - **A9. Fn + 2 while idle.** With the app idle and focused elsewhere, press
   Fn + 2 on the keyboard. Note whether the app notices at once (a profile
   report, PROTOCOL Q2) or only when its window gets the focus again (after

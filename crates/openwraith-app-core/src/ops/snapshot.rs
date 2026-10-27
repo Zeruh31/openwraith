@@ -5,9 +5,11 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use openwraith_hid::{
-    Backup, BackupError, BackupOptions, Progress, Session, Transport, read_all_cancellable,
+    Backup, BackupError, BackupOptions, ForeignActivity, Progress, Session, Transport,
+    read_all_observed,
 };
 
 use super::progress::{CancelPolicy, OpProgress};
@@ -57,19 +59,45 @@ impl ReadFail {
             ReadFail::OtherProgram(evidence) => AppError::with(
                 AppErrorKind::OtherProgramActive,
                 ErrorDetail::OtherProgram { evidence },
-                "another program is using the keyboard; OpenWraith stopped reading and only                  listens until it is closed",
+                "another program is using the keyboard; OpenWraith stopped reading and only \
+                 listens until it is closed",
             ),
         }
     }
 }
 
-/// Reads every setting of the active profile (read-only).
+/// Whether `activity` shows another program: status reports or replies to
+/// its commands (profile reports alone are a switch on the keyboard).
+pub(crate) fn is_other_program(activity: &ForeignActivity) -> bool {
+    activity.status_reports > 0 || activity.foreign_acks > 0
+}
+
+/// Before one more request of the worker's own (the view refresh after a
+/// write): classifies what arrived meanwhile, sending nothing, and tells
+/// whether the request may go out: not after a reset or a lost connection,
+/// and not once another program was heard since the gate mark (D5).
+pub(crate) fn may_send<T: Transport>(session: &mut Session<T>) -> bool {
+    session.listen(Duration::ZERO).is_ok()
+        && !session.keyboard_reset_seen()
+        && !session.connection_lost()
+        && !is_other_program(&session.activity_since_gate())
+}
+
+/// Reads every setting of the active profile (read-only). It stops before
+/// its next request as soon as another program is heard (D5): what arrived
+/// is classified before every request, and nothing more is sent then.
 pub(crate) fn read_profile<T: Transport>(
     session: &mut Session<T>,
     options: &BackupOptions,
     progress: impl FnMut(Progress) -> ControlFlow<()>,
 ) -> Result<Backup, BackupError> {
-    read_all_cancellable(session, options, progress)
+    read_all_observed(session, options, progress, |activity| {
+        if is_other_program(activity) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
 }
 
 /// Where the progress of a read goes.
@@ -99,8 +127,9 @@ impl<B: DeviceBackend> Worker<B> {
     /// the read is retried twice (after re-arming the gate), but only when
     /// profile reports were the only activity heard since the gate mark.
     /// Status reports or replies to another program's commands end the read
-    /// with [`ReadFail::OtherProgram`]: the gate is never re-armed over
-    /// evidence of another program (D5/D6).
+    /// with [`ReadFail::OtherProgram`] before its next request (nothing is
+    /// sent at all when they were heard before it started): the gate is
+    /// never re-armed over evidence of another program (D5/D6).
     pub(crate) fn full_read(&mut self, mut via: ReadVia<'_>) -> Result<Backup, ReadFail> {
         let options = self.config.backup_options(self.sim);
         let shared = Arc::clone(&self.shared);
@@ -126,7 +155,9 @@ impl<B: DeviceBackend> Worker<B> {
                 Err(error) => error,
             };
             let activity = session.activity_since_gate();
-            let foreign_heard = activity.status_reports > 0 || activity.foreign_acks > 0;
+            // A read stopped by `read_profile` because another program was
+            // heard ends here too (`Cancelled` with the evidence).
+            let foreign_heard = is_other_program(&activity);
             match error {
                 BackupError::ProfileChanged { .. }
                     if attempt < 2
@@ -203,6 +234,13 @@ impl<B: DeviceBackend> Worker<B> {
     /// Reads the settings after the observation (or to refresh them after a
     /// profile change): the state shows `Reading`, then `Ready`.
     pub(crate) fn connect_read(&mut self, kind: OpKind) {
+        if self.foreign_heard() {
+            // Another program was heard since the gate mark: nothing is
+            // sent (D5); the state becomes `OtherProgram`.
+            self.after_op_state();
+            self.publish();
+            return;
+        }
         if self
             .shared
             .busy

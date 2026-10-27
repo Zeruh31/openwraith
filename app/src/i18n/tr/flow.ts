@@ -29,7 +29,7 @@ export const flow: Messages<typeof en> = {
     restore: "Geri yükleme",
     recheck: "Yeniden denetleniyor",
   },
-  preparing: "Klavyede şu an ne olduğu okunuyor…",
+  preparing: "Klavyedeki güncel ayarlar okunuyor…",
   steps: {
     checking_other_programs: "Klavyeyi başka bir programın kullanmadığı denetleniyor",
     reading: {
@@ -66,7 +66,7 @@ export const flow: Messages<typeof en> = {
     waitProfile: (p) => `Klavyenin profil ${p.n} ayarlarını kaydetmesi bekleniyor…`,
     waitGeneric: "Klavyenin kaydetmesi bekleniyor…",
     waitExplain:
-      "Klavye bir değişikliği aldıktan yaklaşık 1 saniye sonra kaydeder; OpenWraith güvende olmak için 2 saniye bekler.",
+      "Klavye bir değişikliği aldıktan yaklaşık 1 saniye sonra kaydeder; OpenWraith emin olmak için 2 saniye bekler.",
     waitLeft: (p) => `Kalan: ${p.seconds}`,
     steps: "Adımlar",
     done: "Tamamlandı",
@@ -75,7 +75,7 @@ export const flow: Messages<typeof en> = {
   cancel: {
     available: "Durdur",
     requested: "Geçerli adımdan sonra durdurulacak…",
-    finishing_keymap_group: "Klavye tuş atamalarını saklasın diye önce bu adım bitiriliyor…",
+    finishing_keymap_group: "Klavyenin saklayabilmesi için önce tuş atamalarının yazımı tamamlanıyor…",
     not_now: "Bu adım durdurulamaz; birazdan biter.",
     not_cancellable: "Bu işlem başladıktan sonra durdurulamaz.",
   },
@@ -98,7 +98,7 @@ export const flow: Messages<typeof en> = {
     `Hiçbir şey yazılmadı (profil geçişleri dışında; klavye şu an profil ${p.n} üzerinde).`,
   nothingWrittenSwitchesUnknown: "Hiçbir şey yazılmadı (profil geçişleri dışında).",
   results: {
-    persisted: "Yazıldı ve doğrulandı · profil değiştirilip denetlendi",
+    persisted: "Yazıldı ve doğrulandı · profil değişiminden sonra da korundu",
     written: "Yazıldı ve doğrulandı",
     resentUnchanged: "Tuş atamaları saklansın diye yeniden gönderildi",
     alreadyMatched: "Zaten aynıydı (yazılmadı)",
@@ -140,7 +140,7 @@ export const flow: Messages<typeof en> = {
     dead_band: "Ölü bölge",
     socd_pairs: "SOCD çiftleri",
     socd_settings: "SOCD ayarları",
-    switch_types: "Anahtar türleri",
+    switch_types: "Switch türleri",
     poll_rate: "Yoklama hızı",
     win_lock_and_rollover: "Win kilidi ve çoklu tuş algılama",
   },

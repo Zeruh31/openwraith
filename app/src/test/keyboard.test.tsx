@@ -216,7 +216,7 @@ describe("KeyboardView", () => {
     );
     const w = screen.getAllByRole("option").find((o) => o.getAttribute("data-key-index") === String(W));
     if (w === undefined) throw new Error("no W");
-    expect(w.getAttribute("aria-label")).toBe("W, 1.70, RT");
+    expect(w.getAttribute("aria-label")).toBe("W 1.70 RT");
     const describedBy = w.getAttribute("aria-describedby");
     expect(describedBy === null ? null : document.getElementById(describedBy)?.textContent).toBe(
       "Rapid Trigger 0.30 mm",
@@ -227,6 +227,29 @@ describe("KeyboardView", () => {
     expect(q?.hasAttribute("aria-describedby")).toBe(false);
     expect(q?.hasAttribute("data-flag")).toBe(false);
     expect(q?.hasAttribute("title")).toBe(false);
+  });
+
+  it("starts a key's name with its legend when the legend is not the full name", () => {
+    render(
+      <KeyboardView
+        label="Keys"
+        keyVisual={(index) =>
+          index === 0
+            ? { legend: "ESC", name: "Escape", value: "1.70", chip: "RT" }
+            : index === W
+              ? { legend: "w", name: "W", value: "1.70" }
+              : visual(index)
+        }
+        selected={new Set()}
+        onSelectionChange={() => undefined}
+        knobLabel="knob"
+        unitPx={40}
+      />,
+    );
+    const option = (index: number) =>
+      screen.getAllByRole("option").find((o) => o.getAttribute("data-key-index") === String(index));
+    expect(option(0)?.getAttribute("aria-label")).toBe("ESC (Escape) 1.70 RT");
+    expect(option(W)?.getAttribute("aria-label")).toBe("W 1.70");
   });
 
   it("changes nothing when disabled", () => {

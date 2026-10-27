@@ -88,7 +88,7 @@ pub use backup::{
     BACKUP_EXTENSION, BACKUP_FORMAT, BACKUP_SCHEMA_MAX, BACKUP_SCHEMA_VERSION,
     BACKUP_SCHEMA_VERSION_PROFILES, BACKUP_SCOPE, BACKUP_SCOPE_PROFILES, Backup, BackupEntry,
     BackupOptions, DeviceIdentity, ProfileSnapshot, Progress, SnapshotView, ToolInfo, read_all,
-    read_all_cancellable, read_all_with, rfc3339_utc,
+    read_all_cancellable, read_all_observed, read_all_with, rfc3339_utc,
 };
 pub use edit::{
     EditReport, KeyEdit, LightEdit, LightEditPlan, RtEdit, TriggerEdit, TriggerEditPlan,

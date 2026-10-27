@@ -50,6 +50,41 @@ function hide(dialog: HTMLDialogElement): void {
   }
 }
 
+function nextFrame(callback: () => void): void {
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(callback);
+  } else {
+    window.setTimeout(callback, 16);
+  }
+}
+
+/**
+ * Gives the focus back to the dialog's opener. An opener that is still
+ * disabled when the dialog goes away (its page enables it a moment later)
+ * is tried again on the next frames; when there is none, the page's main
+ * region gets the focus, never the document body. A focus that moved
+ * elsewhere meanwhile is left alone.
+ */
+function returnFocus(opener: Element | null): void {
+  const target = opener instanceof HTMLElement && opener !== document.body ? opener : null;
+  let tries = 0;
+  const attempt = () => {
+    const active = document.activeElement;
+    if (tries > 0 && active !== null && active !== document.body) return;
+    if (target !== null && target.isConnected && !target.matches(":disabled")) {
+      target.focus();
+      if (document.activeElement === target) return;
+    }
+    tries += 1;
+    if (tries <= 3) {
+      nextFrame(attempt);
+    } else {
+      document.querySelector<HTMLElement>("main")?.focus();
+    }
+  };
+  attempt();
+}
+
 /** A modal dialog with a title, a body and an action row. */
 export function Dialog({
   open,
@@ -87,19 +122,15 @@ export function Dialog({
       }
     } else if (!open && dialog.open) {
       hide(dialog);
-      const element = opener.current;
-      if (element instanceof HTMLElement && element.isConnected) {
-        element.focus();
-      }
+      returnFocus(opener.current);
+      opener.current = null;
     }
   }, [open, initialFocus]);
 
+  // Unmounted while shown (a flow that went away): the focus goes back too.
   useEffect(
     () => () => {
-      const element = opener.current;
-      if (element instanceof HTMLElement && element.isConnected) {
-        element.focus();
-      }
+      if (opener.current !== null) returnFocus(opener.current);
     },
     [],
   );

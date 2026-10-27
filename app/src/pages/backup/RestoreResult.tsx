@@ -130,8 +130,12 @@ function Counts({ tally, skipped }: { tally: RestoreTally; skipped: number }) {
 /** Props of {@link RestoreResult}. */
 export interface RestoreResultProps {
   report: RestoreReportView;
-  /** Prepares the same restore again (after LOST). */
-  onRunAgain: () => void;
+  /**
+   * Prepares the same restore again (after LOST). Without it (the shell's
+   * last-report dialog, where the backup is no longer loaded) a hint says
+   * how to run it again instead.
+   */
+  onRunAgain?: (() => void) | undefined;
   /** Reads the keyboard again (after MAY BE LOST). */
   onReadAgain: () => void;
 }
@@ -172,9 +176,13 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
           <h3 className="br-section__title">{r.nextSteps}</h3>
           <div className="ow-row">
             {report.headline === "lost" ? (
-              <Button variant="primary" icon="refresh" disabledReason={ready ? null : r.connectFirst} onClick={onRunAgain}>
-                {r.runAgain}
-              </Button>
+              onRunAgain === undefined ? (
+                <p>{r.runAgainHint}</p>
+              ) : (
+                <Button variant="primary" icon="refresh" disabledReason={ready ? null : r.connectFirst} onClick={onRunAgain}>
+                  {r.runAgain}
+                </Button>
+              )
             ) : (
               <Button variant="primary" icon="refresh" disabledReason={ready ? null : r.connectFirst} onClick={onReadAgain}>
                 {dict.common.actions.readAgain}

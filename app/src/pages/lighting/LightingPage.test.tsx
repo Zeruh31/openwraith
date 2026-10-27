@@ -497,6 +497,77 @@ describe("Lighting page: a lost connection during the write", () => {
   });
 });
 
+describe("Lighting page: the draft while the page is not shown", () => {
+  it("is discarded by a profile switch made elsewhere and does not come back", () => {
+    const source = fixture("light_ready");
+    const page = load(source);
+    fireEvent.change(screen.getByRole("slider", { name: t.brightness.label }), { target: { value: "2" } });
+    expect(summaryText()).toContain(t.applyBar.brightness({ from: 4, to: 2 }));
+    page.unmount();
+    expect(draftPages()).toContain("lighting");
+    const snapshot = source.initial_snapshot;
+    if (snapshot === null) throw new Error("no snapshot");
+    act(() => {
+      snapshotStore.set({ snapshot: { ...snapshot, revision: snapshot.revision + 1, profile: 2 }, loading: false, error: null });
+    });
+    // The switch confirmation said it would be discarded: no nav dot now.
+    expect(draftPages()).not.toContain("lighting");
+    act(() => {
+      snapshotStore.set({ snapshot: { ...snapshot, revision: snapshot.revision + 2, profile: 1 }, loading: false, error: null });
+    });
+    render(
+      <>
+        <LightingPage />
+        <ToastRegion />
+      </>,
+    );
+    expect(summaryText()).toBe(t.applyBar.noChanges);
+    expect(screen.getByText(t.discarded.title)).toBeTruthy();
+  });
+
+  it("is dropped when its write ends after the page went away", async () => {
+    const source = fixture("light_apply_ok");
+    const prepareCall = source.calls.find((c) => c.command === "prepare_light_edit");
+    const applyCall = source.calls.find((c) => c.command === "apply_light_edit");
+    if (prepareCall?.command !== "prepare_light_edit" || prepareCall.ok === null) throw new Error("no preview");
+    if (applyCall?.command !== "apply_light_edit" || applyCall.ok === null) throw new Error("no report");
+    const preview: LightEditPreview = prepareCall.ok;
+    const report: EditReportView = applyCall.ok;
+    expect(report.anything_written).toBe(true);
+    let finishApply: (value: EditReportView) => void = () => undefined;
+    const page = load(source, (command) => {
+      switch (command) {
+        case "prepare_light_edit":
+          return preview;
+        case "apply_light_edit":
+          return new Promise<EditReportView>((resolve) => {
+            finishApply = resolve;
+          });
+        default:
+          return null;
+      }
+    });
+    draftStaticBlue();
+    fireEvent.click(reviewButton());
+    await screen.findByText(t.review.title({ n: 1 }));
+    await sleep(550);
+    fireEvent.click(screen.getByRole("button", { name: en.common.actions.writeToKeyboard }));
+    await waitFor(() => {
+      expect(commands()).toContain("apply_light_edit");
+    });
+    // History navigation during the save wait: the page goes away.
+    page.unmount();
+    expect(draftPages()).toContain("lighting");
+    await act(async () => {
+      finishApply(report);
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(draftPages()).not.toContain("lighting");
+    });
+  });
+});
+
 describe("Lighting page: a draft the chosen effect doesn't use", () => {
   it("can be discarded, and is no longer registered", () => {
     load(fixture("light_ready"));

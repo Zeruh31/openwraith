@@ -40,7 +40,7 @@ export const actuation: Messages<typeof en> = {
       bottom: "Z sırası (Shift – Yukarı ok)",
       space: "Alt sıra (Ctrl – Sağ ok)",
     },
-    hint: "Tuşları tıklayarak seçin. Birkaç tuşu seçmek için üzerlerinde sürükleyin, bir bloğu seçmek için Shift tuşunu basılı tutun. Alt ile sürüklemek tuşları seçimden çıkarır.",
+    hint: "Tuşlara tıklayarak seçin; birkaç tuş seçmek için üzerlerinde sürükleyin, bir blok seçmek için Shift tuşunu basılı tutun. Alt tuşuyla sürüklemek tuşları seçimden çıkarır.",
   },
   legends: {
     Esc: "ESC",
@@ -122,7 +122,7 @@ export const actuation: Messages<typeof en> = {
     keep: "Olduğu gibi kalsın",
     keepHint: "Her tuş kendi Rapid Trigger ayarını korur.",
     off: "Kapalı",
-    offHint: "Tuş, aktivasyon noktasında açılır ve kapanır.",
+    offHint: "Tuş, aktivasyon noktasını geçince basılı, geri çıkınca bırakılmış sayılır.",
     same: "Açık",
     sameHint: "Basma ve bırakma için tek hassasiyet.",
     separate: "Açık, basma ve bırakma ayrı",
@@ -133,7 +133,7 @@ export const actuation: Messages<typeof en> = {
     sensitivityHint: "Küçük değerler daha kısa hareketlere tepki verir.",
     explainTitle: "Rapid Trigger nedir?",
     explain:
-      "Rapid Trigger açıkken tuş, yolunun neresinde olursa olsun, bırakma hassasiyeti kadar yükselir yükselmez kapanır ve basma hassasiyeti kadar iner inmez yeniden açılır. Kapalıyken tuş yalnızca aktivasyon noktasında açılıp kapanır.",
+      "Rapid Trigger açıkken tuş, hareketinin neresinde olursa olsun, bırakma hassasiyeti kadar yükselir yükselmez bırakılmış sayılır; basma hassasiyeti kadar iner inmez de yeniden basılı sayılır. Kapalıyken tuş yalnızca aktivasyon noktasında basılı ya da bırakılmış sayılır.",
   },
   apply: {
     idle: "Yazılmamış değişiklik yok. Tuşları seçin, ardından yeni değerleri belirleyin.",
@@ -141,7 +141,7 @@ export const actuation: Messages<typeof en> = {
     notWritten: "Henüz yazılmadı",
     willChange: (p) => `${p.n} tuş değişecek`,
     already: (p) => `${p.n} tuş zaten bu ayarlarda`,
-    leftOut: (p) => `${p.n} tuş dışarıda (⚠)`,
+    leftOut: (p) => `${p.n} tuş dışarıda bırakılacak (⚠)`,
     reasons: {
       selectKeys: "En az bir tuş seçin.",
       noEditable: "Seçili tuşların hiçbiri değiştirilemez.",

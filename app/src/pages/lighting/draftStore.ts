@@ -1,10 +1,14 @@
 // The Lighting page's draft, kept outside the component so that it survives
 // switching pages. A draft belongs to one profile of one connection (its
 // "basis"); when the keyboard is on another profile or was connected again,
-// the draft no longer applies and is discarded.
+// the draft no longer applies and is discarded, whether the page is shown or
+// not (the store follows the snapshot itself).
 
+import { getDict } from "../../i18n";
 import { registerDraft } from "../../state/drafts";
+import { snapshotStore } from "../../state/snapshot";
 import { createStore, useStore } from "../../state/store";
+import { toast } from "../../state/toasts";
 import { EMPTY_DRAFT, hasDraftFields, type LightDraft } from "./model";
 
 /** The draft and the profile it was made for. */
@@ -76,6 +80,35 @@ export function rebase(basis: string): boolean {
   return dropped;
 }
 
+/** Whether the page's write flow is open (see {@link setFlowOpen}). */
+let flowOpen = false;
+
+/**
+ * Marks the page's write flow as open or closed: while it is open, a
+ * profile or connection change comes from (or is explained by) that flow,
+ * so there is no "discarded" toast then.
+ */
+export function setFlowOpen(open: boolean): void {
+  flowOpen = open;
+}
+
+/**
+ * Follows the keyboard, whether or not the Lighting page is shown: on
+ * another profile or after a reconnect the draft no longer applies and is
+ * discarded for good (going back to the first profile later does not bring
+ * it back), and the shell's registry forgets it.
+ */
+function followSnapshot(): void {
+  const basis = basisOf(snapshotStore.get().snapshot);
+  if (basis !== null && rebase(basis) && !flowOpen) {
+    const words = getDict().lighting.discarded;
+    toast({ kind: "info", title: words.title, body: words.body });
+  }
+}
+
+snapshotStore.subscribe(followSnapshot);
+followSnapshot();
+
 /** Seeds the draft once (browser-preview scenarios); ignored when a draft exists. */
 export function seedDraft(draft: LightDraft): void {
   const state = draftStore.get();
@@ -87,4 +120,5 @@ export function seedDraft(draft: LightDraft): void {
 /** Resets the store (tests). */
 export function resetDraftStore(): void {
   draftStore.set(INITIAL);
+  flowOpen = false;
 }

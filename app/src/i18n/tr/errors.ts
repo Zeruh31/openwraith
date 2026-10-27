@@ -52,7 +52,7 @@ export const errors: Messages<typeof en> = {
     },
     verify_failed: {
       title: "Klavye değişikliği kabul etmedi",
-      body: "Yazmadan sonra klavye, ikinci denemede bile farklı değerler döndürdü.",
+      body: "Yazma işleminden sonra klavye, ikinci denemede bile farklı değerler döndürdü.",
     },
     not_persisted: {
       title: "Klavye değişikliği saklamadı",
@@ -80,7 +80,7 @@ export const errors: Messages<typeof en> = {
     },
     unexpected_reply: {
       title: "Klavye beklenmeyen bir yanıt verdi",
-      body: "OpenWraith güvende kalmak için durdu.",
+      body: "OpenWraith önlem olarak durdu.",
     },
     invalid_request: {
       title: "Bu değişiklik yapılamaz",
@@ -136,9 +136,9 @@ export const errors: Messages<typeof en> = {
     value_out_of_range: (p) =>
       `${p.field} izin verilen aralığın dışında: ${p.value} (en az ${p.min}, en çok ${p.max}).`,
     distance_unit: (p) =>
-      `Klavye mesafe birimini ${p.um} µm olarak bildiriyor; OpenWraith yalnızca 0,02 mm adımlarla yazabilir.`,
-    distance_unit_unknown: "Klavyenin mesafe birimi bilinmiyor; OpenWraith yalnızca 0,02 mm adımlarla yazar.",
-    needs_switch_consent: (p) => `Karşılaştırma şu profillere geçer: ${p.list}.`,
+      `Klavye mesafe birimini ${p.um} µm olarak bildiriyor; OpenWraith yalnızca 0,02 mm'lik adımlarla yazabilir.`,
+    distance_unit_unknown: "Klavyenin mesafe birimi bilinmiyor; OpenWraith yalnızca 0,02 mm'lik adımlarla yazar.",
+    needs_switch_consent: (p) => `Karşılaştırma için şu profillere geçilir: ${p.list}.`,
     verify_failed: (p) => `${p.table}: ${p.sends} denemeden sonra da geri okuma farklı çıktı.`,
     commit_trigger_incomplete: (p) =>
       `Klavyenin kaydetmesini sağlayan adım ${p.of} paketten ${p.packet}. pakette durdu.`,
@@ -148,7 +148,7 @@ export const errors: Messages<typeof en> = {
   },
   writeBlocked: {
     not_connected: "Bağlı ve okunmuş bir klavye yok",
-    observing: "OpenWraith hâlâ başka programlar için denetim yapıyor",
+    observing: "OpenWraith, klavyeyi başka bir programın kullanıp kullanmadığını hâlâ denetliyor",
     busy: "Başka bir işlem sürüyor",
     other_program: "Klavyeyi başka bir program kullanıyor",
     reset_seen: "Klavye kendini sıfırladı; önce yeniden okuyun",

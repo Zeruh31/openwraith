@@ -15,10 +15,10 @@ import { Callout, EmptyState, Spinner, UnverifiedMarker } from "../../components
 import { ColorField, Slider } from "../../components/Fields";
 import { Card, ColorSwatch, PageHeader, ProfileBadge } from "../../components/Layout";
 import { EditReportView } from "../../flow/Report";
-import { WriteFlow } from "../../flow/WriteFlow";
-import { getDict, useDict } from "../../i18n";
+import { WriteFlow, type OnProgress } from "../../flow/WriteFlow";
+import { useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
-import type { EditReportView as EditReport, LightEditIntent, LightEditPreview } from "../../ipc/bindings";
+import type { EditReportView as EditReport, LightEditIntent, LightEditPreview, PlanToken } from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { previewUi } from "../../preview/ui";
 import { navigate } from "../../routes";
@@ -27,8 +27,7 @@ import { connectionSummary } from "../../shell/statusText";
 import { isLocked, useOperationLock } from "../../state/operation";
 import { useSnapshot } from "../../state/snapshot";
 import { useStatus } from "../../state/status";
-import { toast } from "../../state/toasts";
-import { basisOf, clearDraft, rebase, seedDraft, setDraft, useDraftState } from "./draftStore";
+import { basisOf, clearDraft, seedDraft, setDraft, setFlowOpen, useDraftState } from "./draftStore";
 import { EffectTiles } from "./EffectTiles";
 import { applyBlockText, modeName } from "./labels";
 import { LightPreview } from "./LightPreview";
@@ -86,15 +85,16 @@ export default function LightingPage() {
     seedDraft(draftFromPreview(previewUi<LightingPreviewUi>("lighting")));
   }, []);
 
-  // The keyboard is on another profile, or was connected again: the draft
-  // no longer applies. While a write flow is open the change comes from (or
-  // is explained by) that flow, so there is no toast then.
-  useEffect(() => {
-    if (basis !== null && rebase(basis) && !flowOpen.current) {
-      const words = getDict().lighting.discarded;
-      toast({ kind: "info", title: words.title, body: words.body });
-    }
-  }, [basis]);
+  // The draft store itself drops a draft made on another profile or
+  // connection (with a toast), whether this page is shown or not. While the
+  // page's write flow is open there is no toast (the flow explains it); a
+  // flow that went away with the page counts as closed.
+  useEffect(
+    () => () => {
+      setFlowOpen(false);
+    },
+    [],
+  );
 
   useEffect(() => {
     latestIntent.current = intent;
@@ -108,14 +108,24 @@ export default function LightingPage() {
   const openFlow = () => {
     if (flowOpen.current || intent === null || light === null || isLocked()) return;
     flowOpen.current = true;
+    setFlowOpen(true);
     setFlow({ intent, maxBrightness: light.max_brightness, maxSpeed: light.max_speed });
   };
 
-  const onFlowClose = (report: EditReport | null) => {
+  const onFlowClose = () => {
     flowOpen.current = false;
+    setFlowOpen(false);
     setFlow(null);
-    if (report?.anything_written === true) clearDraft();
   };
+
+  // A light that was written makes the draft spent, also when the result
+  // arrives after the flow went away (history navigation during the write;
+  // the shell shows the report then).
+  const apply = (token: PlanToken, onProgress: OnProgress) =>
+    api.applyLightEdit(token, onProgress).then((report) => {
+      if (report.anything_written) clearDraft();
+      return report;
+    });
 
   const ready = status.connection.state === "ready";
 
@@ -135,7 +145,7 @@ export default function LightingPage() {
         )}
         confirmLabel={() => dict.common.actions.writeToKeyboard}
         writesSettings
-        apply={(token, onProgress) => api.applyLightEdit(token, onProgress)}
+        apply={apply}
         result={(report) => <EditReportView report={report} />}
         onClose={onFlowClose}
       />
@@ -177,7 +187,7 @@ export default function LightingPage() {
 
   const readOnly = stale || !light.editable || current === null;
   const controlsDisabled = readOnly || shown === null || shown.needsEffect;
-  const block = applyBlock(status, lock.busy, stale, light, shown);
+  const block = applyBlock(status, status.busy !== null, stale, light, shown);
 
   const changeText = (change: LightChange): ReactNode => {
     switch (change.field) {
