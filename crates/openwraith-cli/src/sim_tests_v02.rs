@@ -1156,6 +1156,14 @@ fn travel_json_prints_one_object_per_report() {
         .collect();
     // Only Esc (--keys): 40, 90, 169, 0.
     assert_eq!(depths, [40, 90, 169, 0]);
+    // Every report carries the time since the open, never going back.
+    let times: Vec<u64> = lines
+        .iter()
+        .filter(|l| l["event"] == "depth")
+        .map(|l| l["t_ms"].as_u64().expect("t_ms"))
+        .collect();
+    assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
+    assert!(times.iter().all(|t| *t < 5_000), "{times:?}");
     let last = lines.last().expect("final line");
     assert_eq!(last["event"], "stopped");
     assert_eq!(last["outcome"]["close"]["close"], "acked");

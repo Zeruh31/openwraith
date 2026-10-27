@@ -35,7 +35,7 @@
 //! above.
 
 use std::ops::ControlFlow;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openwraith_protocol::{AckOffer, TravelReport, TravelTestMask, TravelTestRequest, WriteStep};
 use serde::Serialize;
@@ -123,6 +123,9 @@ pub struct TravelFrame {
     pub reports: Vec<TravelReport>,
     /// Reports dropped because the queue was full.
     pub dropped: u64,
+    /// Milliseconds since the test was opened when the frame was taken
+    /// (transport clock); the reports arrived within the poll before it.
+    pub open_ms: u64,
 }
 
 /// An open travel test; closed on [`close`](Self::close) or when dropped.
@@ -133,6 +136,8 @@ pub struct TravelTest<'w, 's, T: WriteTransport> {
     /// The result of the close, once one was attempted (or skipped after a
     /// reset).
     closed: Option<CloseResult>,
+    /// When the open was acknowledged (transport clock).
+    opened_at: Instant,
 }
 
 impl<'s, T: WriteTransport> Writer<'s, T> {
@@ -165,10 +170,14 @@ impl<'s, T: WriteTransport> Writer<'s, T> {
         self.session.set_travel(TravelState::Open);
         let opened = self.send_control_acked(&step);
         match opened {
-            Ok(true) => Ok(TravelTest {
-                writer: self,
-                closed: None,
-            }),
+            Ok(true) => {
+                let opened_at = self.session.now();
+                Ok(TravelTest {
+                    writer: self,
+                    closed: None,
+                    opened_at,
+                })
+            }
             Ok(false) => {
                 close_now(self);
                 Err(WriteError::TravelOpenNotAcked)
@@ -348,7 +357,17 @@ impl<T: WriteTransport> TravelTest<'_, '_, T> {
             return Err(TravelStop::OtherProgram { evidence });
         }
         let (reports, dropped) = self.writer.session.take_travel_reports();
-        Ok(TravelFrame { reports, dropped })
+        let open_ms = millis(
+            self.writer
+                .session
+                .now()
+                .saturating_duration_since(self.opened_at),
+        );
+        Ok(TravelFrame {
+            reports,
+            dropped,
+            open_ms,
+        })
     }
 
     /// Closes the test (T2, acknowledged within [`TRAVEL_ACK_TIMEOUT`], one

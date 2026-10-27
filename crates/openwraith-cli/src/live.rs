@@ -84,9 +84,11 @@ fn live_line(
         .join("  ")
 }
 
-/// One depth report as a JSON line.
-fn report_json(model: &Model, report: &TravelReport) -> String {
+/// One depth report as a JSON line; `t_ms` is the time since the test was
+/// opened when the report was drained (within one poll slice of its arrival).
+fn report_json(model: &Model, report: &TravelReport, t_ms: u64) -> String {
     let value = serde_json::json!({
+        "t_ms": t_ms,
         "event": "depth",
         "key": model.key_name(report.pos.index()),
         "index": report.pos.index(),
@@ -204,7 +206,7 @@ fn travel_on<T: WriteTransport>(
             recent.retain(|i| *i != index);
             recent.push(index);
             if args.json {
-                if let Err(e) = ui.print(&report_json(model, report)) {
+                if let Err(e) = ui.print(&report_json(model, report, frame.open_ms)) {
                     output_error = Some(e);
                 }
             }
