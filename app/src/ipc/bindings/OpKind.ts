@@ -3,4 +3,4 @@
 /**
  * Kinds of operations.
  */
-export type OpKind = "refresh" | "connect" | "profile_switch" | "trigger_edit" | "light_edit" | "backup_active" | "backup_all" | "restore_prepare" | "restore" | "recheck" | "keymap_edit" | "color_edit" | "dead_band_edit" | "socd_edit" | "depth_view" | "travel_close" | "export" | "import_prepare" | "import";
+export type OpKind = "refresh" | "connect" | "profile_switch" | "trigger_edit" | "light_edit" | "backup_active" | "backup_all" | "restore_prepare" | "restore" | "recheck" | "keymap_edit" | "color_edit" | "dead_band_edit" | "socd_edit" | "depth_view" | "travel_close" | "export" | "import_prepare" | "import" | "recovery_check" | "auto_switch";

@@ -76,6 +76,7 @@ pub(crate) fn summary_of(
                 ),
             )
         }
+        FileKind::Auto => (BackupFileKind::Automatic, None),
         FileKind::User | FileKind::Destination => (BackupFileKind::User, None),
     };
     backup_summary(file, kind, backup, connected, reason)
@@ -152,11 +153,14 @@ fn scope(intent: &RestoreIntent, held: &[u8]) -> Result<Vec<u8>, AppError> {
 impl<B: DeviceBackend> Worker<B> {
     /// `prepare_restore`: compares the backup with the keyboard (switching
     /// profiles after the user agreed to it), with the safety backup read
-    /// on the way.
+    /// on the way. `op` is the operation shown meanwhile: `restore_prepare`,
+    /// or `recovery_check` for a recovery (the plan is a restore plan either
+    /// way, written by `apply_restore` after the review).
     pub(crate) fn prepare_restore(
         &mut self,
         intent: &RestoreIntent,
         sink: Arc<dyn ProgressSink>,
+        op: OpKind,
     ) -> Result<RestorePreview, AppError> {
         self.check_writable()?;
         let (backup, kind, path) = load_backup(&self.shared, &intent.source)?;
@@ -168,78 +172,73 @@ impl<B: DeviceBackend> Worker<B> {
         check_device(&backup, device.as_ref(), intent.allow_firmware_mismatch)?;
         let source = summary_of(&intent.source, &backup, kind, &path, device.as_ref());
         self.invalidate(PlanInvalidation::Superseded);
-        self.run_op(
-            OpKind::RestorePrepare,
-            sink,
-            CancelPolicy::Boundaries,
-            |w, progress| {
-                let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
-                let active = read_active(session)?;
-                let switches: Vec<u8> = scope.iter().copied().filter(|p| *p != active).collect();
-                let confirmed: BTreeSet<u8> = intent.confirmed_switches.iter().copied().collect();
-                if confirmed.into_iter().collect::<Vec<_>>() != switches
-                    || intent.confirmed_switches.len() != switches.len()
-                {
-                    return Err(AppError::with(
-                        AppErrorKind::NeedsSwitchConsent,
-                        ErrorDetail::NeedsSwitchConsent { profiles: switches },
-                        "comparing switches profiles; confirm the switches first",
-                    ));
-                }
-                if !switches.is_empty() {
-                    w.ensure_quiet(progress)?;
-                }
-                let options = RestoreOptions {
-                    profiles: intent.profiles.as_ref().map(|_| {
-                        scope
-                            .iter()
-                            .filter_map(|p| ProfileId::new(*p))
-                            .collect::<ProfileSet>()
-                    }),
-                    allow_firmware_mismatch: intent.allow_firmware_mismatch,
-                    backup: w.config.backup_options(w.sim),
-                    write: WriteOptions::default(),
-                    import: None,
-                };
-                let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
-                let prepared =
-                    prepare_restore(session, &backup, &options, consent::application(), |p| {
-                        progress.write(p)
-                    });
-                let prepared = match prepared {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        if let Some(now) = error.active_profile_now() {
-                            w.active_profile = Some(now);
-                            if Some(now) != w.snapshot.as_ref().map(|s| s.profile) {
-                                w.reread = true;
-                            }
-                        }
-                        return Err(AppError::from(&error));
-                    }
-                };
-                let plan = prepared.plan();
-                let view = restore_plan_view(plan);
-                let skipped = plan.skips().count();
-                let has_writes = plan.has_writes();
-                let token = has_writes.then(|| {
-                    w.store_plan(
-                        PlanKind::Restore,
-                        PendingPlan::Restore {
-                            prepared: Box::new(prepared),
-                            skipped,
-                        },
-                    )
+        self.run_op(op, sink, CancelPolicy::Boundaries, |w, progress| {
+            let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
+            let active = read_active(session)?;
+            let switches: Vec<u8> = scope.iter().copied().filter(|p| *p != active).collect();
+            let confirmed: BTreeSet<u8> = intent.confirmed_switches.iter().copied().collect();
+            if confirmed.into_iter().collect::<Vec<_>>() != switches
+                || intent.confirmed_switches.len() != switches.len()
+            {
+                return Err(AppError::with(
+                    AppErrorKind::NeedsSwitchConsent,
+                    ErrorDetail::NeedsSwitchConsent { profiles: switches },
+                    "comparing switches profiles; confirm the switches first",
+                ));
+            }
+            if !switches.is_empty() {
+                w.ensure_quiet(progress)?;
+            }
+            let options = RestoreOptions {
+                profiles: intent.profiles.as_ref().map(|_| {
+                    scope
+                        .iter()
+                        .filter_map(|p| ProfileId::new(*p))
+                        .collect::<ProfileSet>()
+                }),
+                allow_firmware_mismatch: intent.allow_firmware_mismatch,
+                backup: w.config.backup_options(w.sim),
+                write: WriteOptions::default(),
+                import: None,
+            };
+            let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
+            let prepared =
+                prepare_restore(session, &backup, &options, consent::application(), |p| {
+                    progress.write(p)
                 });
-                Ok(RestorePreview {
-                    token,
-                    source,
-                    plan: view,
-                    nothing_to_write: !has_writes,
-                    switches,
-                })
-            },
-        )
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    if let Some(now) = error.active_profile_now() {
+                        w.active_profile = Some(now);
+                        if Some(now) != w.snapshot.as_ref().map(|s| s.profile) {
+                            w.reread = true;
+                        }
+                    }
+                    return Err(AppError::from(&error));
+                }
+            };
+            let plan = prepared.plan();
+            let view = restore_plan_view(plan);
+            let skipped = plan.skips().count();
+            let has_writes = plan.has_writes();
+            let token = has_writes.then(|| {
+                w.store_plan(
+                    PlanKind::Restore,
+                    PendingPlan::Restore {
+                        prepared: Box::new(prepared),
+                        skipped,
+                    },
+                )
+            });
+            Ok(RestorePreview {
+                token,
+                source,
+                plan: view,
+                nothing_to_write: !has_writes,
+                switches,
+            })
+        })
     }
 
     /// `apply_restore`: the confirmed plan, after its safety backup was
@@ -280,13 +279,29 @@ impl<B: DeviceBackend> Worker<B> {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            w.write_journal(kind, profiles, saved.path())?;
+            // An import changes only its chosen parts; a restore the whole
+            // profile.
+            let (tables, restore) = match prepared.options().import {
+                Some(import) => (super::recovery::import_tables(import.include), false),
+                None => super::recovery::tables_of(kind),
+            };
+            w.write_journal_of(kind, profiles, saved.path(), &tables, restore)?;
             progress.items = crate::map::sat16(prepared.plan().write_count());
             let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
             let report = execute_restore(session, prepared, &saved, consent::application(), |p| {
                 progress.write(p)
             });
             w.remove_journal();
+            let clean = super::recovery::completed_cleanly(
+                report.outcome,
+                report.lost(),
+                report.maybe_lost(),
+            );
+            w.own_write_done(clean);
+            if clean {
+                // What each profile written holds now: the backup's.
+                w.own_write_restored(prepared);
+            }
             w.active_profile = report.active_profile_now;
             // No read of the result after a reset, a lost connection or
             // when another program was heard (it acts on our replies).

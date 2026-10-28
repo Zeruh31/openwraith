@@ -42,6 +42,12 @@ pub struct ExportIntent {
     /// The user agreed to switch to `profile` and back (needed when it is
     /// not the active profile and the source is the keyboard).
     pub confirmed_switch: bool,
+    /// The categories the file holds; `null` (or left out by an older
+    /// frontend) = everything. The Share UI ticks all but dead band and
+    /// SOCD. Device info and the keyboard's constants are always kept. At
+    /// least one category.
+    #[serde(default)]
+    pub include: Option<ShareSelectionView>,
 }
 
 /// Where an export reads the profile.
@@ -52,7 +58,8 @@ pub enum ExportSource {
     /// The keyboard now (a profile that is not active is read by switching
     /// to it and back).
     Keyboard,
-    /// A backup file the app knows (no keyboard traffic).
+    /// A backup file the app knows (no keyboard traffic): a file the user
+    /// opened, a safety backup or an automatic backup.
     File {
         /// The file.
         file: FileToken,

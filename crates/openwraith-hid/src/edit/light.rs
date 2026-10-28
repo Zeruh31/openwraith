@@ -103,12 +103,12 @@ pub fn plan_light_edit<T: Transport>(
     let current_raw = session.request(ReadRequest::MainLight)?;
     let current = LightRecord::from_response(&current_raw).map_err(|e| invalid(e.to_string()))?;
     let mut target = current;
-    if let Some(mode) = edit.mode {
-        if mode != current.mode() {
-            target = target
-                .with_mode(mode)
-                .with_direction(LightRecord::default_direction(mode));
-        }
+    if let Some(mode) = edit.mode
+        && mode != current.mode()
+    {
+        target = target
+            .with_mode(mode)
+            .with_direction(LightRecord::default_direction(mode));
     }
     if let Some(color) = edit.foreground {
         target = target.with_foreground(color);

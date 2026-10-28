@@ -3,8 +3,10 @@
 //! rules.
 
 mod admission;
+mod auto;
 mod backup;
 mod bindings;
+mod coexist;
 mod commands_sync;
 mod connection;
 mod editors;
@@ -14,10 +16,13 @@ mod foreign;
 mod gate;
 mod generated;
 mod harness;
+mod hygiene;
 mod interleavings;
 mod keymap;
 mod light;
 mod profile;
+mod recovery;
+mod recovery_holds;
 mod restore;
 mod seeds;
 mod share;

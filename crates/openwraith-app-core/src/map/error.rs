@@ -2,8 +2,8 @@
 //! exhaustive: a new library error or kind breaks the build here.
 
 use openwraith_hid::{
-    BackupError, ErrorInfo, ErrorKind, ListenError, ProfilesError, ProfilesFailure, RestoreError,
-    SessionError, TransportError, WriteError,
+    BackupError, ErrorInfo, ErrorKind, KnownGoodError, ListenError, ProfilesError, ProfilesFailure,
+    RestoreError, SessionError, TransportError, WriteError,
 };
 
 use super::{foreign, sat8, sat16, table_ref};
@@ -125,6 +125,33 @@ impl From<&BackupError> for AppError {
             BackupError::TooLarge { path, .. } => Some(ErrorDetail::Io {
                 file_name: file_name(path),
             }),
+        };
+        make(error.kind(), detail, error)
+    }
+}
+
+impl From<&KnownGoodError> for AppError {
+    fn from(error: &KnownGoodError) -> Self {
+        let detail = match error {
+            KnownGoodError::Invalid(e) => return e.into(),
+            KnownGoodError::ProfileNotInBackup { profile, .. }
+            | KnownGoodError::DuplicateProfile { profile } => {
+                Some(ErrorDetail::ProfileNotInBackup { profile: *profile })
+            }
+            KnownGoodError::MixedFirmware { first, other } => Some(ErrorDetail::FirmwareMismatch {
+                backup: first.as_deref().map(super::clean),
+                keyboard: other.as_deref().map(super::clean),
+            }),
+            KnownGoodError::UnsupportedKeyboard { product } => {
+                Some(ErrorDetail::UnsupportedModel {
+                    product: product.as_deref().map(super::clean),
+                })
+            }
+            KnownGoodError::OtherKeyboard { .. }
+            | KnownGoodError::NoParts
+            | KnownGoodError::ExportedProfile { .. }
+            | KnownGoodError::NotSingleProfile { .. }
+            | KnownGoodError::NoProfile { .. } => None,
         };
         make(error.kind(), detail, error)
     }

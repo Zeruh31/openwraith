@@ -14,6 +14,7 @@ import { keysAdvanced as enKeysAdvanced } from "./en/keysAdvanced";
 import { keysAssign as enKeysAssign } from "./en/keysAssign";
 import { keysMacros as enKeysMacros } from "./en/keysMacros";
 import { lighting as enLighting } from "./en/lighting";
+import { native as enNative } from "./en/native";
 import { settings as enSettings } from "./en/settings";
 import { shell as enShell } from "./en/shell";
 import { actuation as trActuation } from "./tr/actuation";
@@ -27,6 +28,7 @@ import { keysAdvanced as trKeysAdvanced } from "./tr/keysAdvanced";
 import { keysAssign as trKeysAssign } from "./tr/keysAssign";
 import { keysMacros as trKeysMacros } from "./tr/keysMacros";
 import { lighting as trLighting } from "./tr/lighting";
+import { native as trNative } from "./tr/native";
 import { settings as trSettings } from "./tr/settings";
 import { shell as trShell } from "./tr/shell";
 import type { Lang, Messages, Namespace } from "./types";
@@ -47,6 +49,7 @@ const en = {
   keysAssign: enKeysAssign,
   keysMacros: enKeysMacros,
   keysAdvanced: enKeysAdvanced,
+  native: enNative,
 } satisfies Record<Namespace, unknown>;
 
 /** A full dictionary (all areas). */
@@ -66,6 +69,7 @@ const tr: Dict = {
   keysAssign: trKeysAssign,
   keysMacros: trKeysMacros,
   keysAdvanced: trKeysAdvanced,
+  native: trNative,
 };
 
 /** The dictionaries by language. */

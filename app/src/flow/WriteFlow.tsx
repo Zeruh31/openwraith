@@ -97,7 +97,14 @@ type Phase<P, R> =
   | { s: "apply_error"; plan: P; error: AppError };
 
 /** Operations whose failures may still have switched profiles. */
-const SWITCHING_KINDS: readonly OpKind[] = ["restore_prepare", "restore", "backup_all", "import_prepare", "import"];
+const SWITCHING_KINDS: readonly OpKind[] = [
+  "restore_prepare",
+  "restore",
+  "recovery_check",
+  "backup_all",
+  "import_prepare",
+  "import",
+];
 
 function ignore(): void {
   // Errors of best-effort calls (discard, cancel) are not shown.
@@ -481,6 +488,12 @@ export interface OperationRunnerProps<R> {
   onClose: (result: R | null) => void;
   /** An extra line under an error (e.g. "No backup file was saved."). */
   errorNote?: ((error: AppError) => ReactNode) | undefined;
+  /**
+   * What a failure may have changed on the keyboard. By default an export or
+   * a backup of every profile "may have switched profiles"; an export from a
+   * backup file never touches the keyboard and passes `"nothing"`.
+   */
+  written?: WrittenNote | undefined;
 }
 
 type RunPhase<R> = { s: "running" } | { s: "result"; result: R } | { s: "error"; error: AppError };
@@ -571,7 +584,10 @@ export function OperationRunner<R>(props: OperationRunnerProps<R>) {
         props.result(phase.result)
       ) : (
         <>
-          <ErrorView error={phase.error} written={props.kind === "backup_all" || props.kind === "export" ? "switches" : "nothing"} />
+          <ErrorView
+            error={phase.error}
+            written={props.written ?? (props.kind === "backup_all" || props.kind === "export" ? "switches" : "nothing")}
+          />
           {props.errorNote === undefined ? null : <p>{props.errorNote(phase.error)}</p>}
         </>
       )}

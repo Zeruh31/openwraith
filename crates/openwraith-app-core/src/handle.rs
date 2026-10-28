@@ -15,22 +15,29 @@ use std::time::Duration;
 use crate::backend::DeviceBackend;
 use crate::config::{CoreConfig, TESTED_FIRMWARE};
 use crate::dto::{
-    AllProfilesPreview, AppError, AppErrorKind, AppInfo, BackupFileSummary, BackupKind,
-    BackupSaved, CloseChoice, ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent,
+    AllProfilesPreview, AppError, AppErrorKind, AppInfo, AutoBackupEntry, AutoBackupsView,
+    AutoProfileRulesIntent, AutoProfileSettings, AutoProfileStateView, BackgroundSettingsApplied,
+    BackgroundSettingsIntent, BackgroundSettingsView, BackupFileSummary, BackupKind, BackupSaved,
+    CloseChoice, ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent,
     DeadBandEditPreview, DeadBandState, DepthStopReason, DepthStopRequest, DepthViewReport,
     DeviceId, DeviceSnapshot, DeviceStatus, EditReportView, ExportIntent, ExportedProfile, FileRef,
     FileToken, ImportIntent, ImportPreview, ImportSummaryView, InterruptedOp, KeymapEditIntent,
     KeymapEditPreview, KeysState, LastReport, LightEditIntent, LightEditPreview, MacroLibraryView,
-    MacroProgramView, OpId, PlanInvalidation, PlanToken, PlatformView, PresetEditIntent,
-    PresetsView, ProfileSwitchPreview, ProfileSwitchReport, RestoreIntent, RestorePreview,
-    RestoreReportView, RevealTarget, SafetyBackupEntry, SocdEditIntent, SocdEditPreview,
-    SocdStateView, TravelCloseReport, TriggerEditIntent, TriggerEditPreview, TriggerLimitsView,
-    UserPresetIntent,
+    MacroProgramView, Notice, OpId, PlanInvalidation, PlanToken, PlatformView, PresetEditIntent,
+    PresetsView, ProductProfileNamesView, ProfileNamesIntent, ProfileNamesView,
+    ProfileSwitchPreview, ProfileSwitchReport, ProgramView, RecoveryIntent, RecoveryView,
+    RestoreIntent, RestorePreview, RestoreReportView, RevealTarget, SafetyBackupEntry,
+    SocdEditIntent, SocdEditPreview, SocdStateView, TravelCloseReport, TriggerEditIntent,
+    TriggerEditPreview, TriggerLimitsView, UiStateReport, UserPresetIntent,
 };
 use crate::files::{FileKind, list_safety, safety_entry};
 use crate::ops::journal;
 use crate::shared::{Shared, lock};
-use crate::sink::{DepthSink, EventSink, ExitHook, ProgressSink};
+use crate::shell::{ForegroundProgram, OpenReason, TrayAction, TrayModel, TrayOutcome};
+use crate::sink::{
+    DepthSink, EventSink, ExitHook, NotificationSink, ProgramSource, ProgressSink, ShellHook,
+    TraySink,
+};
 use crate::worker::request::Reply;
 use crate::worker::{Envelope, Request, Worker};
 
@@ -91,6 +98,49 @@ pub(crate) fn interrupted(shared: &Shared, config: &CoreConfig) -> Option<Interr
     })
 }
 
+/// At start: an unreadable settings file is kept aside (the defaults are
+/// used) and the first subscriber is told (`Notice::SettingsFileInvalid`).
+pub(crate) fn check_settings_file(shared: &Shared, config: &CoreConfig) {
+    if let Some(kept_as) = config
+        .settings_path
+        .as_deref()
+        .and_then(crate::settings::quarantine_invalid)
+    {
+        shared.set_start_notice(Some(Notice::SettingsFileInvalid { kept_as }));
+    }
+}
+
+/// Loads the per-game rules and the background settings into the automatic
+/// profiles' state (at start; tests call it after changing the file).
+pub(crate) fn load_auto(shared: &Shared, config: &CoreConfig) {
+    let path = config.settings_path.as_deref();
+    let settings = path.map(crate::settings::auto_profile).unwrap_or_default();
+    let background = path.map(crate::settings::background).unwrap_or_default();
+    let now = shared.now();
+    let mut auto = shared.auto();
+    auto.settings_path = config.settings_path.clone();
+    auto.forget_names();
+    auto.load(now, settings, background);
+}
+
+/// The profile names as a view: every product with names, and the current
+/// one (four entries each).
+fn profile_names_view(
+    current: Option<String>,
+    mut all: std::collections::BTreeMap<String, Vec<Option<String>>>,
+) -> ProfileNamesView {
+    if let Some(product) = &current {
+        all.entry(product.clone()).or_insert_with(|| vec![None; 4]);
+    }
+    ProfileNamesView {
+        current_product: current,
+        products: all
+            .into_iter()
+            .map(|(product, names)| ProductProfileNamesView { product, names })
+            .collect(),
+    }
+}
+
 impl WorkerHandle {
     /// Starts the worker thread; `make_backend` runs inside it.
     fn spawn<B, F>(
@@ -106,6 +156,8 @@ impl WorkerHandle {
     {
         let shared = Arc::new(Shared::new(app_info(&config, sim), exit, config.token_seed));
         shared.set_interrupted(interrupted(&shared, &config));
+        check_settings_file(&shared, &config);
+        load_auto(&shared, &config);
         // A live key-depth view of an earlier run whose close was never
         // acknowledged (or that crashed): the keyboard may still stream.
         shared.set_travel_marker_left(crate::ops::travel::marker_left(&config));
@@ -256,10 +308,15 @@ impl WorkerHandle {
     /// plan.
     pub fn subscribe(&self, sink: Arc<dyn EventSink>) -> DeviceStatus {
         self.shared.set_subscriber(sink);
+        // A reloaded window has no drafts and no vendor-site tick any more.
+        self.shared.auto().ui = UiStateReport::default();
         self.shared.stop_depth(DepthStopReason::ChannelClosed);
         self.post(Request::InvalidatePlan {
             reason: PlanInvalidation::Resubscribed,
         });
+        if let Some(notice) = self.shared.take_start_notice() {
+            self.shared.notice(notice);
+        }
         self.shared.status()
     }
 
@@ -398,6 +455,383 @@ impl WorkerHandle {
                 AppError::new(AppErrorKind::Io, "this build has no settings file")
             })?;
         crate::settings::reset_hints_shown(path)
+    }
+
+    // ----- automatic backups and recovery -----
+
+    /// `list_auto_backups`: the automatic backups of the keyboard read last
+    /// (else of every keyboard in the store), newest first.
+    pub fn list_auto_backups(&self) -> AutoBackupsView {
+        crate::ops::recovery::list_auto_backups(&self.shared, &self.config)
+    }
+
+    /// `pin_auto_backup`: keeps (`pinned`) or no longer keeps an automatic
+    /// backup; a pinned one is never deleted.
+    pub fn pin_auto_backup(
+        &self,
+        file: &FileToken,
+        pinned: bool,
+    ) -> Result<AutoBackupsView, AppError> {
+        crate::ops::recovery::pin_auto_backup(&self.shared, &self.config, file, pinned)
+    }
+
+    /// `get_recovery`: the Recovery card (no traffic).
+    pub fn get_recovery(&self) -> RecoveryView {
+        crate::ops::recovery::get_recovery(&self.shared, &self.config)
+    }
+
+    /// `keep_current_settings` ("It's fine, keep them"): the reads held
+    /// after a suspected reset become the automatic backups of `profiles`
+    /// (every held profile when empty). Nothing is sent to the keyboard.
+    pub fn keep_current_settings(&self, profiles: &[u8]) -> Result<RecoveryView, AppError> {
+        crate::ops::recovery::keep_current_settings(&self.shared, &self.config, profiles)
+    }
+
+    /// `prepare_recovery`: compares automatic backups with the keyboard
+    /// (the standard restore's comparison; `apply_restore` writes the plan
+    /// after the review).
+    pub fn prepare_recovery(
+        &self,
+        intent: RecoveryIntent,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<RestorePreview, AppError> {
+        self.call(|reply| Request::PrepareRecovery {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    // ----- background settings and profile names -----
+
+    fn settings_file(&self) -> Result<&Path, AppError> {
+        self.config
+            .settings_path
+            .as_deref()
+            .ok_or_else(|| AppError::new(AppErrorKind::Io, "this build has no settings file"))
+    }
+
+    /// Registers how the shell applies changed background settings (the
+    /// tray icon, the Run entry). Called once by the Tauri glue.
+    pub fn set_shell_hook(&self, hook: Arc<dyn ShellHook>) {
+        self.shared.set_shell(hook);
+    }
+
+    /// `get_background_settings`.
+    pub fn background_settings(&self) -> BackgroundSettingsView {
+        self.config
+            .settings_path
+            .as_deref()
+            .map(crate::settings::background)
+            .unwrap_or_default()
+    }
+
+    /// `set_background_settings`: validates and saves them, then has the
+    /// shell apply what changed (the tray, start with Windows; through the
+    /// registered [`ShellHook`]). Without the tray there is no start with
+    /// Windows.
+    pub fn set_background_settings(
+        &self,
+        intent: &BackgroundSettingsIntent,
+    ) -> Result<BackgroundSettingsApplied, AppError> {
+        let (settings, shell) = crate::settings::set_background(self.settings_file()?, intent)?;
+        // The tray mode (the 180 s rule) and the notifications follow.
+        self.shared.auto().background = settings;
+        let shell_error = match self.shared.shell() {
+            Some(hook) if !shell.is_empty() => hook.apply(&shell).err(),
+            _ => None,
+        };
+        Ok(BackgroundSettingsApplied {
+            settings,
+            shell,
+            shell_error,
+        })
+    }
+
+    /// Remembers that the first close to the tray was explained (the glue
+    /// shows that notification once).
+    pub fn mark_close_to_tray_explained(&self) -> Result<(), AppError> {
+        crate::settings::mark_close_to_tray_explained(self.settings_file()?)
+    }
+
+    /// The per-game rules as stored (Settings > Games; off by default).
+    /// The commands of the automatic profiles use it.
+    pub fn auto_profile_settings(&self) -> AutoProfileSettings {
+        self.config
+            .settings_path
+            .as_deref()
+            .map(crate::settings::auto_profile)
+            .unwrap_or_default()
+    }
+
+    /// Validates and saves the per-game rules (at most 64; unique ids;
+    /// program file names; profiles 1-4); returns them as saved.
+    pub fn save_auto_profile_settings(
+        &self,
+        settings: &AutoProfileSettings,
+    ) -> Result<AutoProfileSettings, AppError> {
+        crate::settings::set_auto_profile(self.settings_file()?, settings)
+    }
+
+    /// The product of the keyboard read last, if any.
+    fn current_product(&self) -> Option<String> {
+        self.shared
+            .snapshot()
+            .and_then(|s| s.device.product)
+            .or_else(|| {
+                self.shared
+                    .known_good()
+                    .device
+                    .as_ref()
+                    .and_then(|d| d.product.clone())
+            })
+    }
+
+    /// `get_profile_names`: the local names of every product's profiles.
+    pub fn profile_names(&self) -> ProfileNamesView {
+        let all = self
+            .config
+            .settings_path
+            .as_deref()
+            .map(crate::settings::profile_names)
+            .unwrap_or_default();
+        profile_names_view(self.current_product(), all)
+    }
+
+    /// `set_profile_names`: names the four profiles of a product (local to
+    /// this PC; nothing is sent to the keyboard).
+    pub fn set_profile_names(
+        &self,
+        names: &ProfileNamesIntent,
+    ) -> Result<ProfileNamesView, AppError> {
+        let all = crate::settings::set_profile_names(
+            self.settings_file()?,
+            &names.product,
+            &names.names,
+        )?;
+        // The tray shows the names.
+        self.shared.auto().forget_names();
+        self.shared.republish();
+        Ok(profile_names_view(self.current_product(), all))
+    }
+
+    // ----- per-game automatic profiles (Settings > Games) -----
+
+    /// `get_auto_profile_state`: the rules, the live status line and the
+    /// recent activity (no traffic).
+    pub fn auto_profile_state(&self) -> AutoProfileStateView {
+        let available = self.shared.programs().is_some();
+        self.shared.auto().state_view(available)
+    }
+
+    /// `set_auto_profile_rules`: replaces the per-game rules (programs by
+    /// token, by typed file name or kept from the rule with the same id;
+    /// validated: at most 64 rules, profiles 1-4). Creating a rule is the
+    /// user's consent for it; the engine uses the new rules at once.
+    pub fn set_auto_profile_rules(
+        &self,
+        intent: &AutoProfileRulesIntent,
+    ) -> Result<AutoProfileStateView, AppError> {
+        let path = self.settings_file()?;
+        let stored = crate::settings::auto_profile(path);
+        let rules = {
+            let auto = self.shared.auto();
+            crate::auto::programs::rules_from_intent(intent, &stored, &auto.programs)?
+        };
+        let saved = crate::settings::set_auto_profile(path, &rules)?;
+        let now = self.shared.now();
+        {
+            let mut auto = self.shared.auto();
+            let background = auto.background;
+            auto.load(now, saved, background);
+        }
+        self.emit_auto();
+        self.shared.republish();
+        Ok(self.auto_profile_state())
+    }
+
+    /// `pause_auto_profile`: pauses (`true`) or resumes the automatic
+    /// profiles for this run (also after the automation paused itself:
+    /// too many switches, a failed switch).
+    pub fn pause_auto_profile(&self, paused: bool) -> AutoProfileStateView {
+        self.shared.auto().engine.set_paused(paused);
+        self.emit_auto();
+        self.shared.republish();
+        self.auto_profile_state()
+    }
+
+    /// Records and sends what the engine reported after a direct command.
+    fn emit_auto(&self) {
+        let events = self.shared.auto().engine.take_events();
+        let at = openwraith_hid::rfc3339_utc(self.config.now());
+        crate::auto::emit(&self.shared, &self.config.state_dir, events, &at);
+    }
+
+    /// `list_running_programs`: the running programs (from the glue's
+    /// [`ProgramSource`]; empty without one), each with a token.
+    pub fn list_running_programs(&self) -> Vec<ProgramView> {
+        let Some(source) = self.shared.programs() else {
+            return Vec::new();
+        };
+        let running = crate::auto::programs::running(source.running_programs(), std::process::id());
+        let mut auto = self.shared.auto();
+        let mut mint = self.shared.mint();
+        running
+            .into_iter()
+            .map(|program| auto.programs.view(&mut mint, program))
+            .collect()
+    }
+
+    /// `pick_game_program`: the program the user chose in the (Rust) open
+    /// dialog, with a token.
+    pub fn register_program(&self, path: &Path) -> Result<ProgramView, AppError> {
+        // The path the platform will report for the running program: links,
+        // junctions and SUBST drives resolved (the given path when that
+        // fails).
+        let path = crate::files::canonical_program_path(path);
+        let text = path.to_string_lossy();
+        let program = crate::auto::programs::program_of(None, Some(&text)).ok_or_else(|| {
+            AppError::new(
+                AppErrorKind::InvalidRequest,
+                "the chosen file is not a program",
+            )
+        })?;
+        let mut auto = self.shared.auto();
+        let mut mint = self.shared.mint();
+        Ok(auto.programs.view(&mut mint, program))
+    }
+
+    /// `detect_next_program`: waits (at most `timeout`; the command passes
+    /// 30 s) for the next program that comes to the front (not the one in
+    /// front now, not OpenWraith); `None` when none did.
+    pub fn detect_next_program(&self, timeout: Duration) -> Option<ProgramView> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        let id = self.shared.auto().start_detect(reply);
+        let found = answer.recv_timeout(timeout).ok();
+        if found.is_none() {
+            self.shared.auto().stop_detect(id);
+        }
+        let found = found?;
+        let program =
+            crate::auto::programs::program_of(found.exe.as_deref(), found.path.as_deref())?;
+        let mut auto = self.shared.auto();
+        let mut mint = self.shared.mint();
+        Some(auto.programs.view(&mut mint, program))
+    }
+
+    /// `report_ui_state`: the frontend has drafts / the vendor-site
+    /// acknowledgement of this run (reset by every `subscribe`).
+    pub fn report_ui_state(&self, state: UiStateReport) {
+        self.shared.auto().ui = state;
+    }
+
+    // ----- the platform feed and the shell (the Tauri glue) -----
+
+    /// The program in front changed (`None`: nothing is known about it).
+    /// The glue's foreground thread calls it about once a second (repeating
+    /// the same program changes nothing).
+    pub fn foreground_changed(&self, program: Option<ForegroundProgram>) {
+        let now = self.shared.now();
+        self.shared.auto().foreground(now, program);
+    }
+
+    /// The processes whose exit the automatic profiles wait for; the glue
+    /// checks them (about once a second) and reports
+    /// [`process_exited`](Self::process_exited).
+    pub fn auto_watched_pids(&self) -> Vec<u32> {
+        self.shared.auto().engine.watched_pids()
+    }
+
+    /// A watched process is gone.
+    pub fn process_exited(&self, pid: u32) {
+        let now = self.shared.now();
+        self.shared.auto().engine.process_exited(now, pid);
+    }
+
+    /// Registers the running-programs source (once, by the glue).
+    pub fn set_program_source(&self, source: Arc<dyn ProgramSource>) {
+        self.shared.set_programs(source);
+    }
+
+    /// Registers the OS notification sink (once, by the glue).
+    pub fn set_notification_sink(&self, sink: Arc<dyn NotificationSink>) {
+        self.shared.set_notifications(sink);
+    }
+
+    /// Registers the tray sink (once, by the glue); it gets the current
+    /// model at once and every change after.
+    pub fn set_tray_sink(&self, sink: Arc<dyn TraySink>) {
+        self.shared.set_tray(sink);
+    }
+
+    /// The tray model now.
+    pub fn tray_model(&self) -> TrayModel {
+        let status = self.shared.status();
+        self.shared.tray_model(&status)
+    }
+
+    /// A click in the tray menu (called on a blocking thread: a profile
+    /// switch and "Back up now" are operations). A profile item is a manual
+    /// switch through the profile switch's prepare and apply, unless drafts
+    /// exist, a plan is pending, writes are blocked or this run has no
+    /// vendor-site acknowledgement yet: then the window opens instead.
+    pub fn tray_action(&self, action: TrayAction) -> TrayOutcome {
+        use crate::auto::notify::{ROUTE_BACKUPS, ROUTE_DEVICE, ROUTE_RECOVERY};
+        let open = |route: &str, reason| TrayOutcome::OpenWindow {
+            route: route.to_string(),
+            reason,
+        };
+        match action {
+            TrayAction::SwitchProfile(profile) => {
+                let status = self.shared.status();
+                let ui = self.shared.auto().ui;
+                let plan = self.shared.plan_pending.load(Ordering::SeqCst);
+                if let Some(outcome) = crate::auto::tray::profile_click(profile, &status, &ui, plan)
+                {
+                    return outcome;
+                }
+                let preview = match self.prepare_profile_switch(profile) {
+                    Ok(preview) => preview,
+                    Err(error) if error.kind == AppErrorKind::OperationRunning => {
+                        return open(ROUTE_DEVICE, OpenReason::WritesBlocked);
+                    }
+                    Err(_) => return open(ROUTE_DEVICE, OpenReason::Failed),
+                };
+                let Some(token) = preview.token else {
+                    return TrayOutcome::NothingToDo;
+                };
+                match self.apply_profile_switch(token, Arc::new(crate::sink::NoProgress)) {
+                    Ok(_) => TrayOutcome::Done,
+                    Err(_) => open(ROUTE_DEVICE, OpenReason::Failed),
+                }
+            }
+            TrayAction::SetAutoPaused(paused) => {
+                self.pause_auto_profile(paused);
+                TrayOutcome::Done
+            }
+            TrayAction::BackUpNow => match self.back_up_now() {
+                Ok(Some(_)) => TrayOutcome::Done,
+                Ok(None) => open(ROUTE_RECOVERY, OpenReason::NeedsWindow),
+                Err(error) if error.kind == AppErrorKind::OperationRunning => {
+                    open(ROUTE_BACKUPS, OpenReason::WritesBlocked)
+                }
+                Err(_) => open(ROUTE_BACKUPS, OpenReason::Failed),
+            },
+            TrayAction::Attention(item) => match crate::auto::tray::attention_route(item) {
+                Some(route) => open(route, OpenReason::NeedsWindow),
+                None => match self.recheck_other_program() {
+                    Ok(()) => TrayOutcome::Done,
+                    Err(_) => open(ROUTE_DEVICE, OpenReason::Failed),
+                },
+            },
+        }
+    }
+
+    /// "Back up now" (the tray): an automatic backup of the active profile
+    /// (no switching); `None` when the profile looks reset (the Recovery
+    /// card first).
+    pub fn back_up_now(&self) -> Result<Option<AutoBackupEntry>, AppError> {
+        self.call(|reply| Request::BackUpNow { reply })
     }
 
     /// `stop_depth_view`: asks the live key-depth view to stop (the window
@@ -566,6 +1000,19 @@ impl WorkerHandle {
     pub fn reveal_path(&self, target: &RevealTarget) -> Result<PathBuf, AppError> {
         match target {
             RevealTarget::SafetyDir => self.config.safety_dir.clone(),
+            RevealTarget::AutoBackupDir => {
+                let root = self.config.known_good_dir();
+                let key = self
+                    .shared
+                    .known_good()
+                    .device
+                    .as_ref()
+                    .map(|d| d.key.clone());
+                Ok(match key {
+                    Some(key) => crate::autobackup::device_dir(&root, &key),
+                    None => root,
+                })
+            }
             RevealTarget::LegalNotices => self
                 .config
                 .legal_dir
@@ -902,10 +1349,10 @@ impl WorkerHandle {
             request: Request::Shutdown { reply },
             admitted: false,
         });
-        if done.recv_timeout(SHUTDOWN_WAIT).is_ok() {
-            if let Some(join) = lock(&self.join).take() {
-                let _ = join.join();
-            }
+        if done.recv_timeout(SHUTDOWN_WAIT).is_ok()
+            && let Some(join) = lock(&self.join).take()
+        {
+            let _ = join.join();
         }
     }
 

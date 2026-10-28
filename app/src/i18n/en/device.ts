@@ -22,6 +22,8 @@ export const device = {
     reading: "Reading the keyboard's settings. This takes a few seconds.",
     readFailed: "OpenWraith couldn't read the keyboard's settings. Nothing was written.",
     ready: "Connected. OpenWraith listens to the keyboard and sends nothing while you aren't changing anything.",
+    pausedForCli:
+      "Connected, and paused: an OpenWraith command (the command-line tool) is using the keyboard. OpenWraith sends nothing until it has finished, then reads the keyboard again.",
     lost: "The keyboard was disconnected. Plug it in again; OpenWraith reconnects automatically.",
     resetSeen:
       "The keyboard reset itself to factory settings (Fn + Space). OpenWraith stopped and sent nothing. Read the keyboard again to continue.",

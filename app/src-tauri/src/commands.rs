@@ -7,22 +7,27 @@
 //! `operation_running`.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use openwraith_app_core::WorkerHandle;
 use openwraith_app_core::dto::{
-    AllProfilesPreview, AppError, AppEvent, AppInfo, BackupFileSummary, BackupKind, BackupSaved,
-    CloseChoice, ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent,
-    DeadBandEditPreview, DeadBandState, DepthFrame, DepthStopRequest, DepthViewReport, DeviceId,
-    DeviceSnapshot, DeviceStatus, DialogText, EditReportView, ExportIntent, ExportedProfile,
-    FileRef, FileToken, ImportIntent, ImportPreview, ImportSummaryView, KeymapEditIntent,
-    KeymapEditPreview, KeysState, LastReport, LightEditIntent, LightEditPreview, MacroLibraryView,
-    MacroProgramView, OpId, PlanToken, PresetEditIntent, PresetsView, ProfileSwitchPreview,
-    ProfileSwitchReport, ProgressEvent, RestoreIntent, RestorePreview, RestoreReportView,
-    RevealTarget, SafetyBackupEntry, Settings, SocdEditIntent, SocdEditPreview, SocdStateView,
-    ThemeSetting, TravelCloseReport, TriggerEditIntent, TriggerEditPreview, UserPresetIntent,
+    AllProfilesPreview, AppError, AppEvent, AppInfo, AutoBackupsView, AutoProfileRulesIntent,
+    AutoProfileStateView, BackgroundSettingsApplied, BackgroundSettingsIntent,
+    BackgroundSettingsView, BackupFileSummary, BackupKind, BackupSaved, CloseChoice,
+    ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent, DeadBandEditPreview,
+    DeadBandState, DepthFrame, DepthStopRequest, DepthViewReport, DeviceId, DeviceSnapshot,
+    DeviceStatus, DialogText, EditReportView, ExportIntent, ExportedProfile, FileRef, FileToken,
+    ImportIntent, ImportPreview, ImportSummaryView, KeymapEditIntent, KeymapEditPreview, KeysState,
+    LastReport, LightEditIntent, LightEditPreview, MacroLibraryView, MacroProgramView, OpId,
+    PlanToken, PresetEditIntent, PresetsView, ProfileNamesIntent, ProfileNamesView,
+    ProfileSwitchPreview, ProfileSwitchReport, ProgramView, ProgressEvent, RecoveryIntent,
+    RecoveryView, RestoreIntent, RestorePreview, RestoreReportView, RevealTarget,
+    SafetyBackupEntry, Settings, SocdEditIntent, SocdEditPreview, SocdStateView, ThemeSetting,
+    TravelCloseReport, TriggerEditIntent, TriggerEditPreview, UiStateReport, UserPresetIntent,
 };
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Runtime, State, WebviewWindow};
+use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dialogs;
@@ -76,7 +81,7 @@ pub fn get_settings(state: State<'_, SettingsState>) -> Settings {
 }
 
 /// `set_settings`: saved atomically; the native title bar follows the
-/// theme.
+/// theme, the tray menu the language.
 #[tauri::command]
 pub async fn set_settings<R: Runtime>(
     settings: Settings,
@@ -89,6 +94,8 @@ pub async fn set_settings<R: Runtime>(
         *value = settings;
     }
     let _ = window.set_theme(native_theme(settings.theme));
+    // The tray menu follows the language.
+    crate::tray::refresh(window.app_handle());
     Ok(settings)
 }
 
@@ -194,7 +201,10 @@ pub async fn reveal<R: Runtime>(
     let worker = Arc::clone(worker.inner());
     blocking(move || {
         let path = worker.reveal_path(&target)?;
-        if matches!(target, RevealTarget::SafetyDir) {
+        if matches!(
+            target,
+            RevealTarget::SafetyDir | RevealTarget::AutoBackupDir
+        ) {
             std::fs::create_dir_all(&path).map_err(|e| {
                 AppError::new(
                     openwraith_app_core::dto::AppErrorKind::Io,
@@ -700,6 +710,182 @@ pub async fn mark_hint_shown(hint: String, worker: Worker<'_>) -> Result<Vec<Str
 pub async fn reset_hints_shown(worker: Worker<'_>) -> Result<Vec<String>, AppError> {
     let worker = Arc::clone(worker.inner());
     blocking(move || worker.reset_hints_shown()).await
+}
+
+// ----- automatic backups and recovery -----
+
+/// `list_auto_backups`: the automatic backups of the keyboard read last
+/// (else of every keyboard in the store), newest first.
+#[tauri::command]
+pub async fn list_auto_backups(worker: Worker<'_>) -> Result<AutoBackupsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.list_auto_backups())).await
+}
+
+/// `pin_auto_backup`: keeps (or no longer keeps) an automatic backup.
+#[tauri::command]
+pub async fn pin_auto_backup(
+    file: FileToken,
+    pinned: bool,
+    worker: Worker<'_>,
+) -> Result<AutoBackupsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.pin_auto_backup(&file, pinned)).await
+}
+
+/// `get_recovery`: the Recovery card (no keyboard traffic).
+#[tauri::command]
+pub async fn get_recovery(worker: Worker<'_>) -> Result<RecoveryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.get_recovery())).await
+}
+
+/// `keep_current_settings` ("It's fine, keep them"): nothing is sent to
+/// the keyboard.
+#[tauri::command]
+pub async fn keep_current_settings(
+    profiles: Vec<u8>,
+    worker: Worker<'_>,
+) -> Result<RecoveryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.keep_current_settings(&profiles)).await
+}
+
+/// `prepare_recovery`: the standard restore comparison of automatic
+/// backups; `apply_restore` writes the plan after the review.
+#[tauri::command]
+pub async fn prepare_recovery(
+    intent: RecoveryIntent,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<RestorePreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.prepare_recovery(intent, sink)).await
+}
+
+// ----- background settings and profile names -----
+
+/// `get_background_settings`.
+#[tauri::command]
+pub async fn get_background_settings(
+    worker: Worker<'_>,
+) -> Result<BackgroundSettingsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.background_settings())).await
+}
+
+/// `set_background_settings`: saved, then applied to the shell through the
+/// core's shell hook (when the glue registered one).
+#[tauri::command]
+pub async fn set_background_settings(
+    settings: BackgroundSettingsIntent,
+    worker: Worker<'_>,
+) -> Result<BackgroundSettingsApplied, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.set_background_settings(&settings)).await
+}
+
+/// `get_profile_names`: the local profile names.
+#[tauri::command]
+pub async fn get_profile_names(worker: Worker<'_>) -> Result<ProfileNamesView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.profile_names())).await
+}
+
+/// `set_profile_names`: names a product's four profiles (local to this PC).
+#[tauri::command]
+pub async fn set_profile_names(
+    names: ProfileNamesIntent,
+    worker: Worker<'_>,
+) -> Result<ProfileNamesView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.set_profile_names(&names)).await
+}
+
+// ----- per-game automatic profiles (Settings > Games) -----
+
+/// How long `detect_next_program` waits for a program.
+const DETECT_WAIT: Duration = Duration::from_secs(30);
+
+/// `get_auto_profile_state`: the rules, the live status line and the recent
+/// activity (no keyboard traffic).
+#[tauri::command]
+pub fn get_auto_profile_state(worker: Worker<'_>) -> AutoProfileStateView {
+    worker.auto_profile_state()
+}
+
+/// `set_auto_profile_rules`: replaces the per-game rules (programs by
+/// token; paths stay in Rust).
+#[tauri::command]
+pub async fn set_auto_profile_rules(
+    rules: AutoProfileRulesIntent,
+    worker: Worker<'_>,
+) -> Result<AutoProfileStateView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.set_auto_profile_rules(&rules)).await
+}
+
+/// `pause_auto_profile`: pauses or resumes the automatic profiles (this
+/// run).
+#[tauri::command]
+pub fn pause_auto_profile(paused: bool, worker: Worker<'_>) -> AutoProfileStateView {
+    worker.pause_auto_profile(paused)
+}
+
+/// `list_running_programs`: the running programs, by token.
+#[tauri::command]
+pub async fn list_running_programs(worker: Worker<'_>) -> Result<Vec<ProgramView>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.list_running_programs())).await
+}
+
+/// `pick_game_program`: the open dialog for a program (`*.exe`); `null`
+/// when cancelled. The path stays in Rust; the frontend gets a token.
+#[tauri::command]
+pub async fn pick_game_program<R: Runtime>(
+    dialog: DialogText,
+    app: AppHandle<R>,
+    worker: Worker<'_>,
+) -> Result<Option<ProgramView>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_title(dialog.title.clone())
+            .add_filter(dialog.filter.clone(), &["exe"]);
+        if let Some(window) = app.get_webview_window("main") {
+            builder = builder.set_parent(&window);
+        }
+        let Some(chosen) = builder.blocking_pick_file() else {
+            return Ok(None);
+        };
+        let path = chosen.into_path().map_err(|e| {
+            AppError::new(
+                openwraith_app_core::dto::AppErrorKind::Io,
+                format!("the chosen file has no usable path: {e}"),
+            )
+        })?;
+        worker.register_program(&path).map(Some)
+    })
+    .await
+}
+
+/// `detect_next_program`: the next program that comes to the front within
+/// 30 s (not the one in front now, not OpenWraith); `null` when none did.
+#[tauri::command]
+pub async fn detect_next_program(worker: Worker<'_>) -> Result<Option<ProgramView>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.detect_next_program(DETECT_WAIT))).await
+}
+
+/// `report_ui_state`: drafts and the vendor-site acknowledgement of this
+/// run (the automatic profiles wait for drafts; a tray profile click opens
+/// the window without the acknowledgement).
+#[tauri::command]
+pub fn report_ui_state(state: UiStateReport, worker: Worker<'_>) {
+    worker.report_ui_state(state);
 }
 
 // ----- developer simulator (simulator builds only) -----

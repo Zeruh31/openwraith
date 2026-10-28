@@ -1,7 +1,8 @@
 // Hash routes: `#/device` (default), `#/keys`, `#/actuation`, `#/lighting`,
 // `#/backup`, `#/settings`, with optional query parameters (`#/backup?restore=<FileToken>`
 // opens a backup for restoring: Undo and the interrupted-operation banner;
-// `#/keys?tab=macros` opens a page's tab).
+// `#/keys?tab=macros` opens a page's tab; `#/backup?recover=1` opens the
+// Recovery card; `#/settings?tab=games` opens Settings > Games).
 
 import { useSyncExternalStore } from "react";
 
@@ -26,6 +27,7 @@ export const PAGE_TABS = {
   keys: ["assign", "macros", "advanced"],
   actuation: ["trigger", "deadband", "socd", "depth"],
   lighting: ["effect", "colors"],
+  settings: ["general", "background", "games", "profiles", "about"],
 } as const satisfies Partial<Record<PageId, readonly string[]>>;
 
 /** A page with tabs. */

@@ -44,4 +44,19 @@ describe("Windows high contrast", () => {
     expect(body).toContain("forced-color-adjust: none;");
     expect(body).toContain("border: 1px solid CanvasText;");
   });
+
+  it("draws the state of on/off switches with system colours", () => {
+    const media = componentsCss.indexOf("@media (forced-colors: active) {\n  .ow-switch {");
+    expect(media).toBeGreaterThanOrEqual(0);
+    expect(rule(componentsCss, ".ow-switch", media)).toContain("border-color: ButtonText;");
+    const thumb = rule(componentsCss, ".ow-switch__thumb", media);
+    expect(thumb).toContain("forced-color-adjust: none;");
+    expect(thumb).toContain("background: ButtonText;");
+    const on = rule(componentsCss, '.ow-switch[aria-checked="true"]', media);
+    expect(on).toContain("background: Highlight;");
+    expect(rule(componentsCss, '.ow-switch[aria-checked="true"] .ow-switch__thumb', media)).toContain(
+      "background: HighlightText;",
+    );
+    expect(rule(componentsCss, ".ow-switch:disabled .ow-switch__thumb", media)).toContain("background: GrayText;");
+  });
 });

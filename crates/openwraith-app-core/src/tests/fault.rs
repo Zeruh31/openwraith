@@ -71,14 +71,13 @@ struct PanicWhileReading {
 
 impl EventSink for PanicWhileReading {
     fn send(&self, event: AppEvent) {
-        if let AppEvent::Status { status } = &event {
-            if matches!(status.connection, ConnectionState::Reading { .. })
-                && self.armed.swap(false, Ordering::SeqCst)
+        if let AppEvent::Status { status } = &event
+            && matches!(status.connection, ConnectionState::Reading { .. })
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            #[allow(clippy::panic)]
             {
-                #[allow(clippy::panic)]
-                {
-                    panic!("injected subscriber panic");
-                }
+                panic!("injected subscriber panic");
             }
         }
     }
@@ -163,13 +162,12 @@ struct StopDuringReading {
 
 impl EventSink for StopDuringReading {
     fn send(&self, event: AppEvent) {
-        if let AppEvent::Status { status } = &event {
-            if matches!(status.connection, ConnectionState::Reading { .. }) {
-                if let Some(handle) = self.handle.lock().unwrap().take() {
-                    handle.answer_close(CloseChoice::StopAndClose);
-                    *self.busy_at_answer.lock().unwrap() = Some(true);
-                }
-            }
+        if let AppEvent::Status { status } = &event
+            && matches!(status.connection, ConnectionState::Reading { .. })
+            && let Some(handle) = self.handle.lock().unwrap().take()
+        {
+            handle.answer_close(CloseChoice::StopAndClose);
+            *self.busy_at_answer.lock().unwrap() = Some(true);
         }
     }
 }

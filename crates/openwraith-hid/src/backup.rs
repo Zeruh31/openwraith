@@ -76,6 +76,7 @@ use openwraith_protocol::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{BackupError, ListenError, SessionError};
+use crate::restore::ImportSelection;
 use crate::session::{ForeignActivity, Session};
 use crate::summary::identify;
 use crate::transport::{Transport, UsbInfo};
@@ -977,13 +978,83 @@ impl Backup {
         profile: ProfileId,
         label: Option<&str>,
     ) -> Result<Backup, BackupError> {
+        self.export_with(profile, label, ImportSelection::ALL)
+    }
+
+    /// [`export_profile`](Self::export_profile) with only the chosen parts
+    /// of the profile ([`ImportSelection::includes_request`]): the replies
+    /// of the other categories are left out, so an import of the file finds
+    /// nothing to write for them (they are "not in the file"). Device info,
+    /// status, the active profile and the device constants are always kept
+    /// (the import checks the keyboard model and the distance unit with
+    /// them). The note names the parts. Pure; nothing is read from a
+    /// keyboard. An empty selection is refused.
+    pub fn export_profile_parts(
+        &self,
+        profile: ProfileId,
+        label: Option<&str>,
+        include: ImportSelection,
+    ) -> Result<Backup, BackupError> {
+        if include.is_empty() {
+            return Err(BackupError::InvalidSnapshot {
+                profile: Some(profile.get()),
+                reason: "nothing was chosen to export".to_string(),
+            });
+        }
+        self.export_with(profile, label, include)
+    }
+
+    /// The categories of settings the snapshot of `profile` holds: a
+    /// category counts when at least one of its replies is there (an
+    /// export of chosen parts holds only those). `None` without that
+    /// snapshot.
+    pub fn parts_of(&self, profile: ProfileId) -> Option<ImportSelection> {
+        let view = self.snapshot(profile)?;
+        let none = ImportSelection::NONE;
+        let has = |only: ImportSelection| {
+            view.entries()
+                .iter()
+                .any(|e| only.includes_request(e.request()) && !none.includes_request(e.request()))
+        };
+        Some(ImportSelection {
+            triggers: has(ImportSelection {
+                triggers: true,
+                ..none
+            }),
+            lighting: has(ImportSelection {
+                lighting: true,
+                ..none
+            }),
+            keymap_group: has(ImportSelection {
+                keymap_group: true,
+                ..none
+            }),
+            dead_band: has(ImportSelection {
+                dead_band: true,
+                ..none
+            }),
+            socd: has(ImportSelection { socd: true, ..none }),
+        })
+    }
+
+    fn export_with(
+        &self,
+        profile: ProfileId,
+        label: Option<&str>,
+        include: ImportSelection,
+    ) -> Result<Backup, BackupError> {
         let Some(view) = self.snapshot(profile) else {
             return Err(BackupError::InvalidSnapshot {
                 profile: Some(profile.get()),
                 reason: format!("the backup does not hold profile {profile}"),
             });
         };
-        let entries = view.entries().to_vec();
+        let entries: Vec<BackupEntry> = view
+            .entries()
+            .iter()
+            .filter(|e| include.includes_request(e.request()))
+            .cloned()
+            .collect();
         let device = match view.device_info() {
             Some(info) => DeviceIdentity::new(
                 info,
@@ -1003,6 +1074,9 @@ impl Backup {
              imported into a profile. The raw reports are authoritative. It holds no USB serial \
              number."
         );
+        if include != ImportSelection::ALL {
+            note.push_str(&format!(" Parts: {}.", include.labels().join(", ")));
+        }
         if !label.trim().is_empty() {
             note.push_str(" Label: ");
             note.push_str(label.trim());
@@ -1295,13 +1369,12 @@ fn read_snapshot_with<T: Transport>(
         let entry = BackupEntry::new(raw);
         if let (Some(expected), Some(Decoded::ActiveProfile(p))) =
             (expected_profile, &entry.decoded)
+            && p.profile != expected
         {
-            if p.profile != expected {
-                return Err(BackupError::ProfileChanged {
-                    before: expected,
-                    after: p.profile,
-                });
-            }
+            return Err(BackupError::ProfileChanged {
+                before: expected,
+                after: p.profile,
+            });
         }
         entries.push(entry);
         let step = Progress {

@@ -136,14 +136,15 @@ impl<B: DeviceBackend> Worker<B> {
                             actuation,
                         });
                     }
-                    if let Some(max_travel) = max_travel {
-                        if after.bottom > 0 && after.bottom > max_travel.saturating_sub(actuation) {
-                            hints.push(DeadBandHintView {
-                                key: key_ref(change.pos),
-                                kind: DeadBandHintKind::BottomReachesActuation,
-                                actuation,
-                            });
-                        }
+                    if let Some(max_travel) = max_travel
+                        && after.bottom > 0
+                        && after.bottom > max_travel.saturating_sub(actuation)
+                    {
+                        hints.push(DeadBandHintView {
+                            key: key_ref(change.pos),
+                            kind: DeadBandHintKind::BottomReachesActuation,
+                            actuation,
+                        });
                     }
                 }
                 let preview = DeadBandEditPreview {
@@ -238,13 +239,23 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                let clean = super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                );
+                w.own_write_done(clean);
                 if w.foreign_heard() {
                     w.stale = true;
                 } else if report.active_profile_now != Some(profile) {
                     w.reread = true;
                 } else {
                     progress.step(ProgressStep::RefreshingView);
-                    w.refresh_dead_band();
+                    let reread = w.refresh_dead_band();
+                    if clean && let Some(reread) = reread {
+                        // What the edit left in the dead band.
+                        w.own_write_reread(OpKind::DeadBandEdit, &fresh, reread);
+                    }
                 }
                 let view = edit_report_view(&report, file);
                 w.shared.set_last_report(LastReport::Edit {

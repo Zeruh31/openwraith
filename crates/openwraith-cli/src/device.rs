@@ -4,8 +4,12 @@
 //! Only the commands that write (through the guarded write path of
 //! `openwraith-hid`) open a [`WritableHidTransport`], through a
 //! [`Connector`] so that their logic can be tested against the device
-//! simulator.
+//! simulator. The connector also says where the device lock shared with the
+//! desktop app lives ([`Connector::lock_dir`]).
 
+use std::path::PathBuf;
+
+use openwraith_hid::coordination::{self, LockError};
 use openwraith_hid::{
     DeviceDescriptor, HidBackend, HidTransport, Session, Transport, WritableHidTransport,
     WriteTransport,
@@ -106,6 +110,11 @@ pub trait Connector {
 
     /// Opens a session that may write.
     fn open_write(&mut self) -> anyhow::Result<Session<Self::Write>>;
+
+    /// The directory of the device lock shared with the desktop app
+    /// ([`openwraith_hid::coordination`]); `None` takes no lock (the unit
+    /// tests' simulator, unless a test asks for one).
+    fn lock_dir(&self) -> Result<Option<PathBuf>, LockError>;
 }
 
 /// [`Connector`] for real keyboards (`--device` or the only one connected).
@@ -131,5 +140,11 @@ impl Connector for HidConnector {
 
     fn open_write(&mut self) -> anyhow::Result<Session<WritableHidTransport>> {
         open_writable_session(self.device.as_deref())
+    }
+
+    /// The per-user lock the desktop app uses too
+    /// (`%LOCALAPPDATA%\OpenWraith` on Windows).
+    fn lock_dir(&self) -> Result<Option<PathBuf>, LockError> {
+        coordination::default_dir().map(Some)
     }
 }

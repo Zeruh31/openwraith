@@ -1,26 +1,43 @@
 //! The OpenWraith desktop app: the Tauri glue around
-//! [`openwraith_app_core`] (commands, channels, dialogs, window lifecycle).
+//! [`openwraith_app_core`] (commands, channels, dialogs, window lifecycle,
+//! and the background agent of design B5/B7: the tray icon, close to the
+//! notification area, start with Windows, notifications, the foreground
+//! feed of the per-game profiles).
 //!
 //! A release build talks to a real keyboard through hidapi; it opens a
 //! connected keyboard at start (listening for 2 s before the first request).
 //! A debug build with the feature `sim` uses the developer simulator instead
 //! and contains no HID code; a release build with it does not compile.
+//!
+//! A second start (also the Run entry's `--tray` start) only brings the
+//! running window to the front: the single-instance plugin ends it before
+//! `setup`, so it never opens the keyboard.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 #[cfg(all(feature = "sim", not(debug_assertions)))]
 compile_error!("the simulator must never be part of a release build");
 
+mod autostart;
 /// The names of the IPC commands (the single source).
 pub mod command_names;
 mod commands;
 mod dialogs;
+mod foreground;
+mod notify;
 mod paths;
+mod shell;
 mod sinks;
+mod texts;
+mod tray;
 mod window;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use openwraith_app_core::WorkerHandle;
@@ -97,12 +114,30 @@ macro_rules! handlers {
             commands::get_hints_shown,
             commands::mark_hint_shown,
             commands::reset_hints_shown,
+            commands::list_auto_backups,
+            commands::pin_auto_backup,
+            commands::get_recovery,
+            commands::keep_current_settings,
+            commands::prepare_recovery,
+            commands::get_background_settings,
+            commands::set_background_settings,
+            commands::get_profile_names,
+            commands::set_profile_names,
+            commands::get_auto_profile_state,
+            commands::set_auto_profile_rules,
+            commands::pause_auto_profile,
+            commands::list_running_programs,
+            commands::pick_game_program,
+            commands::detect_next_program,
+            commands::report_ui_state,
             $($extra),*
         ]
     };
 }
 
-/// Starts the device worker and loads the settings.
+/// Starts the device worker, loads the settings and sets up the background
+/// agent. The window is created hidden (`tauri.conf.json`) and shown here,
+/// unless the Run entry started the app (`--tray`) with the tray icon on.
 fn setup<R: Runtime>(app: &mut App<R>) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     let config = paths::core_config(&handle)?;
@@ -115,7 +150,8 @@ fn setup<R: Runtime>(app: &mut App<R>) -> Result<(), Box<dyn std::error::Error>>
     )?;
     #[cfg(not(feature = "sim"))]
     let worker = WorkerHandle::spawn_hid(config, exit)?;
-    app.manage(Arc::new(worker));
+    let worker = Arc::new(worker);
+    app.manage(Arc::clone(&worker));
 
     let settings_path = paths::settings_path(&handle)?;
     let settings = openwraith_app_core::load_settings(&settings_path);
@@ -126,19 +162,60 @@ fn setup<R: Runtime>(app: &mut App<R>) -> Result<(), Box<dyn std::error::Error>>
         path: settings_path,
         value: Mutex::new(settings),
     });
+
+    let background = worker.background_settings();
+    app.manage(window::CloseExplained(AtomicBool::new(
+        background.close_to_tray_explained,
+    )));
+    notify::install(&handle, &worker);
+    // Without a tray icon the window must show (it is the only way in).
+    let tray_shown = tray::install(&handle, &worker, background.tray_enabled);
+    worker.set_shell_hook(Arc::new(shell::Shell(handle.clone())));
+    worker.set_program_source(Arc::new(foreground::Programs));
+    if let Ok(feed) = foreground::start(Arc::clone(&worker)) {
+        app.manage(feed);
+    }
+    let wanted = background.tray_enabled && background.start_with_windows;
+    match autostart::reconcile_when(std::env::args(), wanted) {
+        autostart::ReconcileWhen::Never => {}
+        autostart::ReconcileWhen::Now => autostart::reconcile(&handle, wanted),
+        autostart::ReconcileWhen::Later => {
+            // Started from the Run entry at logon: no write to the Run key
+            // while Windows processes it; the settings are read again then
+            // (the user may have turned the option on meanwhile).
+            let later = handle.clone();
+            let settings = Arc::clone(&worker);
+            let _ = std::thread::Builder::new()
+                .name("openwraith-autostart-check".to_string())
+                .spawn(move || {
+                    std::thread::sleep(autostart::LOGON_DELAY);
+                    let now = settings.background_settings();
+                    autostart::reconcile(&later, now.tray_enabled && now.start_with_windows);
+                });
+        }
+    }
+
+    if !window::starts_hidden(std::env::args(), tray_shown) {
+        window::focus_main(&handle);
+    }
     Ok(())
 }
 
 /// Runs the app until it exits.
 pub fn run() -> Result<(), String> {
     let builder = tauri::Builder::default()
-        // First, so that a second start only focuses this window.
+        // First, so that a second start (also with `--tray`) only focuses
+        // this window and ends before its own setup.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             window::focus_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| setup(app))
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(not(feature = "sim"))]
+    let builder = builder.plugin(autostart::plugin());
+    let builder = builder
+        .setup(setup)
         .on_window_event(window::on_window_event);
     #[cfg(feature = "sim")]
     let builder =

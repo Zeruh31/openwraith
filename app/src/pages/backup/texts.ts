@@ -10,6 +10,7 @@ import type {
   AdvancedSummary,
   BlockCauseView,
   DeadBandPair,
+  KeyRef,
   LightModeView,
   MacroSummary,
   PersistenceCheckView,
@@ -27,6 +28,11 @@ export type ReviewVariant = "restore" | "import";
 /** "1, 2 and 4" (localized list of numbers). */
 export function numberList(values: readonly number[], format: Format): string {
   return format.list(values.map(String));
+}
+
+/** The library's name of the key at `index` ("2", "Space"), or "#index" outside the layout. */
+function libraryKeyName(index: number): string {
+  return W75_KEYS.find((key) => key.index === index)?.name ?? `#${index}`;
 }
 
 /** "All profiles (1–4)", "Profile 2 only" or "Profiles 1 and 3". */
@@ -101,8 +107,31 @@ function unitText(um: number | null, dict: Dict, format: Format): string {
   return um === null ? dict.common.unknown : format.mm(1, um);
 }
 
+/** A replaced Fn shortcut as the import review knows it (`ImportPreview.critical_fn_overrides`). */
+export type CriticalKey = Pick<KeyRef, "index" | "name">;
+
+/**
+ * Every replaced Fn shortcut by name ("Fn + 2", "Fn + Space"): the keys the
+ * import review names, and the cause's own key when they don't include it
+ * (the backend's cause names only the first key it found, by number).
+ */
+export function criticalKeyNames(causeIndex: number, keys: readonly CriticalKey[], dict: Dict): string[] {
+  const names = keys.some((key) => key.index === causeIndex)
+    ? keys.map((key) => key.name)
+    : [libraryKeyName(causeIndex), ...keys.map((key) => key.name)];
+  const fnKey = dict.backupRestore.share.critical.fnKey;
+  return [...new Set(names)].map((name) => fnKey({ key: keyName(dict, name) }));
+}
+
+/** What {@link blockCauseText} can say beyond the cause itself. */
+export interface BlockCauseContext {
+  format: Format;
+  /** The replaced Fn shortcuts the import review knows (every one is named). */
+  criticalKeys?: readonly CriticalKey[] | undefined;
+}
+
 /** Why the key assignments can't be restored (a clause that completes the skip reason). */
-export function blockCauseText(cause: BlockCauseView, dict: Dict): string {
+export function blockCauseText(cause: BlockCauseView, dict: Dict, context?: BlockCauseContext): string {
   const b = dict.backupRestore.blockCauses;
   switch (cause.code) {
     case "unwritable_advanced_key":
@@ -115,8 +144,11 @@ export function blockCauseText(cause: BlockCauseView, dict: Dict): string {
       return b.incomplete({ table: tableName(cause.table, dict) });
     case "fn_keymap_not_writable":
       return b.fn_keymap_not_writable;
-    case "critical_fn_override":
-      return b.critical_fn_override({ index: cause.index });
+    case "critical_fn_override": {
+      const names = criticalKeyNames(cause.index, context?.criticalKeys ?? [], dict);
+      const keys = context === undefined ? names.join(", ") : context.format.list(names);
+      return b.critical_fn_override({ keys, count: names.length });
+    }
     case "unwritable_imported_entry":
       return b.unwritable_imported_entry({ layer: dict.backupRestore.layers[cause.layer], index: cause.index });
   }
@@ -136,12 +168,16 @@ export function blockCauseTechnical(cause: BlockCauseView): string | null {
   }
 }
 
-/** Why a differing table isn't restored (or imported). */
+/**
+ * Why a differing table isn't restored (or imported). `criticalKeys` are the
+ * replaced Fn shortcuts of an import, so that "Not imported" names every one.
+ */
 export function skipReasonText(
   reason: SkipReasonView,
   dict: Dict,
   format: Format,
   variant: ReviewVariant = "restore",
+  criticalKeys: readonly CriticalKey[] = [],
 ): string {
   const s = dict.backupRestore.skipReasons;
   switch (reason.code) {
@@ -157,10 +193,12 @@ export function skipReasonText(
         backup: unitText(reason.backup_um, dict, format),
         keyboard: unitText(reason.keyboard_um, dict, format),
       });
-    case "keymap_group_blocked":
+    case "keymap_group_blocked": {
+      const cause = blockCauseText(reason.cause, dict, { format, criticalKeys });
       return variant === "import"
-        ? dict.backupRestore.share.review.keymapGroupBlocked({ cause: blockCauseText(reason.cause, dict) })
-        : s.keymap_group_blocked({ cause: blockCauseText(reason.cause, dict) });
+        ? dict.backupRestore.share.review.keymapGroupBlocked({ cause })
+        : s.keymap_group_blocked({ cause });
+    }
     case "no_known_command":
     case "invalid_light_record":
     case "knob":
@@ -184,11 +222,6 @@ export interface WarningView {
   text: string;
   tone: "danger" | "warning" | "info";
   technical: string | null;
-}
-
-/** The library's name of the key at `index` ("2", "Space"), or "#index" outside the layout. */
-function libraryKeyName(index: number): string {
-  return W75_KEYS.find((key) => key.index === index)?.name ?? `#${index}`;
 }
 
 /**

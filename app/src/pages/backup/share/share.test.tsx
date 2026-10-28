@@ -96,6 +96,12 @@ async function openImport(): Promise<void> {
   await screen.findByRole("button", { name: s.import.review });
 }
 
+/** A part's checkbox of the import (the export has its own). */
+function importBox(label: string): HTMLInputElement {
+  const panel = screen.getByRole("region", { name: s.import.title });
+  return within(panel).getByLabelText<HTMLInputElement>(label);
+}
+
 function chooseInto(profile: number): void {
   fireEvent.change(screen.getByLabelText(s.import.into), { target: { value: String(profile) } });
 }
@@ -146,6 +152,8 @@ describe("export", () => {
         label: "Tournament",
         destination: "f-90f303b6f8f26cf4",
         confirmed_switch: false,
+        // Design B4: everything but the dead band and the SOCD key pairs.
+        include: { triggers: true, lighting: true, keys: true, dead_band: false, socd: false },
       },
     ]);
     // No switch: no consent dialog, no plan, nothing written.
@@ -158,6 +166,108 @@ describe("export", () => {
     expect(within(result).getByText(s.parts.socd)).toBeTruthy();
     expect(within(result).getByText(s.noSerial)).toBeTruthy();
     expect(within(result).queryByText(s.export.switched({ n: 1 }))).toBeNull();
+  });
+
+  it("exports only the ticked parts: dead band and SOCD start unticked, none ticked can't start", async () => {
+    await mount("export_options");
+    const checked = (label: string) => screen.getByLabelText<HTMLInputElement>(label).checked;
+    const panel = screen.getByRole("region", { name: s.export.title });
+    const box = (label: string) => within(panel).getByLabelText<HTMLInputElement>(label);
+    expect(box(s.parts.triggers).checked).toBe(true);
+    expect(box(s.parts.lighting).checked).toBe(true);
+    expect(box(s.parts.keys).checked).toBe(true);
+    expect(box(s.parts.dead_band).checked).toBe(false);
+    expect(box(s.parts.socd).checked).toBe(false);
+    expect(checked(s.export.sources.keyboard)).toBe(true);
+    expect(within(panel).getByText(s.export.macrosNote)).toBeTruthy();
+
+    // Nothing ticked: the export can't start, and says why.
+    for (const part of ["triggers", "lighting", "keys"] as const) fireEvent.click(box(s.parts[part]));
+    const button = screen.getByRole("button", { name: s.export.button({ n: 1 }) });
+    expect(button).toHaveProperty("disabled", true);
+    expect(within(panel).getByText(s.export.reasons.noPart)).toBeTruthy();
+    expect(within(panel).queryByText(s.export.macrosNote)).toBeNull();
+    fireEvent.click(button);
+    expect(named("choose_export_destination")).toHaveLength(0);
+
+    // Actuation, lighting and the SOCD key pairs.
+    fireEvent.click(box(s.parts.triggers));
+    fireEvent.click(box(s.parts.lighting));
+    fireEvent.click(box(s.parts.socd));
+    fireEvent.change(screen.getByLabelText(s.export.name), { target: { value: "Tournament" } });
+    fireEvent.click(button);
+    await screen.findByText(s.export.saved);
+    expect(named("export_profile").map((c) => c.args["intent"])).toEqual([
+      {
+        source: { source: "keyboard" },
+        profile: 1,
+        label: "Tournament",
+        destination: "f-90f303b6f8f26cf4",
+        confirmed_switch: false,
+        include: { triggers: true, lighting: true, keys: false, dead_band: false, socd: true },
+      },
+    ]);
+    // The recorded file holds what was exported (no dead band in it).
+    const result = screen.getByRole("dialog", { name: en.flow.opKinds.export });
+    expect(within(result).getByText(s.contents.missing({ list: `${s.parts.dead_band}; ${s.parts.socd}` }))).toBeTruthy();
+  });
+
+  it("exports from an automatic backup without the keyboard and without a switch", async () => {
+    await mount("export_from_auto_backup");
+    fireEvent.click(screen.getByLabelText(s.export.sources.automatic));
+    const select = await screen.findByLabelText<HTMLSelectElement>(s.export.automatic);
+    expect(named("list_auto_backups").length).toBeGreaterThan(0);
+    expect(select.value).toBe("f-90f303b6f8f26cf4");
+    expect(within(select).getByText(/^Profile 1 · /u)).toBeTruthy();
+    expect(screen.getByText(s.export.sourceHints.automatic)).toBeTruthy();
+    // The keyboard's profile choice is gone: the backup holds profile 1.
+    expect(screen.queryByLabelText(s.export.profile)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: s.export.button({ n: 1 }) }));
+    await screen.findByText(s.export.saved);
+    expect(named("choose_export_destination")[0]?.args["profile"]).toBe(1);
+    expect(named("export_profile").map((c) => c.args["intent"])).toEqual([
+      {
+        source: { source: "file", file: "f-90f303b6f8f26cf4" },
+        profile: 1,
+        label: null,
+        destination: "f-6b33354e1a23f0da",
+        confirmed_switch: false,
+        include: { triggers: true, lighting: true, keys: true, dead_band: false, socd: false },
+      },
+    ]);
+    expect(screen.queryByRole("dialog", { name: s.export.consentTitle })).toBeNull();
+    expect(calls.some((c) => c.command.startsWith("prepare_") || c.command.startsWith("apply_"))).toBe(false);
+  });
+
+  it("exports another profile of a backup file without switching profiles", async () => {
+    const summary = FIXTURES["restore_ok_persisted"]?.calls.find((c) => c.command === "open_backup_file");
+    if (summary?.command !== "open_backup_file" || summary.ok === null) throw new Error("no backup summary");
+    await mount("export_done", { open_backup_file: () => summary.ok });
+    fireEvent.click(screen.getByLabelText(s.export.sources.file));
+    const button = screen.getByRole("button", { name: s.export.button({ n: 1 }) });
+    expect(button).toHaveProperty("disabled", true);
+    expect(screen.getByText(s.export.reasons.noFile)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: s.export.chooseFile }));
+    const profile = await screen.findByLabelText<HTMLSelectElement>(s.export.fileProfile);
+    expect(named("open_backup_file")[0]?.args["dialog"]).toEqual({
+      title: s.dialog.openBackup,
+      filter: t.dialog.filter,
+    });
+    expect(screen.getByText(summary.ok.file.file_name)).toBeTruthy();
+    fireEvent.change(profile, { target: { value: "3" } });
+    // Another profile of the file: no switch note, no consent (the keyboard isn't used).
+    expect(screen.queryByText(s.export.switchNote({ n: 3 }))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: s.export.button({ n: 3 }) }));
+    await screen.findByText(s.export.saved);
+    expect(named("choose_export_destination")[0]?.args["profile"]).toBe(3);
+    expect(named("export_profile")[0]?.args["intent"]).toMatchObject({
+      source: { source: "file", file: summary.ok.file.token },
+      profile: 3,
+      confirmed_switch: false,
+    });
+    expect(screen.queryByRole("dialog", { name: s.export.consentTitle })).toBeNull();
   });
 
   it("asks before switching to read another profile, and again when the keyboard asks", async () => {
@@ -241,7 +351,7 @@ describe("import", () => {
     expect(screen.getByText("Press A, then wait 20 ms")).toBeTruthy();
     expect(screen.getByText("Release A")).toBeTruthy();
 
-    const checked = (label: string) => screen.getByLabelText<HTMLInputElement>(label).checked;
+    const checked = (label: string) => importBox(label).checked;
     expect(checked(s.parts.triggers)).toBe(true);
     expect(checked(s.parts.lighting)).toBe(true);
     expect(checked(s.parts.keys)).toBe(false);
@@ -251,8 +361,8 @@ describe("import", () => {
     expect(calls.some((c) => c.command.startsWith("prepare_") || c.command.startsWith("apply_"))).toBe(false);
 
     // Without a part there is nothing to compare.
-    fireEvent.click(screen.getByLabelText(s.parts.triggers));
-    fireEvent.click(screen.getByLabelText(s.parts.lighting));
+    fireEvent.click(importBox(s.parts.triggers));
+    fireEvent.click(importBox(s.parts.lighting));
     expect(screen.getByRole("button", { name: s.import.review })).toHaveProperty("disabled", true);
     expect(screen.getByText(s.reasons.noPart)).toBeTruthy();
   });
@@ -294,7 +404,7 @@ describe("import", () => {
     await mount("import_apply_ok");
     await openImport();
     chooseInto(2);
-    fireEvent.click(screen.getByLabelText(s.parts.keys));
+    fireEvent.click(importBox(s.parts.keys));
     const review = await reviewWithSwitch(2);
     expect(named("prepare_import")[0]?.args["intent"]).toMatchObject({
       include: { triggers: true, lighting: true, keys: true, dead_band: false, socd: false },
@@ -325,7 +435,7 @@ describe("import", () => {
     await mount("import_refused_critical");
     await openImport();
     chooseInto(2);
-    fireEvent.click(screen.getByLabelText(s.parts.keys));
+    fireEvent.click(importBox(s.parts.keys));
     const review = await reviewWithSwitch(2);
 
     // Both replaced shortcuts have their own danger note: Fn + 2 (here the target profile itself) and the reset.
@@ -366,12 +476,24 @@ describe("import", () => {
     expect(named("apply_import")).toHaveLength(0);
   });
 
+  it("names every replaced shortcut by name in the “Not imported” row", async () => {
+    await mount("import_refused_critical");
+    await openImport();
+    chooseInto(2);
+    fireEvent.click(importBox(s.parts.keys));
+    const review = await reviewWithSwitch(2);
+    const cause = t.blockCauses.critical_fn_override({ keys: "Fn + 2 and Fn + Space", count: 2 });
+    expect(within(review).getAllByText(s.review.keymapGroupBlocked({ cause })).length).toBeGreaterThan(0);
+    // Not "key number 24": the keys are named, every one of them.
+    expect(within(review).queryByText(/key number/u)).toBeNull();
+  });
+
   it("says the keys stay out, without a shortcut tick, when something else in the file blocks them", async () => {
     // The file replaces Fn + 2 and Fn + Space, but its base W holds an entry OpenWraith doesn't write.
     await mount("import_keys_blocked_other");
     await openImport();
     chooseInto(2);
-    fireEvent.click(screen.getByLabelText(s.parts.keys));
+    fireEvent.click(importBox(s.parts.keys));
     const review = await reviewWithSwitch(2);
 
     expect(within(review).getByText(s.review.blocked)).toBeTruthy();
@@ -396,7 +518,7 @@ describe("import", () => {
     });
     await openImport();
     chooseInto(2);
-    fireEvent.click(screen.getByLabelText(s.parts.keys));
+    fireEvent.click(importBox(s.parts.keys));
     const review = await reviewWithSwitch(2);
     const label = s.critical.confirmAll({ keys: "Fn + 2 and Fn + Space", n: 2 });
     fireEvent.click(within(review).getByLabelText(label));
@@ -512,7 +634,11 @@ describe("in Turkish", () => {
     expect(screen.getByRole("heading", { name: tr.title })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: tr.import.open }));
     await screen.findByText("A tuşuna basılır, ardından 20 ms beklenir");
-    expect(screen.getByLabelText(tr.parts.keys)).toBeTruthy();
+    const importPanel = screen.getByRole("region", { name: tr.import.title });
+    expect(within(importPanel).getByLabelText(tr.parts.keys)).toBeTruthy();
+    const exportPanel = screen.getByRole("region", { name: tr.export.title });
+    expect(within(exportPanel).getByLabelText(tr.export.sources.automatic)).toBeTruthy();
+    expect(within(exportPanel).getByText(tr.export.partsHint)).toBeTruthy();
     expect(screen.getByRole("button", { name: tr.export.button({ n: 1 }) })).toBeTruthy();
   });
 });

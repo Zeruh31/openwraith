@@ -278,13 +278,19 @@ function RestoreSteps({ summary, demo, autoCompare, onRestored }: RestoreStepsPr
           token={(preview) => preview.token}
           title={(preview) => {
             const profiles = scopeOf(preview);
-            return preview.source.kind === "safety"
-              ? dict.backupRestore.review.undoTitle({
-                  list: numberList(profiles, format),
-                  count: profiles.length,
-                  date: format.dateTime(preview.source.created_at),
-                })
-              : dict.backupRestore.review.title;
+            const words = {
+              list: numberList(profiles, format),
+              count: profiles.length,
+              date: format.dateTime(preview.source.created_at),
+            };
+            switch (preview.source.kind) {
+              case "safety":
+                return dict.backupRestore.review.undoTitle(words);
+              case "automatic":
+                return dict.backupRestore.review.autoTitle(words);
+              case "user":
+                return dict.backupRestore.review.title;
+            }
           }}
           review={(preview) => <RestoreReview preview={preview} />}
           nothingToDo={(preview) => <RestoreNothing preview={preview} />}

@@ -82,7 +82,7 @@ fn profile_suffix(profile: Option<u8>) -> String {
 
 /// A length in micrometres as millimetres (`20` -> `0.02 mm`).
 fn micrometres(um: u32) -> String {
-    if um % 10 == 0 {
+    if um.is_multiple_of(10) {
         format!("{}.{:02} mm", um / 1000, um % 1000 / 10)
     } else {
         format!("{}.{:03} mm", um / 1000, um % 1000)
@@ -380,12 +380,12 @@ fn effect_block(effect: &LightEffect, modes: Option<&LightModeList>) -> String {
     f.add(&mark("Power"), on_off(effect.power_on));
     f.add("Raw record", effect.raw.to_spaced_hex());
     let mut out = f.render("  ");
-    if let Some(modes) = modes {
-        if !modes.modes.is_empty() {
-            let names: Vec<String> = modes.modes.iter().map(|m| m.name()).collect();
-            out.push_str("  Modes listed by the keyboard:\n");
-            out.push_str(&wrap_list(&names, "    ", WIDTH));
-        }
+    if let Some(modes) = modes
+        && !modes.modes.is_empty()
+    {
+        let names: Vec<String> = modes.modes.iter().map(|m| m.name()).collect();
+        out.push_str("  Modes listed by the keyboard:\n");
+        out.push_str(&wrap_list(&names, "    ", WIDTH));
     }
     out
 }

@@ -159,6 +159,7 @@ export const errors: Messages<typeof en> = {
     snapshot_stale: "Gösterilen değerler güncel olmayabilir; klavyeyi yeniden okuyun",
     safety_dir_unavailable: "Güvenlik yedeği klasörü kullanılamıyor",
     fault: "OpenWraith bir iç hatayla karşılaştı; uygulamayı yeniden başlatın",
+    paused_for_cli: "Klavyeyi bir OpenWraith komutu kullanıyor; OpenWraith komut bitene kadar bekliyor",
   },
   depthViewRunning: "Tuş derinliği görünümü açık. Önce Aktivasyon > Tuş derinliği sekmesinden durdurun.",
   planInvalidation: {

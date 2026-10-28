@@ -82,6 +82,21 @@ fn export(cfg: &Config) {
         ImportSummaryView,
         ImportIntent,
         ImportPreview,
+        // automatic backups, recovery, background settings, profile names
+        AutoBackupsView,
+        RecoveryView,
+        RecoveryIntent,
+        BackgroundSettingsView,
+        BackgroundSettingsIntent,
+        BackgroundSettingsApplied,
+        ProfileNamesView,
+        ProfileNamesIntent,
+        AutoProfileSettings,
+        // per-game automatic profiles, the frontend's report
+        AutoProfileStateView,
+        AutoProfileRulesIntent,
+        ProgramView,
+        UiStateReport,
         // errors and the simulator
         AppError,
         SimAction,

@@ -212,6 +212,179 @@ describe("mock backend", () => {
     expect(await api.resetHintsShown()).toEqual([]);
   });
 
+  it("keeps the background settings, the profile names and the game rules the user changed", async () => {
+    const backend = createMockBackend(fixture("ready"), { speed: 0, replayEvents: false, fallback: true, library: FIXTURES });
+    mockIPC((command, args) => backend.handle(command, args));
+    await api.subscribe(() => undefined);
+
+    const before = await api.getBackgroundSettings();
+    expect(before.tray_enabled).toBe(false);
+    const applied = await api.setBackgroundSettings({
+      tray_enabled: true,
+      start_with_windows: true,
+      notifications: { reset: true, auto_switch: true },
+      auto_backup: { enabled: true, keep: 20 },
+    });
+    expect(applied.shell).toEqual({ tray: true, start_with_windows: true });
+    expect(await api.getBackgroundSettings()).toMatchObject({ tray_enabled: true, start_with_windows: true });
+    // Without the tray, no start with Windows; keep is 1-100.
+    const off = await api.setBackgroundSettings({ ...applied.settings, tray_enabled: false });
+    expect(off.settings.start_with_windows).toBe(false);
+    expect(off.shell).toEqual({ tray: false, start_with_windows: false });
+    await expect(
+      api.setBackgroundSettings({ ...off.settings, auto_backup: { enabled: true, keep: 0 } }),
+    ).rejects.toMatchObject({ kind: "invalid_request" });
+
+    const named = await api.setProfileNames({ product: "W75HEARGB", names: [" Work ", "FPS", "", null] });
+    expect(named.products.find((p) => p.product === "W75HEARGB")?.names).toEqual(["Work", "FPS", null, null]);
+    expect(await api.getProfileNames()).toEqual(named);
+
+    // The Games tab refreshes every 2 s: the rules stay.
+    expect((await api.getAutoProfileState()).enabled).toBe(false);
+    const rules = await api.setAutoProfileRules({
+      enabled: true,
+      default_profile: 1,
+      rules: [{ id: null, label: "Counter-Strike 2", program: { source: "name", exe: "cs2.exe" }, profile: 2, enabled: true }],
+    });
+    expect(rules.rules).toMatchObject([{ id: "r-1", exe: "cs2.exe", profile: 2, generic_name: false }]);
+    expect(rules.line).toEqual({ line: "watching" });
+    expect(backend.status().automation.enabled).toBe(true);
+    expect(await api.getAutoProfileState()).toEqual(rules);
+    await expect(
+      api.setAutoProfileRules({
+        enabled: true,
+        default_profile: null,
+        rules: [{ id: null, label: "Bad", program: { source: "name", exe: "C:\\Games\\x.exe" }, profile: 2, enabled: true }],
+      }),
+    ).rejects.toMatchObject({ kind: "invalid_request" });
+    const paused = await api.pauseAutoProfile(true);
+    expect(paused.line).toEqual({ line: "paused", reason: { reason: "user" } });
+    expect(backend.status().automation.paused).toEqual({ reason: "user" });
+    expect((await api.pauseAutoProfile(false)).line).toEqual({ line: "watching" });
+
+    // A program from the running list becomes a rule by its token.
+    const running = await api.listRunningPrograms();
+    const program = running[0];
+    if (program === undefined) throw new Error("no running programs recorded");
+    const picked = await api.setAutoProfileRules({
+      enabled: true,
+      default_profile: 1,
+      rules: [
+        { id: "r-1", label: "Counter-Strike 2", program: { source: "keep" }, profile: 2, enabled: true },
+        { id: null, label: "Picked", program: { source: "picked", token: program.token }, profile: 3, enabled: false },
+      ],
+    });
+    expect(picked.rules.map((r) => [r.id, r.exe])).toEqual([
+      ["r-1", "cs2.exe"],
+      ["r-2", program.exe],
+    ]);
+  });
+
+  it("pins automatic backups and keeps the current settings without the keyboard", async () => {
+    const backend = createMockBackend(fixture("recovery_reset_suspected"), {
+      speed: 0,
+      replayEvents: false,
+      fallback: true,
+      library: FIXTURES,
+    });
+    mockIPC((command, args) => backend.handle(command, args));
+    const events: AppEvent[] = [];
+    await api.subscribe((event) => events.push(event));
+    expect(backend.status().connection.state).toBe("reset_seen");
+    // "Reconnect and compare": the recorded comparison follows.
+    await api.reconnect();
+    await vi.waitFor(() => {
+      expect(backend.status().recovery.reset_suspected).toEqual([1]);
+      expect(events.some((e) => e.event === "notice" && e.notice.notice === "reset_suspected")).toBe(true);
+    });
+    expect((await api.getRecovery()).profiles[0]?.state).toBe("reset_suspected");
+    // "It's fine, keep them": nothing held any more.
+    const kept = await api.keepCurrentSettings([]);
+    expect(kept.attention).toBe(false);
+    expect(kept.profiles[0]?.state).toBe("fine");
+    expect(backend.status().recovery).toEqual({ reset_suspected: [], reset_reported: false, firmware_changed: false });
+    expect(await api.getRecovery()).toEqual(kept);
+
+    const list = await api.listAutoBackups();
+    const entry = list.entries[0];
+    if (entry === undefined) throw new Error("no automatic backups recorded");
+    const pinned = await api.pinAutoBackup(entry.file.token, !entry.pinned);
+    expect(pinned.entries[0]?.pinned).toBe(!entry.pinned);
+    expect(await api.listAutoBackups()).toEqual(pinned);
+    await expect(api.pinAutoBackup("f-nope", true)).rejects.toMatchObject({ kind: "file_unknown" });
+  });
+
+  it("never lets a recorded pin undo the pins the user made", async () => {
+    const backend = createMockBackend(fixture("auto_backups_list"), { speed: 0, replayEvents: false, fallback: false, library: FIXTURES });
+    mockIPC((command, args) => backend.handle(command, args));
+    await api.subscribe(() => undefined);
+    const entries = (await api.listAutoBackups()).entries;
+    const newest = entries[0];
+    const oldest = entries[entries.length - 1];
+    if (newest === undefined || oldest === undefined || newest === oldest) throw new Error("fixture lacks entries");
+    await api.pinAutoBackup(newest.file.token, true);
+    // The recording pinned the oldest one: same arguments, but the list changed since.
+    const both = await api.pinAutoBackup(oldest.file.token, true);
+    expect(both.entries.filter((e) => e.pinned).map((e) => e.file.token)).toEqual([newest.file.token, oldest.file.token]);
+  });
+
+  it("answers the Recovery card by the recorded user actions", async () => {
+    const source = fixture("recovery_restore_ok");
+    const backend = createMockBackend(source, { speed: 0, replayEvents: false, fallback: false, library: FIXTURES });
+    mockIPC((command, args) => backend.handle(command, args));
+    await api.subscribe(() => undefined);
+    // Before the restore the recorded "after" answer is not due, however often the card asks.
+    expect((await api.getRecovery()).attention).toBe(true);
+    expect((await api.getRecovery()).attention).toBe(true);
+    const prepare = source.calls.find((c) => c.command === "prepare_recovery");
+    if (prepare?.command !== "prepare_recovery") throw new Error("fixture lacks prepare_recovery");
+    const kinds: string[] = [];
+    const preview = await api.prepareRecovery(prepare.args.intent, () => {
+      const kind = backend.status().busy?.kind;
+      if (kind !== undefined) kinds.push(kind);
+    });
+    expect(kinds).toContain("recovery_check");
+    if (preview.token === null) throw new Error("no plan");
+    await api.applyRestore(preview.token, () => undefined);
+    await vi.waitFor(() => {
+      expect(backend.status().recovery.reset_suspected).toEqual([]);
+    });
+    expect((await api.getRecovery()).attention).toBe(false);
+  });
+
+  it("plays what happens on its own after the scene was set (an automatic switch)", async () => {
+    const backend = createMockBackend(fixture("games_live"), { speed: 0, replayEvents: true, fallback: false, library: FIXTURES });
+    mockIPC((command, args) => backend.handle(command, args));
+    const events: AppEvent[] = [];
+    await api.subscribe((event) => events.push(event));
+    await vi.waitFor(() => {
+      expect(backend.status().automation.holding?.profile).toBe(2);
+      expect(events.some((e) => e.event === "notice" && e.notice.notice === "auto_switched")).toBe(true);
+    });
+    expect(backend.status().active_profile).toBe(2);
+    // The saved rules are the starting state; the latest recorded line is due at once (speed 0).
+    const state = await api.getAutoProfileState();
+    expect(state.rules.length).toBeGreaterThan(0);
+    expect(state.line).toMatchObject({ line: "game_in_front", state: "switched" });
+  });
+
+  it("blocks writes while an OpenWraith command holds the keyboard", async () => {
+    const backend = createMockBackend(fixture("paused_for_cli"), { speed: 0, replayEvents: true, fallback: false, library: FIXTURES });
+    mockIPC((command, args) => backend.handle(command, args));
+    const events: AppEvent[] = [];
+    await api.subscribe((event) => events.push(event));
+    await vi.waitFor(() => {
+      expect(backend.status().paused_for_cli).toBe(true);
+      expect(events.some((e) => e.event === "notice" && e.notice.notice === "paused_for_cli")).toBe(true);
+    });
+    await expect(api.prepareProfileSwitch(3)).rejects.toMatchObject({ kind: "writes_blocked" });
+    // The recorded refresh is refused; then the command ends and the app reads again.
+    await expect(api.refresh(() => undefined)).rejects.toMatchObject({ kind: "writes_blocked" });
+    await vi.waitFor(() => {
+      expect(backend.status().paused_for_cli).toBe(false);
+    });
+  });
+
   it("replays the events of a fixture without calls", async () => {
     const backend = createMockBackend(fixture("observing"), { speed: 0, replayEvents: true, fallback: false, library: FIXTURES });
     mockIPC((command, args) => backend.handle(command, args));
@@ -254,6 +427,13 @@ describe("preview parameters", () => {
     expect(routeForFixture("presets_ready")).toBe("#/actuation");
     expect(routeForFixture("import_preview")).toBe("#/backup");
     expect(findScenario("keys_apply_ok")?.route).toBe("#/keys?tab=assign");
+    expect(routeForFixture("recovery_reset_suspected")).toBe("#/backup?recover=1");
+    expect(routeForFixture("auto_backups_list")).toBe("#/backup");
+    expect(routeForFixture("export_from_auto_backup")).toBe("#/backup");
+    expect(routeForFixture("games_live")).toBe("#/settings?tab=games");
+    expect(routeForFixture("settings_invalid")).toBe("#/settings?tab=background");
+    expect(routeForFixture("paused_for_cli")).toBe("#/device");
+    expect(findScenario("games_paused_for_cli")?.fixture).toBe("paused_for_cli");
   });
 
   it("cover every recorded fixture", () => {

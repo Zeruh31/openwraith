@@ -205,10 +205,10 @@ fn travel_on<T: WriteTransport>(
             entry.peak = entry.peak.max(report.depth);
             recent.retain(|i| *i != index);
             recent.push(index);
-            if args.json {
-                if let Err(e) = ui.print(&report_json(model, report, frame.open_ms)) {
-                    output_error = Some(e);
-                }
+            if args.json
+                && let Err(e) = ui.print(&report_json(model, report, frame.open_ms))
+            {
+                output_error = Some(e);
             }
         }
         if !args.json {

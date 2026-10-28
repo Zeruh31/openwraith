@@ -33,6 +33,9 @@ impl<B: DeviceBackend> Worker<B> {
         if self.config.safety_dir.is_err() {
             reasons.push(WriteBlockReason::SafetyDirUnavailable);
         }
+        if self.paused_for_cli() {
+            reasons.push(WriteBlockReason::PausedForCli);
+        }
         reasons
     }
 
@@ -63,6 +66,9 @@ impl<B: DeviceBackend> Worker<B> {
             interrupted: None,
             sim: self.sim,
             travel: self.travel_status(),
+            recovery: self.shared.recovery_status(),
+            automation: self.shared.automation_status(),
+            paused_for_cli: self.paused_for_cli(),
         }
     }
 
@@ -82,6 +88,9 @@ impl<B: DeviceBackend> Worker<B> {
 
     /// Publishes the status (when it changed).
     pub(crate) fn publish(&self) {
+        self.shared
+            .plan_pending
+            .store(self.pending.is_some(), std::sync::atomic::Ordering::SeqCst);
         self.shared.publish(self.status(), self.now());
     }
 }

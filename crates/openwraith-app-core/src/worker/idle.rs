@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use openwraith_hid::protocol::DeviceEvent;
-use openwraith_hid::{ListenError, Transport};
+use openwraith_hid::{ListenError, Session, Transport};
 
 use super::conn::GATE;
 use super::{Conn, IDLE_SLICE, Worker};
@@ -20,6 +20,15 @@ const PROFILE_REPORT_SETTLE: Duration = Duration::from_millis(500);
 /// The focus check reads the active profile only this long after the last
 /// traffic (D7).
 const FOCUS_QUIET: Duration = Duration::from_secs(30);
+
+/// The profile the keyboard's latest profile report named (Fn + 1..4), if
+/// it sent one in this session.
+pub(crate) fn last_profile_report<T: Transport>(session: &Session<T>) -> Option<u8> {
+    session.events().iter().rev().find_map(|e| match e {
+        DeviceEvent::ProfileReport { profile, .. } => Some(*profile),
+        _ => None,
+    })
+}
 
 /// What a listening tick watches for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +46,14 @@ impl<B: DeviceBackend> Worker<B> {
         self.after_op_state();
         self.check_socd_pushes();
         self.expire_plan();
+        // The device lock: paused while the CLI holds it (B9).
+        self.probe_cli_lock();
+        if self.paused_for_cli() && self.session.is_some() {
+            // Listen only; what is heard is the CLI's.
+            self.paused_listen_tick();
+            self.finish_tick();
+            return;
+        }
         match &self.conn {
             Conn::Starting
             | Conn::Searching
@@ -55,6 +72,9 @@ impl<B: DeviceBackend> Worker<B> {
                     self.reread = false;
                     self.connect_read(OpKind::Refresh);
                 } else {
+                    // An idle session of a day or 1000 events is replaced
+                    // (nothing is sent).
+                    self.recycle_session_if_due();
                     self.listen_tick(Phase::Ready);
                 }
             }
@@ -65,6 +85,14 @@ impl<B: DeviceBackend> Worker<B> {
                 self.backend.idle(IDLE_SLICE);
             }
         }
+        self.finish_tick();
+    }
+
+    /// The end of every tick: the memory of other programs (and the 180 s
+    /// rule), the automatic profiles, the status.
+    fn finish_tick(&mut self) {
+        self.watch_foreign();
+        self.auto_tick();
         self.publish();
     }
 
@@ -87,13 +115,25 @@ impl<B: DeviceBackend> Worker<B> {
         }
         let activity = session.activity_since_gate();
         let foreign_traffic = activity.status_reports > 0 || activity.foreign_acks > 0;
+        // Traffic heard while the CLI holds the lock is the CLI's: the lock
+        // is probed at once, before the traffic counts as another program.
+        if foreign_traffic && phase != Phase::OtherProgram && self.cli_holds_lock_now() {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
         match phase {
             Phase::Observing => {
                 if foreign_traffic {
                     self.enter_other_program(foreign(activity));
                 } else if activity.profile_reports > 0 {
-                    // A profile change on the keyboard: start observing anew.
+                    // A profile change on the keyboard: start observing anew
+                    // (Fn + 1..4: a manual switch for the automatic
+                    // profiles).
+                    let to = last_profile_report(session);
                     session.rearm_gate();
+                    self.keyboard_switch_heard(to);
                 } else if session.observed_since_gate() >= GATE {
                     self.connect_read(OpKind::Connect);
                     return;
@@ -111,8 +151,14 @@ impl<B: DeviceBackend> Worker<B> {
                 self.check_travel_signals();
             }
             Phase::OtherProgram => {
-                let evidence = foreign(activity);
-                self.conn = Conn::OtherProgram { evidence };
+                // After the gate was re-armed for the automatic switches
+                // (180 s of silence), the evidence shown stays until
+                // something new is heard.
+                if !self.auto_rearmed || !activity.is_quiet() {
+                    let evidence = foreign(activity);
+                    self.conn = Conn::OtherProgram { evidence };
+                }
+                self.other_profile_reports(activity.profile_reports);
             }
             Phase::ReadFailed => {
                 if foreign_traffic {
@@ -122,6 +168,44 @@ impl<B: DeviceBackend> Worker<B> {
         }
         if self.session.is_some() {
             self.check_still_listed();
+        }
+    }
+
+    /// Fn + 1..4 on the keyboard (its profile report naming `to`) heard
+    /// while the app observes, reads or waits for a write's gate: for the
+    /// automatic profiles it is a manual switch (brief 3.5), unless it
+    /// names the profile known to be active. The settings are read again
+    /// by the path that heard it.
+    pub(crate) fn keyboard_switch_heard(&self, to: Option<u8>) {
+        if let Some(to) = to
+            && Some(to) != self.active_profile
+        {
+            self.auto_manual_switch(to);
+        }
+    }
+
+    /// Profile reports heard in `OtherProgram` (`reports` since the gate
+    /// mark): nothing is sent or read, but the active profile is the
+    /// reported one, and for the automatic profiles it is a manual switch
+    /// (Fn + 1..4 always wins, also while the gate is re-armed for them).
+    fn other_profile_reports(&mut self, reports: u64) {
+        if reports <= self.other_reports_handled {
+            self.other_reports_handled = reports;
+            return;
+        }
+        self.other_reports_handled = reports;
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let to = session.events().iter().rev().find_map(|e| match e {
+            DeviceEvent::ProfileReport { profile, .. } => Some(*profile),
+            _ => None,
+        });
+        if let Some(to) = to
+            && Some(to) != self.active_profile
+        {
+            self.active_profile = Some(to);
+            self.auto_manual_switch(to);
         }
     }
 
@@ -152,11 +236,13 @@ impl<B: DeviceBackend> Worker<B> {
         session.rearm_gate();
         self.invalidate(PlanInvalidation::ProfileChanged);
         let from = self.snapshot.as_ref().map(|s| s.profile);
-        if let Some(to) = to {
-            if Some(to) != from {
-                self.shared
-                    .notice(Notice::ProfileChangedOnKeyboard { from, to });
-            }
+        if let Some(to) = to
+            && Some(to) != from
+        {
+            self.shared
+                .notice(Notice::ProfileChangedOnKeyboard { from, to });
+            // A manual switch for the automatic profiles (Fn + 1..4).
+            self.auto_manual_switch(to);
         }
         self.connect_read(OpKind::Refresh);
     }
@@ -165,7 +251,7 @@ impl<B: DeviceBackend> Worker<B> {
     /// active profile once; another profile than shown means a silent switch
     /// on the keyboard: read everything again.
     pub(crate) fn window_focused(&mut self) {
-        if self.conn != Conn::Ready || self.current.is_some() {
+        if self.conn != Conn::Ready || self.current.is_some() || self.paused_for_cli() {
             return;
         }
         let now = self.now();
@@ -201,6 +287,7 @@ impl<B: DeviceBackend> Worker<B> {
                     from: shown,
                     to: active.profile,
                 });
+                self.auto_manual_switch(active.profile);
                 if self.conn == Conn::Ready && !self.foreign_heard() {
                     self.connect_read(OpKind::Refresh);
                 } else if matches!(self.conn, Conn::OtherProgram { .. }) {

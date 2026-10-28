@@ -778,11 +778,12 @@ pub(crate) fn run_edit<T: WriteTransport>(
         report.outcome = Outcome::Cancelled;
     }
     report.cancel_requested = cancel;
-    if !writer.is_poisoned() && report.outcome != Outcome::Failed {
-        if let Err(stop) = confirm_profile(&mut writer, profile) {
-            let failure = TableFailure::from(stop);
-            report.fail(failure.error);
-        }
+    if !writer.is_poisoned()
+        && report.outcome != Outcome::Failed
+        && let Err(stop) = confirm_profile(&mut writer, profile)
+    {
+        let failure = TableFailure::from(stop);
+        report.fail(failure.error);
     }
     // Done only when the keyboard had time to save the last write (also
     // after a failure or a cancellation: something may have been written).
@@ -809,17 +810,16 @@ pub(crate) fn run_edit<T: WriteTransport>(
     if report.outcome == Outcome::Completed
         && !writer.is_poisoned()
         && needs_check(run.persistence, writes, &report.items)
-    {
-        if let Err(error) = persistence_check(
+        && let Err(error) = persistence_check(
             &mut writer,
             profile,
             writes,
             &mut report,
             socd_mark,
             &mut progress,
-        ) {
-            report.fail(error);
-        }
+        )
+    {
+        report.fail(error);
     }
     // As last read or reported (a profile report of a switch included).
     report.active_profile_now = writer.known_profile().map(ProfileId::get);

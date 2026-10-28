@@ -539,6 +539,24 @@
   gap: var(--space-2);
 }
 
+.ow-switch-row--described {
+  align-items: flex-start;
+}
+
+.ow-switch-row--described .ow-switch {
+  flex: none;
+  margin-top: 1px;
+}
+
+.ow-switch-row--disabled .ow-switch__label {
+  color: var(--text-muted);
+}
+
+.ow-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .ow-switch {
   position: relative;
   width: 40px;
@@ -569,6 +587,37 @@
 .ow-switch[aria-checked="true"] .ow-switch__thumb {
   transform: translateX(18px);
   background: var(--on-accent);
+}
+
+/* Windows high contrast: backgrounds become Canvas, so the state is drawn
+   with system colours (an off thumb in ButtonText, an on track in
+   Highlight). */
+@media (forced-colors: active) {
+  .ow-switch {
+    border-color: ButtonText;
+  }
+
+  .ow-switch__thumb {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+
+  .ow-switch[aria-checked="true"] {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
+  .ow-switch[aria-checked="true"] .ow-switch__thumb {
+    background: HighlightText;
+  }
+
+  .ow-switch:disabled {
+    border-color: GrayText;
+  }
+
+  .ow-switch:disabled .ow-switch__thumb {
+    background: GrayText;
+  }
 }
 
 .ow-segmented {

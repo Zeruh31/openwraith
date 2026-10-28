@@ -121,7 +121,7 @@ impl SocdPairsData {
         }
         check_pairs(pairs.iter().map(|p| (p.key1.get(), p.key2.get())))?;
         let mut bytes = Box::new([0u8; SOCD_PAIRS_LEN]);
-        for (dst, pair) in bytes.chunks_exact_mut(4).zip(pairs) {
+        for (dst, pair) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(pairs) {
             dst.copy_from_slice(&pair.entry());
         }
         Ok(SocdPairsData(bytes))
@@ -153,7 +153,7 @@ impl SocdPairsData {
         let unwritable = |reason| WriteBuildError::UnwritableSocdPairs { reason };
         let mut pairs = Vec::new();
         let mut ended = false;
-        for entry in bytes.chunks_exact(4) {
+        for entry in bytes.as_chunks::<4>().0 {
             match *entry {
                 [0x00, 0x00, 0x00, 0x00] => ended = true,
                 [0x01, ..] if ended => return Err(unwritable("a gap between pairs")),
@@ -177,7 +177,9 @@ impl SocdPairsData {
     /// The pairs in table order.
     pub fn pairs(&self) -> Vec<SocdPair> {
         self.0
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map_while(|entry| match *entry {
                 [0x01, mode, key1, key2] => Some(SocdPair {
                     mode: SocdMode::from_wire(mode)?,

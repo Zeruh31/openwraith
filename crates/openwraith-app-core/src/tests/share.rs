@@ -25,6 +25,7 @@ fn export_intent(destination: FileToken, profile: u8, switch: bool) -> ExportInt
         label: Some("My W75 \u{7}setup".to_string()),
         destination,
         confirmed_switch: switch,
+        include: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn a_profile_can_be_exported_from_a_backup_file_without_traffic() {
                 label: None,
                 destination: destination.token,
                 confirmed_switch: false,
+                include: None,
             },
             &h.watch(),
         )

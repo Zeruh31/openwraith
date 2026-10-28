@@ -35,6 +35,7 @@ const E: u8 = 47;
 
 /// Where the fixtures pretend files are.
 const SAFETY_DIR: &str = r"C:\Users\you\AppData\Local\OpenWraith\safety-backups";
+const KNOWN_GOOD_DIR: &str = r"C:\Users\you\AppData\Local\io.github.zeruh31.openwraith\known-good";
 const USER_DIR: &str = r"C:\Users\you\Documents\OpenWraith";
 
 /// Status events with their virtual time.
@@ -283,10 +284,17 @@ fn sanitize(value: &mut Value, tmp: &std::path::Path) {
         .join("safety")
         .display()
         .to_string();
+    let known_good = std::path::Path::new(&tmp)
+        .join(crate::autobackup::STORE_DIR)
+        .display()
+        .to_string();
     match value {
         Value::String(text) => {
             if text.contains(&tmp) {
-                let replaced = text.replace(&safety, SAFETY_DIR).replace(&tmp, USER_DIR);
+                let replaced = text
+                    .replace(&safety, SAFETY_DIR)
+                    .replace(&known_good, KNOWN_GOOD_DIR)
+                    .replace(&tmp, USER_DIR);
                 *text = replaced.replace('/', "\\");
             }
         }
@@ -1897,6 +1905,7 @@ impl Rec {
             label: Some("Tournament".to_string()),
             destination: file.token,
             confirmed_switch: switch,
+            include: None,
         };
         self.call(
             "export_profile",
@@ -1979,6 +1988,7 @@ fn share_file_with(
             label: Some("Tournament".to_string()),
             destination: destination.token,
             confirmed_switch: false,
+            include: None,
         },
         &h.watch(),
     )
@@ -2096,6 +2106,801 @@ fn share() -> Vec<Rec> {
     out
 }
 
+// ----- automatic backups, recovery, background settings -----
+
+impl Rec {
+    fn get_recovery(&mut self) -> crate::dto::RecoveryView {
+        self.call("get_recovery", json!({}), |h, _| Ok(h.recovery()))
+            .unwrap()
+    }
+
+    fn list_auto_backups(&mut self) -> crate::dto::AutoBackupsView {
+        self.call("list_auto_backups", json!({}), |h, _| Ok(h.auto_backups()))
+            .unwrap()
+    }
+
+    fn prepare_recovery(
+        &mut self,
+        intent: crate::dto::RecoveryIntent,
+    ) -> Result<crate::dto::RestorePreview, AppError> {
+        self.call(
+            "prepare_recovery",
+            json!({ "intent": intent.clone() }),
+            |h, w| h.prepare_recovery(intent, w),
+        )
+    }
+
+    /// The handle's view of the harness (direct commands).
+    fn handle(h: &Harness) -> crate::handle::WorkerHandle {
+        crate::handle::WorkerHandle::from_parts(
+            h.tx.clone(),
+            Arc::clone(&h.shared),
+            h.worker.config.clone(),
+            None,
+            Some(h.sim.clone()),
+        )
+    }
+}
+
+/// A keyboard reset (Fn + Space held): the factory forms and the reset
+/// notification; the worker is in `ResetSeen` afterwards.
+fn keyboard_reset(h: &mut Harness) {
+    h.with_sim(|s| s.factory_reset_all());
+    h.sim.apply(SimAction::KeyboardReset).unwrap();
+    h.tick();
+}
+
+/// A ready keyboard whose four profiles each have an automatic backup.
+fn every_profile_read() -> Harness {
+    let mut h = Harness::ready();
+    for p in [2u8, 3, 4, 1] {
+        let preview = h.prepare_switch(p).unwrap();
+        h.apply_switch(&Harness::token(&preview.token), &h.watch())
+            .unwrap();
+    }
+    h
+}
+
+/// The newest automatic backup of every profile that has one.
+fn newest_backups(view: &crate::dto::RecoveryView) -> Vec<FileToken> {
+    view.profiles
+        .iter()
+        .filter_map(|p| p.backups.first())
+        .map(|b| b.file.token.clone())
+        .collect()
+}
+
+/// The Recovery card and the automatic backups (Backup & profiles).
+fn recovery() -> Vec<Rec> {
+    let mut out = Vec::new();
+
+    // Nothing wrong: the first read was backed up.
+    let mut r = Rec::ready("recovery_nothing_wrong");
+    r.get_recovery();
+    r.list_auto_backups();
+    out.push(r);
+
+    // The keyboard reported a reset; after the user's reconnect the read
+    // looks reset: profile 1's factory tables are held.
+    let mut h = Harness::ready();
+    keyboard_reset(&mut h);
+    let mut r = Rec::new("recovery_reset_suspected", h);
+    r.call("reconnect", json!({}), |h, _| {
+        h.op(|reply| Request::Reconnect { reply })
+    })
+    .unwrap();
+    r.wait(3000);
+    let view = r.get_recovery();
+    assert_eq!(
+        view.profiles[0].state,
+        crate::dto::RecoveryProfileState::ResetSuspected
+    );
+    out.push(r);
+
+    // "It's fine, keep them".
+    let mut h = Harness::ready();
+    keyboard_reset(&mut h);
+    h.op(|reply| Request::Reconnect { reply }).unwrap();
+    h.until_ready();
+    let mut r = Rec::new("recovery_keep_current", h);
+    r.get_recovery();
+    r.call("keep_current_settings", json!({"profiles": []}), |h, _| {
+        h.keep_current(&[])
+    })
+    .unwrap();
+    r.list_auto_backups();
+    out.push(r);
+
+    // Restore one profile from its automatic backup: the standard restore
+    // review, then the write.
+    let mut h = Harness::ready();
+    keyboard_reset(&mut h);
+    h.op(|reply| Request::Reconnect { reply }).unwrap();
+    h.until_ready();
+    let mut r = Rec::new("recovery_restore_ok", h);
+    let view = r.get_recovery();
+    let preview = r
+        .prepare_recovery(crate::dto::RecoveryIntent {
+            files: vec![view.profiles[0].backups[0].file.token.clone()],
+            allow_firmware_mismatch: false,
+            confirmed_switches: Vec::new(),
+        })
+        .unwrap();
+    r.apply_restore(&Rec::token(&preview.token)).unwrap();
+    r.get_recovery();
+    out.push(r);
+
+    // Restore all profiles: the automatic backups composed; the comparison
+    // asks for the profile switches first.
+    let mut h = every_profile_read();
+    keyboard_reset(&mut h);
+    h.op(|reply| Request::Reconnect { reply }).unwrap();
+    h.until_ready();
+    let mut r = Rec::new("recovery_restore_all_preview", h);
+    let view = r.get_recovery();
+    assert!(view.can_restore_all);
+    let files = newest_backups(&view);
+    r.prepare_recovery(crate::dto::RecoveryIntent {
+        files: files.clone(),
+        allow_firmware_mismatch: false,
+        confirmed_switches: Vec::new(),
+    })
+    .unwrap_err();
+    r.prepare_recovery(crate::dto::RecoveryIntent {
+        files,
+        allow_firmware_mismatch: false,
+        confirmed_switches: vec![2, 3, 4],
+    })
+    .unwrap();
+    out.push(r);
+
+    // Another firmware than the automatic backups': reported and held.
+    let mut h = Harness::ready();
+    h.sim.apply(SimAction::Unplug).unwrap();
+    h.tick();
+    h.with_sim(|s| *s = seeds::firmware_sim("3.23.01"));
+    // The new simulator has its own clock (its epoch is the real time it
+    // was made): the next enumeration is due at once, so that the
+    // recording does not depend on the real time between the two.
+    h.worker.next_enum = None;
+    h.sim.apply(SimAction::Replug).unwrap();
+    let mut r = Rec::new("recovery_firmware_changed", h);
+    r.mark();
+    r.h.until_ready();
+    r.wait(300);
+    let view = r.get_recovery();
+    assert!(view.firmware_changed.is_some());
+    out.push(r);
+
+    // The automatic backups list: after a write, a change made elsewhere,
+    // one kept (pinned).
+    let mut h = Harness::ready();
+    let preview = h
+        .prepare_trigger(h.trigger_intent(&[W], Some(60), None))
+        .unwrap();
+    h.apply_trigger(&Harness::token(&preview.token), &h.watch())
+        .unwrap();
+    h.refresh().unwrap();
+    h.with_sim(|s| {
+        let mut light = s.table(profile(1), SimTable::MainLight).unwrap().to_vec();
+        light[1] = 2;
+        s.set_table(profile(1), SimTable::MainLight, light);
+    });
+    h.refresh().unwrap();
+    let mut r = Rec::new("auto_backups_list", h);
+    let list = r.list_auto_backups();
+    let oldest = list.entries.last().unwrap().file.token.clone();
+    r.call(
+        "pin_auto_backup",
+        json!({"file": oldest, "pinned": true}),
+        |h, _| crate::ops::recovery::pin_auto_backup(&h.shared, &h.worker.config, &oldest, true),
+    )
+    .unwrap();
+    out.push(r);
+
+    // Export of chosen parts (dead band and SOCD left out, the UI's
+    // default), and an export from an automatic backup (no traffic).
+    let mut r = Rec::ready("export_options");
+    let file = r
+        .call(
+            "choose_export_destination",
+            json!({"profile": 1, "dialog": dialog()}),
+            |h, _| Ok(Some(h.destination("profile-1.owprofile.json"))),
+        )
+        .unwrap()
+        .unwrap();
+    let intent = crate::dto::ExportIntent {
+        source: crate::dto::ExportSource::Keyboard,
+        profile: 1,
+        label: Some("Tournament".to_string()),
+        destination: file.token,
+        confirmed_switch: false,
+        include: Some(crate::dto::ShareSelectionView {
+            triggers: true,
+            lighting: true,
+            keys: true,
+            dead_band: false,
+            socd: false,
+        }),
+    };
+    r.call(
+        "export_profile",
+        json!({ "intent": intent.clone() }),
+        |h, w| h.export(intent, w),
+    )
+    .unwrap();
+    out.push(r);
+
+    // The keyboard reported a reset, before "Reconnect and compare": the
+    // card shows the report only (nothing compared yet).
+    let mut h = Harness::ready();
+    keyboard_reset(&mut h);
+    let mut r = Rec::new("recovery_reset_seen", h);
+    let view = r.get_recovery();
+    assert!(view.reset_reported);
+    out.push(r);
+
+    // Automatic backups off (Settings > Background): the list and the card
+    // say so.
+    let h = Harness::ready();
+    let path = h.worker.config.settings_path.clone().unwrap();
+    crate::settings::set_background(
+        &path,
+        &crate::dto::BackgroundSettingsIntent {
+            tray_enabled: false,
+            start_with_windows: false,
+            notifications: crate::dto::NotificationSettings::default(),
+            auto_backup: crate::dto::AutoBackupSettings {
+                enabled: false,
+                keep: 10,
+            },
+        },
+    )
+    .unwrap();
+    let mut r = Rec::new("auto_backups_off", h);
+    assert!(!r.list_auto_backups().enabled);
+    r.get_recovery();
+    out.push(r);
+
+    // No keyboard read yet (the app started with it unplugged): every
+    // keyboard's automatic backups.
+    let mut h = Harness::ready();
+    h.sim.apply(SimAction::Unplug).unwrap();
+    h.ticks(40);
+    h.shared.known_good().device = None;
+    let mut r = Rec::new("auto_backups_no_keyboard", h);
+    assert!(!r.list_auto_backups().connected_keyboard);
+    out.push(r);
+
+    // Export from a backup file (Share a profile, source "a backup file").
+    let mut r = Rec::ready("export_from_backup_file");
+    let (_, saved) = r.h.backup_all("all-profiles.owbackup.json");
+    let summary = r.open_file(saved).unwrap();
+    let file = r
+        .call(
+            "choose_export_destination",
+            json!({"profile": 2, "dialog": dialog()}),
+            |h, _| Ok(Some(h.destination("profile-2.owprofile.json"))),
+        )
+        .unwrap()
+        .unwrap();
+    let intent = crate::dto::ExportIntent {
+        source: crate::dto::ExportSource::File {
+            file: summary.file.token.clone(),
+        },
+        profile: 2,
+        label: None,
+        destination: file.token,
+        confirmed_switch: false,
+        include: Some(crate::dto::ShareSelectionView {
+            triggers: true,
+            lighting: true,
+            keys: true,
+            dead_band: false,
+            socd: false,
+        }),
+    };
+    r.call(
+        "export_profile",
+        json!({ "intent": intent.clone() }),
+        |h, w| h.export(intent, w),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("export_from_auto_backup");
+    let list = r.list_auto_backups();
+    let auto = list.entries[0].file.token.clone();
+    let file = r
+        .call(
+            "choose_export_destination",
+            json!({"profile": 1, "dialog": dialog()}),
+            |h, _| Ok(Some(h.destination("profile-1.owprofile.json"))),
+        )
+        .unwrap()
+        .unwrap();
+    // The Share UI's default parts (dead band and SOCD left out), as the page sends them.
+    let intent = crate::dto::ExportIntent {
+        source: crate::dto::ExportSource::File { file: auto },
+        profile: 1,
+        label: None,
+        destination: file.token,
+        confirmed_switch: false,
+        include: Some(crate::dto::ShareSelectionView {
+            triggers: true,
+            lighting: true,
+            keys: true,
+            dead_band: false,
+            socd: false,
+        }),
+    };
+    r.call(
+        "export_profile",
+        json!({ "intent": intent.clone() }),
+        |h, w| h.export(intent, w),
+    )
+    .unwrap();
+    out.push(r);
+
+    out
+}
+
+/// A shell that cannot change the Run entry.
+struct FailingShell;
+
+impl crate::sink::ShellHook for FailingShell {
+    fn apply(&self, _changes: &crate::dto::ShellChanges) -> Result<(), AppError> {
+        Err(AppError::new(
+            crate::dto::AppErrorKind::Io,
+            "cannot change the Windows start entry: access denied",
+        ))
+    }
+}
+
+/// Settings > Background and Profile names.
+fn background() -> Vec<Rec> {
+    let mut out = Vec::new();
+
+    let mut r = Rec::ready("settings_background");
+    r.call("get_background_settings", json!({}), |h, _| {
+        Ok(Rec::handle(h).background_settings())
+    })
+    .unwrap();
+    let intent = crate::dto::BackgroundSettingsIntent {
+        tray_enabled: true,
+        start_with_windows: true,
+        notifications: crate::dto::NotificationSettings {
+            reset: true,
+            auto_switch: true,
+        },
+        auto_backup: crate::dto::AutoBackupSettings {
+            enabled: true,
+            keep: 20,
+        },
+    };
+    r.call(
+        "set_background_settings",
+        json!({ "settings": intent }),
+        |h, _| Rec::handle(h).set_background_settings(&intent),
+    )
+    .unwrap();
+    let refused = crate::dto::BackgroundSettingsIntent {
+        auto_backup: crate::dto::AutoBackupSettings {
+            enabled: true,
+            keep: 0,
+        },
+        ..intent
+    };
+    r.call(
+        "set_background_settings",
+        json!({ "settings": refused }),
+        |h, _| Rec::handle(h).set_background_settings(&refused),
+    )
+    .unwrap_err();
+    r.call("get_profile_names", json!({}), |h, _| {
+        Ok(Rec::handle(h).profile_names())
+    })
+    .unwrap();
+    let names = crate::dto::ProfileNamesIntent {
+        product: "W75HEARGB".to_string(),
+        names: vec![
+            Some("Work".to_string()),
+            Some("FPS".to_string()),
+            None,
+            Some("Racing".to_string()),
+        ],
+    };
+    r.call(
+        "set_profile_names",
+        json!({ "names": names.clone() }),
+        |h, _| Rec::handle(h).set_profile_names(&names),
+    )
+    .unwrap();
+    out.push(r);
+
+    // The shell could not change the Run entry (the settings are saved).
+    let mut r = Rec::ready("settings_background_shell_error");
+    Rec::handle(&r.h).set_shell_hook(std::sync::Arc::new(FailingShell));
+    r.call("get_background_settings", json!({}), |h, _| {
+        Ok(Rec::handle(h).background_settings())
+    })
+    .unwrap();
+    let on = crate::dto::BackgroundSettingsIntent {
+        tray_enabled: true,
+        start_with_windows: true,
+        notifications: crate::dto::NotificationSettings::default(),
+        auto_backup: crate::dto::AutoBackupSettings::default(),
+    };
+    let applied = r
+        .call(
+            "set_background_settings",
+            json!({ "settings": on }),
+            |h, _| Rec::handle(h).set_background_settings(&on),
+        )
+        .unwrap();
+    assert!(applied.shell_error.is_some());
+    out.push(r);
+
+    // The settings file could not be read at start: kept aside, told once.
+    let h = Harness::ready();
+    let path = h.worker.config.settings_path.clone().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{ not json").unwrap();
+    crate::handle::check_settings_file(&h.shared, &h.worker.config);
+    let mut r = Rec::new("settings_invalid", h);
+    r.mark();
+    // As `subscribe` sends it; the name's time stamp is the real time of
+    // the move, fixed here so that the fixture does not change.
+    if let Some(crate::dto::Notice::SettingsFileInvalid { kept_as }) =
+        r.h.shared.take_start_notice()
+    {
+        assert!(kept_as.is_some());
+        r.h.shared.notice(crate::dto::Notice::SettingsFileInvalid {
+            kept_as: Some("settings.invalid-20261024-073000.json".to_string()),
+        });
+    }
+    r.call("get_background_settings", json!({}), |h, _| {
+        Ok(Rec::handle(h).background_settings())
+    })
+    .unwrap();
+    out.push(r);
+
+    out
+}
+
+// ----- per-game automatic profiles, the CLI -----
+
+/// The running programs of the Games fixtures.
+fn running_programs() -> Vec<crate::shell::RunningProgram> {
+    vec![
+        crate::shell::RunningProgram {
+            pid: 4100,
+            exe: "cs2.exe".to_string(),
+            path: Some(r"C:\Program Files (x86)\Steam\steamapps\common\cs2\cs2.exe".to_string()),
+        },
+        crate::shell::RunningProgram {
+            pid: 4200,
+            exe: "javaw.exe".to_string(),
+            path: Some(r"C:\Program Files\Java\bin\javaw.exe".to_string()),
+        },
+        crate::shell::RunningProgram {
+            pid: 4300,
+            exe: "Discord.exe".to_string(),
+            path: Some(r"C:\Users\you\AppData\Local\Discord\Discord.exe".to_string()),
+        },
+    ]
+}
+
+/// The rules of the Games fixtures: CS2 -> 2 (by folder), Minecraft
+/// (`javaw.exe`, a generic name) -> 3, a typed name -> 4 (off); back to 1.
+fn game_rules() -> crate::dto::AutoProfileRulesIntent {
+    use crate::dto::{AutoProfileRuleIntent, RuleProgramIntent};
+    let rule = |label: &str, exe: &str, profile: u8, enabled: bool| AutoProfileRuleIntent {
+        id: None,
+        label: label.to_string(),
+        program: RuleProgramIntent::Name {
+            exe: exe.to_string(),
+        },
+        profile,
+        enabled,
+    };
+    crate::dto::AutoProfileRulesIntent {
+        enabled: true,
+        default_profile: Some(1),
+        rules: vec![
+            rule("Counter-Strike 2", "cs2.exe", 2, true),
+            rule("Minecraft", "javaw.exe", 3, true),
+            rule("Racing", "racer.exe", 4, false),
+        ],
+    }
+}
+
+/// A game in front (the platform feed).
+fn game_in_front(h: &Harness, pid: u32, exe: &str) {
+    Rec::handle(h).foreground_changed(Some(crate::shell::ForegroundProgram {
+        pid,
+        exe: Some(exe.to_string()),
+        path: None,
+        elevated: true,
+    }));
+}
+
+impl Rec {
+    fn auto_state(&mut self) -> crate::dto::AutoProfileStateView {
+        self.call("get_auto_profile_state", json!({}), |h, _| {
+            Ok(Rec::handle(h).auto_profile_state())
+        })
+        .unwrap()
+    }
+
+    fn set_rules(
+        &mut self,
+        rules: crate::dto::AutoProfileRulesIntent,
+    ) -> Result<crate::dto::AutoProfileStateView, AppError> {
+        self.call(
+            "set_auto_profile_rules",
+            json!({ "rules": rules.clone() }),
+            |h, _| Rec::handle(h).set_auto_profile_rules(&rules),
+        )
+    }
+
+    fn report_ui(&mut self, state: crate::dto::UiStateReport) {
+        self.call("report_ui_state", json!({ "state": state }), |h, _| {
+            Rec::handle(h).report_ui_state(state);
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+/// Settings > Games and the automatic switches.
+fn games() -> Vec<Rec> {
+    use crate::dto::{AutoProfileRuleIntent, RuleProgramIntent, UiStateReport};
+    let mut out = Vec::new();
+
+    // Adding rules: running programs, the file dialog, "detect the next
+    // program I open" (a generic name warns).
+    let mut r = Rec::ready("games_settings");
+    Rec::handle(&r.h).set_program_source(Arc::new(crate::sink::recorder::FixedPrograms(
+        running_programs(),
+    )));
+    r.auto_state();
+    let running = r
+        .call("list_running_programs", json!({}), |h, _| {
+            Ok(Rec::handle(h).list_running_programs())
+        })
+        .unwrap();
+    let picked = r
+        .call(
+            "pick_game_program",
+            json!({ "dialog": {"title": "Choose a game", "filter": "Programs"} }),
+            |h, _| {
+                Rec::handle(h)
+                    .register_program(std::path::Path::new(r"D:\Games\Racer\racer.exe"))
+                    .map(Some)
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let detected = r
+        .call("detect_next_program", json!({}), |h, _| {
+            let handle = Arc::new(Rec::handle(h));
+            let waiter = {
+                let handle = Arc::clone(&handle);
+                std::thread::spawn(move || {
+                    handle.detect_next_program(std::time::Duration::from_secs(10))
+                })
+            };
+            while !h.shared.auto().detecting() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            handle.foreground_changed(Some(crate::shell::ForegroundProgram {
+                pid: 4400,
+                exe: None,
+                path: Some(r"D:\Games\Valorant\VALORANT.exe".to_string()),
+                elevated: false,
+            }));
+            Ok(waiter.join().unwrap())
+        })
+        .unwrap()
+        .unwrap();
+    let token = |exe: &str| {
+        running
+            .iter()
+            .find(|p| p.exe == exe)
+            .map(|p| p.token.clone())
+            .unwrap()
+    };
+    let rule = |label: &str, program: RuleProgramIntent, profile: u8, enabled: bool| {
+        AutoProfileRuleIntent {
+            id: None,
+            label: label.to_string(),
+            program,
+            profile,
+            enabled,
+        }
+    };
+    let rules = crate::dto::AutoProfileRulesIntent {
+        enabled: true,
+        default_profile: Some(1),
+        rules: vec![
+            rule(
+                "Counter-Strike 2",
+                RuleProgramIntent::Picked {
+                    token: token("cs2.exe"),
+                },
+                2,
+                true,
+            ),
+            rule(
+                "Minecraft",
+                RuleProgramIntent::Picked {
+                    token: token("javaw.exe"),
+                },
+                3,
+                true,
+            ),
+            rule(
+                "Racer",
+                RuleProgramIntent::Picked {
+                    token: picked.token,
+                },
+                4,
+                false,
+            ),
+            rule(
+                "Valorant",
+                RuleProgramIntent::Picked {
+                    token: detected.token,
+                },
+                2,
+                true,
+            ),
+        ],
+    };
+    r.set_rules(rules).unwrap();
+    // Refused: a path typed as the program name.
+    let mut bad = game_rules();
+    bad.rules = vec![rule(
+        "Bad",
+        RuleProgramIntent::Name {
+            exe: r"C:\Games\x.exe".to_string(),
+        },
+        2,
+        true,
+    )];
+    r.set_rules(bad).unwrap_err();
+    r.auto_state();
+    out.push(r);
+
+    // A game in front: the profile is switched after 1.5 s (the Auto chip),
+    // then the game exits and the default profile is back.
+    let mut r = Rec::ready("games_live");
+    r.set_rules(game_rules()).unwrap();
+    r.mark();
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(800);
+    r.auto_state();
+    r.wait(3000);
+    let state = r.auto_state();
+    assert!(state.status.holding.is_some(), "{state:?}");
+    out.push(r);
+
+    let mut r = Rec::ready("games_returned_to_default");
+    r.set_rules(game_rules()).unwrap();
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(3000);
+    r.mark();
+    Rec::handle(&r.h).process_exited(4100);
+    r.wait(9000);
+    let state = r.auto_state();
+    assert_eq!(state.recent.len(), 2, "{state:?}");
+    out.push(r);
+
+    // Unwritten changes: the switch waits, and is skipped after 30 s.
+    let mut r = Rec::ready("games_deferred_drafts");
+    r.set_rules(game_rules()).unwrap();
+    r.report_ui(UiStateReport {
+        drafts: true,
+        vendor_acknowledged: true,
+    });
+    r.mark();
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(2000);
+    let state = r.auto_state();
+    assert!(state.status.waiting.is_some(), "{state:?}");
+    r.wait(30_000);
+    r.auto_state();
+    out.push(r);
+
+    // Another program used the keyboard 1 minute ago: the switch waits.
+    let mut r = Rec::ready("games_deferred_other_program");
+    r.set_rules(game_rules()).unwrap();
+    r.h.sim
+        .apply(SimAction::VendorHeartbeat {
+            count: 1,
+            interval_ms: 100,
+        })
+        .unwrap();
+    r.h.ticks(5);
+    r.h.op(|reply| Request::RecheckOtherProgram { reply })
+        .unwrap();
+    r.h.until_ready();
+    r.h.ticks(600);
+    r.mark();
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(2000);
+    let state = r.auto_state();
+    assert_eq!(
+        state.status.waiting.map(|w| w.reason),
+        Some(crate::dto::AutoWaitReason::RecentForeignActivity)
+    );
+    out.push(r);
+
+    // Paused: by the user, and after a failed switch.
+    let mut r = Rec::ready("games_paused");
+    r.set_rules(game_rules()).unwrap();
+    r.call("pause_auto_profile", json!({ "paused": true }), |h, _| {
+        Ok(Rec::handle(h).pause_auto_profile(true))
+    })
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("games_paused_failed");
+    r.set_rules(game_rules()).unwrap();
+    r.h.with_sim(|s| s.ignore_next_selects(8));
+    r.mark();
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(4000);
+    let state = r.auto_state();
+    assert!(
+        matches!(
+            state.status.paused,
+            Some(crate::dto::AutoPauseReason::SwitchFailed { .. })
+        ),
+        "{state:?}"
+    );
+    r.h.with_sim(|s| s.ignore_next_selects(0));
+    r.call("pause_auto_profile", json!({ "paused": false }), |h, _| {
+        Ok(Rec::handle(h).pause_auto_profile(false))
+    })
+    .unwrap();
+    r.wait(3000);
+    out.push(r);
+
+    // The CLI holds the device lock: the app pauses (the banner), a game's
+    // switch waits; after the CLI the keyboard is read again and the switch
+    // is made.
+    let mut h = Harness::with_config(1, |c| {
+        c.lock_dir = c.state_dir.parent().map(|p| p.join("lock"));
+    });
+    h.until_ready();
+    let lock = h.worker.config.lock_dir.clone().unwrap();
+    let mut r = Rec::new("paused_for_cli", h);
+    r.set_rules(game_rules()).unwrap();
+    r.mark();
+    let cli = openwraith_hid::DeviceLock::try_exclusive(
+        &lock,
+        openwraith_hid::coordination::TOOL_CLI,
+        "set trigger",
+    )
+    .unwrap();
+    r.wait(1200);
+    assert!(r.h.status().paused_for_cli);
+    game_in_front(&r.h, 4100, "cs2.exe");
+    r.wait(2000);
+    r.call("refresh", json!({}), |h, _| h.refresh())
+        .unwrap_err();
+    r.auto_state();
+    drop(cli);
+    r.wait(6000);
+    assert!(!r.h.status().paused_for_cli);
+    r.auto_state();
+    out.push(r);
+
+    out
+}
+
 /// Every scenario, rendered.
 fn render_all() -> BTreeMap<String, String> {
     let mut files = BTreeMap::new();
@@ -2109,6 +2914,9 @@ fn render_all() -> BTreeMap<String, String> {
         .chain(editors())
         .chain(depth())
         .chain(share())
+        .chain(recovery())
+        .chain(background())
+        .chain(games())
     {
         ids.push(rec.id);
         let (name, text) = rec.finish();

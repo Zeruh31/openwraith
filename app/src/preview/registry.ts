@@ -7,6 +7,7 @@ import { scenarios as actuation } from "./scenarios/actuation";
 import { scenarios as backupRestore } from "./scenarios/backupRestore";
 import { scenarios as keys } from "./scenarios/keys";
 import { scenarios as lighting } from "./scenarios/lighting";
+import { scenarios as settings } from "./scenarios/settings";
 import { scenarios as shell } from "./scenarios/shell";
 import type { Fixture, PreviewScenario } from "./types";
 
@@ -31,7 +32,12 @@ export function routeForFixture(id: string): string {
     }
     return "#/keys";
   }
+  // The Recovery card opens on its own route; the automatic backups are a section of #/backup.
+  if (id.startsWith("recovery_")) return "#/backup?recover=1";
+  if (id.startsWith("games_")) return "#/settings?tab=games";
+  if (id.startsWith("settings_")) return "#/settings?tab=background";
   if (
+    id.startsWith("auto_backups_") ||
     id.startsWith("backup_") ||
     id.startsWith("restore_") ||
     id.startsWith("export_") ||
@@ -51,6 +57,7 @@ export const SCENARIO_GROUPS: readonly ScenarioGroup[] = [
   { page: "actuation", scenarios: actuation },
   { page: "lighting", scenarios: lighting },
   { page: "backup", scenarios: backupRestore },
+  { page: "settings", scenarios: settings },
   {
     page: "fixtures",
     scenarios: fixtureIds.map((id) => ({ id: `fixture:${id}`, fixture: id, route: routeForFixture(id) })),

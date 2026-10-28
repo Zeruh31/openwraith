@@ -57,6 +57,13 @@ export const shell: Messages<typeof en> = {
         effect: "Efekt",
         colors: "Tuş renkleri",
       },
+      settings: {
+        general: "Genel",
+        background: "Arka plan",
+        games: "Oyunlar",
+        profiles: "Profil adları",
+        about: "Hakkında",
+      },
     },
   },
   sections: {
@@ -78,7 +85,14 @@ export const shell: Messages<typeof en> = {
       busy: "Meşgul",
       notReady: "Bağlı değil",
       blocked: "Yazma duraklatıldı",
+      pausedForCli: "Bir OpenWraith komutu çalışıyor",
     },
+    profileOptionNamed: (p) => `Profil ${p.n}, ${p.name}`,
+    auto: "Otomatik",
+    autoTitle: (p) =>
+      `${p.label}, klavyeyi şu profile geçirdi: ${p.profile}. Profili kendiniz seçerseniz oyun kapanana kadar sizin seçiminiz geçerli olur. Ayarlar > Oyunlar'ı açın.`,
+    autoPaused: "Otomatik duraklatıldı",
+    autoPausedTitle: "Oyunlar için otomatik profiller duraklatıldı. Sürdürmek için Ayarlar > Oyunlar'ı açın.",
     statusButton: "Klavye bağlantısının ayrıntıları",
     live: "Canlı",
     liveTitle: "Tuş derinliği görünümü açık. Durdurmak için Aktivasyon > Tuş derinliği sekmesini açın.",
@@ -145,6 +159,32 @@ export const shell: Messages<typeof en> = {
       "OpenWraith her değişiklikten önce bir güvenlik yedeği alır; şu anda alamadığı için yazma kapalı. Okuma çalışmaya devam ediyor.",
     staleTitle: "Gösterilen değerler güncel olmayabilir",
     staleBody: "Klavye okunduktan sonra klavyede bir şey değişti. Bir şey değiştirmeden önce klavyeyi yeniden okuyun.",
+    recoveryTitle: "Klavyenizin ayarları sıfırlanmış olabilir",
+    recoveryProfiles: (p) =>
+      p.count === 1
+        ? `${p.list} numaralı profil, son otomatik yedeğinin aksine şimdi fabrika ayarlarında görünüyor.`
+        : `${p.list} numaralı profiller, son otomatik yedeklerinin aksine şimdi fabrika ayarlarında görünüyor.`,
+    recoveryReported: "Klavye fabrika ayarlarına döndüğünü bildirdi (Fn + Boşluk basılı tutuldu).",
+    recoveryNothingChanged: (p) =>
+      p.count === 1
+        ? "OpenWraith hiçbir şeyi değiştirmedi ve bu profilin otomatik yedeklerini duraklattı. Onu otomatik yedeklerinizle karşılaştırın ve gerekenleri geri yükleyin."
+        : "OpenWraith hiçbir şeyi değiştirmedi ve bu profillerin otomatik yedeklerini duraklattı. Onları otomatik yedeklerinizle karşılaştırın ve gerekenleri geri yükleyin.",
+    recoveryNever: "OpenWraith sormadan hiçbir şeyi geri yüklemez.",
+    recoveryReview: "İncele ve geri yükle…",
+    firmwareTitle: "Klavyenin firmware sürümü değişti",
+    firmwareBody:
+      "Firmware güncellemesi genellikle klavyenin ayarlarını sıfırlar. Klavyeyi güncellemeden önce alınan otomatik yedeklerle karşılaştırın.",
+    pausedForCliTitle: "Klavyeyi bir OpenWraith komutu kullanıyor",
+    pausedForCliBody:
+      "Komut satırı aracı çalışıyor. OpenWraith komut bitene kadar hiçbir şey göndermez, sonra klavyeyi yeniden okur. Yazma ve oyun profilleri o zamana kadar bekler.",
+    pausedForCliPurpose: "Komut",
+    autoPausedTitle: "Oyun profilleri duraklatıldı",
+    autoPausedRateLimit:
+      "Oyun kuralları bir saat içinde profili 30'dan fazla kez değiştirdi; bu yüzden OpenWraith onları duraklattı. Siz sürdürene ya da OpenWraith'i yeniden başlatana kadar duraklatılmış kalırlar.",
+    autoPausedFailed:
+      "Bir oyun kuralının profil geçişi çalışmadı; bu yüzden OpenWraith oyun profillerini duraklattı. Siz sürdürene ya da OpenWraith'i yeniden başlatana kadar duraklatılmış kalırlar.",
+    autoResume: "Sürdür",
+    autoOpenSettings: "Ayarlar > Oyunlar'ı aç",
     untestedTitle: "Firmware henüz test edilmedi",
     strayTravelTitle: "Tuş derinliği görünümü klavyede hâlâ açık olabilir",
     strayTravelBody:
@@ -168,6 +208,8 @@ export const shell: Messages<typeof en> = {
     drafts: "Şu yazılmamış değişiklikler atılacak:",
     confirm: (p) => `${p.n} numaralı profile geç`,
     already: (p) => `Klavye zaten profil ${p.n} üzerinde.`,
+    autoHolds: (p) =>
+      `${p.n} numaralı profili bir oyun kuralı (${p.label}) seçti. Şimdi geçerseniz OpenWraith oyun kapanana kadar sizin seçiminizi korur.`,
   },
   notices: {
     profileChanged: (p) => `Klavyede ${p.to} numaralı profile geçildi`,
@@ -177,6 +219,48 @@ export const shell: Messages<typeof en> = {
     socdToggled: (p) => (p.on ? "SOCD klavyeden açıldı (Fn + Sağ Shift)." : "SOCD klavyeden kapatıldı (Fn + Sağ Shift)."),
     switched: (p) => `Profil ${p.n} etkin`,
     switchWarnings: "Klavye olağan dışı yanıt verdi; teknik ayrıntılara bakın.",
+    autoSwitched: (p) => `${p.label}: profil ${p.n} etkin`,
+    autoSwitchedBack: (p) => `Oyun kapandı: profil ${p.n} yeniden etkin`,
+    autoWaiting: (p) => `${p.label}: ${p.n} numaralı profile geçiş bekliyor`,
+    autoWaitingBack: (p) => `${p.n} numaralı profile geri dönüş bekliyor`,
+    autoWaitingBody: (p) => `Bekliyor, çünkü ${p.reason}. 30 saniye sonra atlanır.`,
+    autoSkipped: (p) => `${p.label}: ${p.n} numaralı profile geçilmedi`,
+    autoSkippedBack: (p) => `${p.n} numaralı profile geri dönüş atlandı`,
+    autoSkippedBody: (p) =>
+      `OpenWraith 30 saniye bekledi, çünkü ${p.reason}. O profil gerekiyorsa elle geçin.`,
+    autoPaused: "Oyun profilleri duraklatıldı",
+    autoPausedRateLimit: "Bir saat içinde 30'dan fazla otomatik geçiş oldu.",
+    autoPausedFailed: "Bir profil geçişi çalışmadı.",
+    resetSuspected: (p) => `Profil ${p.n} sıfırlanmış görünüyor`,
+    resetSuspectedBody: "OpenWraith hiçbir şeyi değiştirmedi. Yedek ve profiller sayfasında inceleyin.",
+    firmwareChanged: (p) => `Klavyenin firmware sürümü ${p.known} sürümünden ${p.current} sürümüne değişti`,
+    firmwareChangedBody:
+      "Firmware güncellemeleri genellikle ayarları sıfırlar. Klavyeyi otomatik yedeklerinizle karşılaştırın.",
+    settingsInvalid: "OpenWraith'in ayar dosyası okunamadı",
+    settingsInvalidKept: (p) =>
+      `OpenWraith varsayılan ayarlarla başladı ve eski dosyayı ${p.file} adıyla sakladı.`,
+    settingsInvalidLost: "OpenWraith varsayılan ayarlarla başladı.",
+    autoBackupFailed: (p) => `Profil ${p.n} için otomatik yedek alınamadı`,
+    autoBackupFailedBody: "Klavyedeki ayarlarınız değişmedi. OpenWraith bir sonraki okumada yeniden dener.",
+  },
+  automation: {
+    waitReasons: {
+      not_connected: "klavye bağlı değil",
+      connecting: "OpenWraith klavyeye hâlâ bağlanıyor",
+      busy: "başka bir işlem sürüyor",
+      plan_pending: "incelemede açık bir değişiklik var",
+      drafts: "yazılmamış değişiklikler var",
+      depth_view: "tuş derinliği görünümü açık",
+      travel_test: "klavyede bir tuş derinliği testi hâlâ açık olabilir",
+      other_program: "klavyeyi başka bir program kullanıyor",
+      paused_for_cli: "klavyeyi bir OpenWraith komutu kullanıyor",
+      reset_seen: "klavye kendini sıfırladı",
+      released: "klavye bırakıldı",
+      fault: "OpenWraith bir iç hatadan sonra durdu",
+      recent_foreign_activity: "klavyeyi 2 dakikadan kısa süre önce başka bir program kullandı",
+      keymap_unsaved: "bir tuş ataması hâlâ kaydediliyor",
+      profile_changing: "profil değişiyor",
+    },
   },
   devSim: {
     title: "Simülatör denetimleri",

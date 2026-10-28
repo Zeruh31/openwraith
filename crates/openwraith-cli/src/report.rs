@@ -35,7 +35,7 @@ fn count(n: usize, what: &str) -> String {
 /// tenth: `2 s`, `1.5 s`.
 pub fn seconds_text(ms: u64) -> String {
     let tenths = ms.saturating_add(99) / 100;
-    if tenths % 10 == 0 {
+    if tenths.is_multiple_of(10) {
         format!("{} s", tenths / 10)
     } else {
         format!("{}.{} s", tenths / 10, tenths % 10)

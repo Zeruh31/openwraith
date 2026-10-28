@@ -12,8 +12,14 @@
 //!   (single-use plan tokens), a verified safety backup before every setting
 //!   write, the drift check, the operation journal, close deferral.
 //!
+//! * The per-game automatic profiles (a pure engine on a virtual clock, the
+//!   only caller of the library's profile switcher), the coexistence with the
+//!   CLI (the device lock, `PausedForCli`) and the shell's model of the tray
+//!   and the OS notifications ([`shell`]).
+//!
 //! Nothing here names a Tauri type; the app crate implements the sinks
-//! ([`EventSink`], [`ProgressSink`], [`ExitHook`]) over Tauri channels.
+//! ([`EventSink`], [`ProgressSink`], [`ExitHook`], [`ShellHook`],
+//! [`ProgramSource`], [`NotificationSink`], [`TraySink`]) over Tauri.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -25,6 +31,8 @@
 #[cfg(all(feature = "sim", not(debug_assertions)))]
 compile_error!("the simulator must never be part of a release build");
 
+mod auto;
+mod autobackup;
 mod backend;
 #[cfg(test)]
 mod catalog;
@@ -37,7 +45,9 @@ mod library;
 mod map;
 mod ops;
 mod settings;
+mod sha256;
 mod shared;
+pub mod shell;
 mod sink;
 mod tokens;
 mod worker;
@@ -48,7 +58,10 @@ mod tests;
 pub use config::{CoreConfig, TESTED_FIRMWARE};
 pub use handle::WorkerHandle;
 pub use settings::{load_settings, save_settings};
-pub use sink::{DepthSink, EventSink, ExitHook, ProgressSink};
+pub use sink::{
+    DepthSink, EventSink, ExitHook, NotificationSink, ProgramSource, ProgressSink, ShellHook,
+    TraySink,
+};
 
 #[cfg(any(test, feature = "sim"))]
 pub use backend::sim::{Pacing, SimOptions};

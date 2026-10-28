@@ -322,10 +322,10 @@ pub(crate) fn return_to<T: WriteTransport>(
     writer: &mut Writer<'_, T>,
     original: ProfileId,
 ) -> Option<u8> {
-    if !writer.is_poisoned() {
-        if let Ok(selected) = writer.select_profile(original) {
-            return Some(selected.profile.get());
-        }
+    if !writer.is_poisoned()
+        && let Ok(selected) = writer.select_profile(original)
+    {
+        return Some(selected.profile.get());
     }
     writer.known_profile().map(ProfileId::get)
 }

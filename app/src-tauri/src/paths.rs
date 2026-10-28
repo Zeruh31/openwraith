@@ -7,6 +7,9 @@
 //! | Settings (also trigger presets, hints shown) | `<app config>/settings.json` | the same |
 //! | Live key-depth marker | `<app local data>/state/travel-test-open` | `<app local data>/sim/state/travel-test-open` |
 //! | Macro library ("this PC") | `<app local data>/macro-library.json` | `<app local data>/sim/macro-library.json` |
+//! | Device lock shared with the CLI | `%LOCALAPPDATA%\OpenWraith\device.lock` | `<app local data>/sim/lock/device.lock` |
+//! | Automatic backups (known-good store) | `<app local data>/known-good` | `<app local data>/sim/known-good` |
+//! | Log of automatic profile switches | `<app local data>/state/automation.log` | `<app local data>/sim/state/automation.log` |
 
 use std::path::PathBuf;
 
@@ -26,6 +29,8 @@ pub fn core_config<R: Runtime>(app: &AppHandle<R>) -> Result<CoreConfig, String>
             .map_or_else(|| local.join("sim"), PathBuf::from);
         let mut config = CoreConfig::new(base.join("state"), version);
         config.safety_dir = Ok(base.join("safety-backups"));
+        // The simulator never coordinates with the real CLI's device lock.
+        config.lock_dir = Some(base.join("lock"));
         config
     } else {
         CoreConfig::new(local.join("state"), version)

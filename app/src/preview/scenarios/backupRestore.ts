@@ -90,4 +90,42 @@ export const scenarios: PreviewScenario[] = [
     ui: backup({ share: "import", into: 2, keys: true }),
   },
   { id: "import_apply_ok", fixture: "import_apply_ok", route: "#/backup", ui: backup({ share: "import", into: 2, keys: true }) },
+  // Export options: the parts to include (dead band and SOCD off), and other sources.
+  { id: "export_options", fixture: "export_options", route: "#/backup", ui: backup({ share: "export" }) },
+  {
+    id: "export_from_auto_backup",
+    fixture: "export_from_auto_backup",
+    route: "#/backup",
+    ui: backup({ share: "export", exportFrom: "automatic" }),
+  },
+  { id: "export_from_file", fixture: "export_options", route: "#/backup", ui: backup({ share: "export", exportFrom: "file" }) },
+  {
+    id: "export_from_backup_file",
+    fixture: "export_from_backup_file",
+    route: "#/backup",
+    ui: backup({ share: "export", exportFrom: "file" }),
+  },
+  // Automatic backups: the list, Keep (pin), Restore… into the restore wizard.
+  { id: "auto_backups_list", fixture: "auto_backups_list", route: "#/backup" },
+  { id: "auto_backups_off", fixture: "auto_backups_off", route: "#/backup?section=auto" },
+  { id: "auto_backups_no_keyboard", fixture: "auto_backups_no_keyboard", route: "#/backup?section=auto" },
+  // The Recovery card (`?recover=1`; it also opens on its own while a reset is suspected).
+  { id: "recovery_nothing_wrong", fixture: "recovery_nothing_wrong", route: "#/backup?recover=1" },
+  // The keyboard reported a reset: "Reconnect and compare", then profile 1 looks reset.
+  { id: "recovery_reset_seen", fixture: "recovery_reset_seen", route: "#/backup?recover=1" },
+  { id: "recovery_reset_suspected", fixture: "recovery_reset_suspected", route: "#/backup?recover=1" },
+  { id: "recovery_keep_current", fixture: "recovery_keep_current", route: "#/backup?recover=1" },
+  {
+    id: "recovery_restore_ok",
+    fixture: "recovery_restore_ok",
+    route: "#/backup?recover=1",
+    ui: backup({ recovery: "restore" }),
+  },
+  {
+    id: "recovery_restore_all_preview",
+    fixture: "recovery_restore_all_preview",
+    route: "#/backup?recover=1",
+    ui: backup({ recovery: "restore_all" }),
+  },
+  { id: "recovery_firmware_changed", fixture: "recovery_firmware_changed", route: "#/backup?recover=1" },
 ];

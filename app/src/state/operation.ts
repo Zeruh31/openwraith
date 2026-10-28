@@ -2,6 +2,7 @@
 // operation anyway (`operation_running`); this local lock is taken
 // synchronously in click handlers so a double click never starts two flows.
 
+import { useDict } from "../i18n";
 import type { OpKind } from "../ipc/bindings";
 import { useStatus } from "./status";
 import { createStore, useStore } from "./store";
@@ -49,4 +50,14 @@ export function useOperationLock(): OperationLock {
     kind: status.busy?.kind ?? null,
     local: holder !== null,
   };
+}
+
+/**
+ * Why "Read again" is unavailable now (`null`: it is available): an
+ * OpenWraith command holds the keyboard, and the worker sends nothing then.
+ */
+export function useReadBlockedReason(): string | null {
+  const status = useStatus();
+  const dict = useDict();
+  return status.paused_for_cli ? dict.backupRestore.reasons.pausedForCli : null;
 }

@@ -251,7 +251,9 @@ impl MacroProgram {
         let steps_end = STEPS_OFFSET + usize::from(content.step_bytes());
         let steps = b
             .get(STEPS_OFFSET..steps_end)?
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|step| {
                 let usage = HidUsage::new(*step.first()?)?;
                 let motion = match step.get(1)? {

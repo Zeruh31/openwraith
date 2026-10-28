@@ -138,6 +138,16 @@ export function useDraftTabs(page: PageId): (string | null)[] {
     .map((entry) => entry.tab);
 }
 
+/** Whether any page has unwritten changes (outside React). */
+export function hasDrafts(): boolean {
+  return Object.keys(draftStore.get()).length > 0;
+}
+
+/** Calls `listener` after every change of the registered drafts; returns the unsubscribe function. */
+export function subscribeDrafts(listener: () => void): () => void {
+  return draftStore.subscribe(listener);
+}
+
 /** Discards the drafts of `pages` (every tab; all pages when omitted). */
 export function discardDrafts(pages?: readonly PageId[]): void {
   const drafts = draftStore.get();

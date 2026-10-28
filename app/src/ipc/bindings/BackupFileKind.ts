@@ -3,4 +3,4 @@
 /**
  * Where a backup file came from.
  */
-export type BackupFileKind = "user" | "safety";
+export type BackupFileKind = "user" | "safety" | "automatic";

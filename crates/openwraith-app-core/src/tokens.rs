@@ -4,7 +4,7 @@
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 
-use crate::dto::{DeviceId, FileToken, OpId, PlanToken};
+use crate::dto::{DeviceId, FileToken, OpId, PlanToken, ProgramToken};
 
 /// Mints tokens.
 #[derive(Debug)]
@@ -45,6 +45,11 @@ impl TokenMint {
     /// A new file token.
     pub(crate) fn file(&mut self) -> FileToken {
         FileToken(format!("f-{}", self.next_hex("file")))
+    }
+
+    /// A new program token.
+    pub(crate) fn program(&mut self) -> ProgramToken {
+        ProgramToken(format!("g-{}", self.next_hex("program")))
     }
 
     /// A new operation id.

@@ -65,6 +65,36 @@ pub enum SetCommand {
     Socd(SetSocdArgs),
 }
 
+impl SetCommand {
+    /// The command's name, e.g. `set trigger`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            SetCommand::Trigger(_) => "set trigger",
+            SetCommand::Light(_) => "set light",
+            SetCommand::Key(_) => "set key",
+            SetCommand::Macro(_) => "set macro",
+            SetCommand::Advanced(_) => "set advanced",
+            SetCommand::Colors(_) => "set colors",
+            SetCommand::Deadband(_) => "set deadband",
+            SetCommand::Socd(_) => "set socd",
+        }
+    }
+
+    /// Whether `--dry-run` was given (the command only reads).
+    pub fn dry_run(&self) -> bool {
+        match self {
+            SetCommand::Trigger(args) => args.flags.dry_run,
+            SetCommand::Light(args) => args.flags.dry_run,
+            SetCommand::Key(args) => args.flags.write.dry_run,
+            SetCommand::Macro(args) => args.flags.write.dry_run,
+            SetCommand::Advanced(args) => args.flags.write.dry_run,
+            SetCommand::Colors(args) => args.flags.write.dry_run,
+            SetCommand::Deadband(args) => args.flags.write.dry_run,
+            SetCommand::Socd(args) => args.flags.write.dry_run,
+        }
+    }
+}
+
 /// Options of every command that changes settings.
 #[derive(Debug, Clone, Default, Args)]
 pub struct WriteFlags {
@@ -671,9 +701,28 @@ pub struct ProfileExportArgs {
     /// Do not ask before switching to the profile when it is not active.
     #[arg(short, long)]
     pub yes: bool,
+
+    /// What to export, comma-separated (the device information is always
+    /// included).
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        value_name = "PARTS",
+        default_values_t = ImportPart::ALL
+    )]
+    pub include: Vec<ImportPart>,
 }
 
-/// The categories `profile import --include` takes.
+impl ProfileExportArgs {
+    /// The library's selection.
+    pub fn selection(&self) -> ImportSelection {
+        ImportPart::selection(&self.include)
+    }
+}
+
+/// The categories `profile import --include` and `profile export
+/// --include` take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ImportPart {
     /// Actuation and Rapid Trigger of every key.
@@ -687,6 +736,29 @@ pub enum ImportPart {
     /// The SOCD pairs (the SOCD power is one setting of the whole keyboard
     /// and keeps the keyboard's value).
     Socd,
+}
+
+impl ImportPart {
+    /// Every category.
+    pub const ALL: [ImportPart; 5] = [
+        ImportPart::Triggers,
+        ImportPart::Lighting,
+        ImportPart::Keys,
+        ImportPart::Deadband,
+        ImportPart::Socd,
+    ];
+
+    /// The library's selection of `parts`.
+    pub fn selection(parts: &[ImportPart]) -> ImportSelection {
+        let has = |part| parts.contains(&part);
+        ImportSelection {
+            triggers: has(ImportPart::Triggers),
+            lighting: has(ImportPart::Lighting),
+            keymap_group: has(ImportPart::Keys),
+            dead_band: has(ImportPart::Deadband),
+            socd: has(ImportPart::Socd),
+        }
+    }
 }
 
 /// `openwraith profile import FILE --into N ...`.
@@ -732,14 +804,7 @@ pub struct ProfileImportArgs {
 impl ProfileImportArgs {
     /// The library's selection.
     pub fn selection(&self) -> ImportSelection {
-        let has = |part| self.include.contains(&part);
-        ImportSelection {
-            triggers: has(ImportPart::Triggers),
-            lighting: has(ImportPart::Lighting),
-            keymap_group: has(ImportPart::Keys),
-            dead_band: has(ImportPart::Deadband),
-            socd: has(ImportPart::Socd),
-        }
+        ImportPart::selection(&self.include)
     }
 }
 
@@ -930,10 +995,10 @@ impl KeySpec {
         if Some(pos.index()) == model.knob_index {
             return Err(purpose.knob_message(&name));
         }
-        if Some(pos.index()) == model.fn_index {
-            if let Some(message) = purpose.fn_message(&name) {
-                return Err(message);
-            }
+        if Some(pos.index()) == model.fn_index
+            && let Some(message) = purpose.fn_message(&name)
+        {
+            return Err(message);
         }
         Ok(pos)
     }
@@ -987,10 +1052,10 @@ pub fn parse_key_as(text: &str, purpose: KeyUse) -> Result<KeySpec, String> {
             if Some(key.index) == model.knob_index {
                 return Err(purpose.knob_message(key.name));
             }
-            if Some(key.index) == model.fn_index {
-                if let Some(message) = purpose.fn_message(key.name) {
-                    return Err(message);
-                }
+            if Some(key.index) == model.fn_index
+                && let Some(message) = purpose.fn_message(key.name)
+            {
+                return Err(message);
             }
         }
     }

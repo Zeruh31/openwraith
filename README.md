@@ -21,19 +21,20 @@ one profile as a file and show live key depths.
 > configurator; no vendor code is included (see
 > [docs/PROTOCOL.md](docs/PROTOCOL.md)). Use at your own risk.
 
-## Status: Phase 5b (desktop app v0.2, first part)
+## Status: Phase 5b (desktop app v0.2)
 
 | Works now | Planned |
 |---|---|
-| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | Phase 5b-2 of the app: notification-area (tray) icon, start with Windows, notifications, automatic backups, reset detection and recovery, profile per game, profile names |
-| **Desktop app v0.2, first part (in development; simulator-tested):** Keys page (assignments, macros, advanced keys), trigger presets, dead band, SOCD, live key depth, key colours, profile export and import | A hardware run of the app's v0.2 editors (A11 onwards) |
-| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros, advanced keys, SOCD (read-only) | Linux and macOS builds of the app |
+| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | A hardware run of the app's v0.2 (A11-A35) |
+| **Desktop app v0.2 (simulator-tested, not yet run on the keyboard):** Keys page (assignments, macros, advanced keys), trigger presets, dead band, SOCD, live key depth, key colours, profile export and import; the notification-area (tray) icon, start with Windows, notifications, automatic backups, reset detection and recovery, profiles per game, profile names, taking turns with the CLI | Linux and macOS builds of the app; signed installers |
+| `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros, advanced keys, SOCD (read-only) | The gamepad (analog) mode |
 | `openwraith backup`: lossless backup of the active profile (read-only) | Switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
 | `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | Other models of the family (W60, W65, W100) |
 | `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | |
 | `openwraith set trigger` / `set light`: actuation, Rapid Trigger (also presets), main light | |
 | `openwraith profile [select N]`: show or switch the active profile | |
 | **v0.2, hardware-tested (H12-H24):** `set key` / `set macro` / `set advanced` / `set colors` / `set deadband` / `set socd`, `travel` (live key depth), `monitor`, `profile export` / `profile import` | |
+| **v0.2 (simulator-tested):** the CLI and the desktop app take turns through a lock file (a command fails at once while the app writes); `profile export --include` exports chosen parts | |
 
 Supported hardware: Wraith W75 (product code `W75HEARGB`) connected with the
 USB cable, firmware `V3.22.07` (USB `2e3c:c368`). The read-only commands were
@@ -47,7 +48,11 @@ the other macros; SOCD on/off is one setting for all profiles); both are
 handled now, and their re-check on the keyboard (H26, H27) passed on
 2026-10-28. The optional H25 was not run. The desktop app's v0.2 editors
 drive the same library paths; they were tested on the simulator and with
-recorded fixtures only, not yet on the keyboard. The packets use the
+recorded fixtures only, not yet on the keyboard. The same holds for what
+v0.2 adds around them (the notification-area icon, start with Windows,
+notifications, automatic backups, reset detection and recovery, profiles
+per game, the lock shared with the CLI): it adds no new way to write, and
+its hardware checks (A11-A35) are still to run. The packets use the
 command forms the vendor site sent and the keyboard accepted in the
 captures, built the way the site's code builds them; the cases captured in
 sessions 2-3 match byte for byte (tests compare them), and values whose
@@ -63,24 +68,26 @@ for every write. It uses the same library, so every rule under
 
 | Page | What you can do |
 |---|---|
-| **Keyboard** | Connection, model, firmware, active profile; read again; release the keyboard. The header switches the active profile (1-4). |
+| **Keyboard** | Connection, model, firmware, active profile; read again; release the keyboard. The header switches the active profile (1-4) and shows its local name ("Profile 2 · FPS") and an **Auto** chip while a game rule holds the profile. |
 | **Keys** (v0.2) | **Assignments:** what each key does on the base and Fn layers; change it (a key, a media key, a mouse button, a shortcut with one or two modifiers, a macro, an advanced key), reset it or swap two keys; keys that refer to an empty slot are listed with a one-click reset. **Macros:** the keyboard's 10 macro slots and a macro library on this PC; steps typed or recorded from the keyboard, four play modes, a check that every key is released. **Advanced keys:** Dynamic keystroke (DKS), Tap or hold (Mod-Tap) and Toggle. |
 | **Actuation** | **Actuation & Rapid Trigger:** select keys on the W75 (click, Shift + click, drag, Ctrl + A, WASD, arrows, a row, keys with the same setting), set the actuation point (0.02 mm steps) and Rapid Trigger; trigger presets (five built in, your own saved on this PC). **Dead band** (per profile), **SOCD** (the switch and up to 20 key pairs) and **Key depth** (a live view of how far each key is pressed). |
 | **Lighting** | **Effect:** the main light's effect (the keyboard's list plus Custom), colour, brightness and speed. **Key colours:** a colour per key, with select, brush, eyedropper, fill, gradient and undo. |
-| **Backup & profiles** | Back up all four profiles or the active one; restore a backup (all or some profiles) after a plan preview; **share a profile** (export one profile to a `.owprofile.json` file; import a profile file into any profile, choosing the parts); list and restore the safety backups. |
-| **Settings** | Language (Windows' language, English, Türkçe), theme (Windows' theme, light, dark), where your trigger presets are managed, one-time tips, the safety-backups folder, About. |
+| **Backup & profiles** | Back up all four profiles or the active one; restore a backup (all or some profiles) after a plan preview; **share a profile** (export one profile, from the keyboard, a backup file or an automatic backup, with the parts you choose, to a `.owprofile.json` file; import a profile file into any profile, choosing the parts); the **automatic backups** (restore, keep, show in folder); the **Recovery** card when the keyboard looks reset; list and restore the safety backups. |
+| **Settings** | **General:** language (Windows' language, English, Türkçe), theme (Windows' theme, light, dark), where your trigger presets are managed, one-time tips, the safety-backups folder. **Background:** the notification-area icon, start with Windows, notifications, automatic backups. **Games:** profiles per game. **Profile names.** **About.** |
 
-Not in this version yet: the notification-area (tray) icon, starting with
-Windows, notifications, automatic backups, reset detection and recovery,
-profiles that follow the game in front, profile names; the side light,
-polling rate, switch types and calibration, Win-Lock, and mouse or media
-steps in macros (there is no confirmed write command for them yet).
+Not in this version: the side light, polling rate, switch types and
+calibration, Win-Lock, the gamepad (analog) mode, and mouse or media steps
+in macros (there is no confirmed write command for them yet); Linux and
+macOS builds of the app; signed installers. Version 0.2 has not run on the
+keyboard yet: its editors and its background parts were tested on the
+simulator and with recorded fixtures (hardware checks A11-A35 in
+[docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
 
 ### Install (Windows 10 and 11, x64)
 
-- **Installer.** Run `OpenWraith_0.1.0_x64-setup.exe` (installs for the
+- **Installer.** Run `OpenWraith_0.2.0_x64-setup.exe` (installs for the
   current user without administrator rights; English or Turkish, from
-  Windows' language) or `OpenWraith_0.1.0_x64_en-US.msi` (per machine).
+  Windows' language) or `OpenWraith_0.2.0_x64_en-US.msi` (per machine).
   Build them yourself as described under [Development](#development); they
   end up in `target\release\bundle\nsis\` and `target\release\bundle\msi\`.
 - **Not signed yet.** Windows SmartScreen warns on the first start ("Windows
@@ -88,8 +95,13 @@ steps in macros (there is no confirmed write command for them yet).
 - **WebView2.** Windows 11 includes it. If it is missing, the installer
   downloads Microsoft's WebView2 installer (the only network access; the app
   itself never uses the network).
-- **Uninstall** in Windows Settings > Apps. Your safety backups stay where
-  they are.
+- **Uninstall** in Windows Settings > Apps. Your safety backups and
+  automatic backups stay where they are. **If you turned on "Start
+  OpenWraith with Windows", turn off the notification-area icon in
+  Settings > Background first:** the uninstaller does not remove that
+  start entry (otherwise remove "OpenWraith" in Task Manager > Startup apps
+  afterwards). An entry made while OpenWraith ran as administrator is for
+  all users and is removed only in Task Manager > Startup apps.
 
 ### Use
 
@@ -137,8 +149,9 @@ steps in macros (there is no confirmed write command for them yet).
   close.
 - **An interrupted write** (a crash or a power loss) is shown at every
   start until you dismiss it, with Undo for its safety backup.
-- **Don't run the CLI while the app is open:** both would talk to the
-  keyboard. "Release keyboard" (header) closes it without quitting the app.
+- **The CLI and the app take turns** (since v0.2, see below): while a CLI
+  command runs, the app sends nothing. "Release keyboard" (header) closes
+  the keyboard without quitting the app.
 - Firmware other than 3.22.07 is marked "not tested yet" on the Keyboard
   page and in every confirmation.
 - No account, no telemetry, no network. The app shows only its own content
@@ -193,19 +206,128 @@ What the v0.2 editors add to that:
   with the usual plan, safety backup and Undo; a file that replaces
   Fn + 1-4 or Fn + Space needs its own tick.
 
-Where the app keeps its files: safety backups as above; its settings, your
-trigger presets and the tips you dismissed in
-`%APPDATA%\io.github.zeruh31.openwraith\settings.json`; the macro library in
+### In the background (v0.2)
+
+What v0.2 adds around the editors is off or quiet by default, and none of
+it adds a way to write: automatic backups reuse the reads the app makes
+anyway, recovery is the normal restore with its review, and an automatic
+profile switch is the same profile select as Fn + 1-4.
+
+- **Notification-area (tray) icon** (Settings > Background, off by
+  default). With it on, closing the window keeps OpenWraith running next to
+  the clock (the first time, a notification says so); **Quit** in the
+  icon's menu ends it, and during a write it shows the window with the
+  close guard instead. The menu shows the keyboard and the active profile,
+  switches profiles (it opens the window instead while you have unwritten
+  changes, a review is open, writing is paused, or you haven't confirmed in
+  this run that the vendor site is closed), backs up the active profile
+  now, pauses game profiles and lists what needs your attention (a reset,
+  another program, a key-depth test that may still be running). Hiding the
+  window stops a live key-depth view, never a write.
+- **Start with Windows** (needs the icon): a per-user entry `OpenWraith` in
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` starts the app
+  hidden in the notification area (`--tray`). Turning the icon off removes
+  the entry. **The uninstaller does not remove it** (see Install). An entry
+  you turned off in Task Manager stays off: OpenWraith says so instead of
+  turning it back on. If OpenWraith ran as administrator when you turned
+  the option on, the entry is for all users (`HKLM`): turning the icon off
+  then cannot remove it, and OpenWraith says to turn it off in Task
+  Manager > Startup apps.
+- **Notifications** (Windows notifications of the installed app): the
+  keyboard reported a reset, a profile looks reset, the firmware changed,
+  an automatic backup failed (setting "reset alerts", on by default); a game
+  switched the profile (off by default); a game's switch waits for your
+  unwritten changes or was skipped, game profiles paused. At most one of a
+  kind every 10 minutes; clicking one opens the page it is about. Windows
+  may hold them back (Do not disturb); the banners in the window and the
+  icon always show what needs attention.
+- **Automatic backups** (on by default, the newest 10 of each profile
+  kept): when OpenWraith reads a profile that changed since its last
+  automatic backup, it saves a copy (a read that heard another program, and
+  a backup of all profiles, are not used). Nothing extra is sent to the
+  keyboard. Backup & profiles lists them (time, profile, why), restores one
+  through the normal review, shows the folder, and **Keep** pins one;
+  pinned automatic backups and safety backups are never deleted. Share a
+  profile can export from an automatic backup without the keyboard.
+- **Reset detection and recovery. OpenWraith never restores anything
+  without asking.** The keyboard reports a factory reset (Fn + Space held
+  for a few seconds), and a firmware update very likely resets the
+  settings too. When the keyboard reported a reset, its firmware changed,
+  or a read shows a profile's triggers (or two of its key assignment,
+  macro and advanced-key tables) back at the factory settings while its
+  automatic backup had others, the profile "looks reset": OpenWraith saves
+  no automatic backup of it, tells you once and shows the **Recovery**
+  card (Backup & profiles). The card says why in plain words: what is at
+  the factory settings now, which automatic backup it was compared with
+  and how old that is. **Restore profile N…** and **Restore all profiles…**
+  open the normal restore review (safety backup first, the vendor-site
+  tick, the write button armed after half a second, Undo); **It's fine,
+  keep them** makes the current settings the new automatic backups and
+  sends nothing. A reconnect alone, the lighting, the dead band or SOCD on
+  their own never count as a reset, and the SOCD switch (one setting of the
+  whole keyboard) is never blamed on a profile.
+- **Profiles per game** (Settings > Games, off by default). A rule is a
+  program (picked from the running programs, a file dialog, "detect the
+  next program I open" or a typed file name) and a profile; you can also
+  choose a profile to go back to when the game closes. Turning it on asks
+  once for a confirmation that also covers the vendor-site question for
+  automatic switches. The safety gates: a game must be in front for
+  1.5 seconds; it switches once per game start, only after the keyboard
+  saved your last change, and never while you have unwritten changes, a
+  review is open, the key-depth view runs, an OpenWraith command runs, or
+  another program (such as the Wraith website, also in a background tab)
+  used the keyboard in the last 2 minutes; a switch that cannot happen
+  within 30 seconds is skipped (with a notification). A profile you choose
+  yourself (Fn + 1-4, the header, the icon's menu) wins until the game
+  closes, and on exit OpenWraith goes back only while the game's profile is
+  still active. More than 30 switches in an hour, or a switch the keyboard
+  did not take, pause game profiles until you resume them. The header shows
+  **Auto** while a game rule holds the profile. Only the program in front is
+  looked at (its name and folder) and nothing leaves your PC; names many
+  programs share (`javaw.exe`, `steam.exe`, …) get a warning. Game profiles
+  work only while OpenWraith runs: turn on the icon to keep them working
+  with the window closed. With the icon on, automatic switches (only those)
+  resume by themselves after another program has been silent for 3
+  minutes; writing by hand still needs "I closed it, check again".
+- **Profile names** (Settings > Profile names): four local names per
+  keyboard model, shown in the header ("Profile 2 · FPS"), the icon's menu
+  and the Recovery card; the keyboard doesn't store them.
+- **Taking turns with the CLI.** While a CLI command runs, the app shows
+  "An OpenWraith command is using the keyboard", sends nothing (game
+  profiles wait too) and reads the keyboard again when the command has
+  ended; a CLI command that would use the keyboard while the app writes
+  fails at once and sends nothing (see [Safety](#safety)).
+
+Where the app keeps its files: safety backups as above; its settings
+(language, theme, trigger presets, the tips you dismissed, the background
+settings, the game rules and the profile names) in
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json` (a file that cannot
+be read is kept as `settings.invalid-<time>.json`, and the app says so);
+the macro library in
 `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json`; the
-operation journal (an interrupted write) and the key-depth marker
-(`travel-test-open`: a view that may still be on) in
-`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`.
+automatic backups in
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good\` (one folder per
+keyboard and profile); the operation journal (an interrupted write), the
+key-depth marker (`travel-test-open`: a view that may still be on) and the
+log of automatic profile switches (`automation.log`) in
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`; the lock shared with
+the CLI in `%LOCALAPPDATA%\OpenWraith\device.lock`.
 
 ## Safety
 
 These rules are the library's; the CLI and the desktop app follow them
 alike.
 
+- **One OpenWraith program at a time.** The CLI and the desktop app share
+  a lock file (`%LOCALAPPDATA%\OpenWraith\device.lock`, never waited for):
+  every CLI command that opens the keyboard holds it, shared for reading
+  and exclusive for writing, from before it opens the keyboard until it
+  ends; the app holds it exclusively only while it writes (and for the
+  2 seconds the keyboard needs to save). A command that finds the app
+  writing fails at once with "the OpenWraith app is writing; try again"
+  and sends nothing; while a command runs, the app only listens. If the
+  lock file cannot be used at all, the CLI warns and goes on (the "other
+  program" check below still protects every write).
 - **Read-only commands stay read-only.** `list`, `info`, `show`, `monitor`,
   `profile` (without `select`), `restore --dry-run`, `profile import
   --dry-run`, every `set ... --dry-run`, `backup` (without
@@ -365,7 +487,7 @@ alike.
    keyboard's configuration interface is a standard HID device.
 
 `cargo build --release` builds the command-line tool and the libraries only
-(the workspace's default members); the CLI needs Rust 1.85 or newer. The
+(the workspace's default members); the CLI needs Rust 1.89 or newer. The
 desktop app is built with `npm --prefix app run tauri build` (see
 [Desktop app development](#desktop-app-development)); `cargo build -p
 openwraith-cli --release` names the CLI explicitly.
@@ -377,7 +499,7 @@ Install `pkg-config` and the udev development files (Debian/Ubuntu:
 (the CLI only; or explicitly `cargo build -p openwraith-cli --release`).
 
 The workspace-wide commands (`cargo test --workspace`, `cargo clippy
---workspace`) also build the desktop app, which needs Rust 1.90 and the Tauri
+--workspace`) also build the desktop app, which needs Rust 1.95 and the Tauri
 Linux prerequisites (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
 `libsoup-3.0-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`). The
 desktop app is not tested on Linux yet.
@@ -468,6 +590,7 @@ openwraith travel --duration 60s                 # bars per key; Ctrl+C stops (t
 openwraith travel --keys W,A,S,D --json          # one JSON object per depth report
 openwraith travel --close                        # close a test a crashed run left open
 openwraith profile export 1 -o fps.owprofile.json --label FPS   # no USB serial in the file
+openwraith profile export 1 -o fps.owprofile.json --include triggers,lighting,keys   # chosen parts only
 openwraith profile import fps.owprofile.json --into 3           # triggers and lighting
 openwraith profile import fps.owprofile.json --into 3 --include triggers,lighting,keys
 ```
@@ -530,7 +653,10 @@ the plan of an import into another profile, select that profile first
 (`openwraith profile select N`), or run it without `--dry-run` (the plan is
 shown before the question). `profile export N -o FILE` reads profile N (a profile
 that is not active after a question, by switching to it and back), or takes
-it from a backup with `--from FILE`; `--label TEXT` is stored in the file.
+it from a backup with `--from FILE`; `--label TEXT` is stored in the file;
+`--include` (the same names as for the import: `triggers`, `lighting`,
+`keys`, `deadband`, `socd`; default all) leaves the other parts out of the
+file, so an import of it writes nothing for them.
 
 Global options: `--device <PATH>` picks a keyboard when several are connected
 (paths come from `openwraith list`), `--verbose` prints session statistics,
@@ -654,12 +780,12 @@ cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against 
 | `crates/openwraith-protocol` | Pure protocol library: framing, read requests, the confirmed write forms (W1-W11 and the travel test), response matching, decoders, W75 key table. No I/O. |
 | `crates/openwraith-hid` | Transports (read-only and writable), session, device summary, backups (one or all profiles), the guarded writer, restore, edits, safety backups, the capture-replay mock and the device simulator. |
 | `crates/openwraith-cli` | The `openwraith` command. |
-| `crates/openwraith-app-core` | The desktop app without Tauri: the device worker (one thread owns the keyboard), the operations behind the confirmation dialogs, the IPC types (TypeScript generated from them) and the simulator backend. |
-| `app/src-tauri` | The desktop app's Tauri 2 shell: commands, progress channels, file dialogs, window lifecycle. |
+| `crates/openwraith-app-core` | The desktop app without Tauri: the device worker (one thread owns the keyboard), the operations behind the confirmation dialogs, automatic backups and reset detection, the per-game profile engine, the IPC types (TypeScript generated from them) and the simulator backend. |
+| `app/src-tauri` | The desktop app's Tauri 2 shell: commands, progress channels, file dialogs, window lifecycle, the notification-area icon, Windows notifications, start with Windows and the foreground-program watcher. |
 | `app/src` | The desktop app's frontend (React, TypeScript); `ipc/bindings` and `preview/fixtures` are generated by `cargo test -p openwraith-app-core` (`UPDATE_BINDINGS=1`, `UPDATE_FIXTURES=1`). |
 | `docs/PROTOCOL.md` | The protocol specification, with a confidence label on every fact. |
 | `docs/ARCHITECTURE.md` | Crate layout, how read-only paths and writes are guarded, data flow, backup format, adding a model. |
-| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's Phase 2 writes, H12-H25 for its v0.2 editors, H26-H27 for the fixes after them, A1-A10 for the desktop app, and the results log. |
+| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's Phase 2 writes, H12-H25 for its v0.2 editors, H26-H27 for the fixes after them, A1-A10 for the desktop app, A11-A22 for its v0.2 editors, A23-A35 for what runs in the background, and the results log. |
 | `captures/` | Real USB traffic of the maintainer's W75, used by the tests. |
 
 ```text
@@ -669,7 +795,7 @@ cargo fmt --all --check
 ```
 
 The `--workspace` commands include the desktop app's Tauri crate: they need
-Rust 1.90 or newer (and, on Linux, the Tauri prerequisites listed above).
+Rust 1.95 or newer (and, on Linux, the Tauri prerequisites listed above).
 
 Every test runs against the captures (through a mock transport) or against a
 simulated keyboard; no test opens a HID device. Contributions must never copy
@@ -678,7 +804,7 @@ code or data files from the vendor's site: work from
 
 ### Desktop app development
 
-Prerequisites: the Rust toolchain above (the app needs Rust 1.90 or newer),
+Prerequisites: the Rust toolchain above (the app needs Rust 1.95 or newer),
 Node 22.22.2+, 24.15+ or 26+ (the versions the pinned Vite, Vitest, jsdom and
 ESLint support), and WebView2 (part of Windows 11). Run these from the
 repository root:
@@ -766,17 +892,17 @@ gösterirler.
 > belgelenmiştir; sitenin kodu projede yer almaz. Kullanım sorumluluğu size
 > aittir.
 
-**Durum: Faz 5b (masaüstü uygulaması v0.2, ilk bölüm).** Masaüstü
-uygulamasının v0.1 sürümü (Windows) yedekleme ve geri yükleme, aktivasyon ve
-Rapid Trigger, ana ışık ayarlarını kapsar; arayüz Türkçe ve İngilizcedir.
-Geliştirilmekte olan v0.2'nin ilk bölümü bunlara Tuşlar sayfasını
-(atamalar, makrolar, gelişmiş tuşlar), tetikleme hazır ayarlarını, ölü
-bölgeyi, SOCD'yi, canlı tuş derinliğini, tuş renklerini ve profil dışa/içe
-aktarmayı ekler; bu düzenleyiciler simülatörde ve kaydedilmiş senaryolarla
-sınandı, uygulama üzerinden klavyede henüz denenmedi. Faz 5b-2'ye
-kalanlar: bildirim alanı (tepsi) simgesi, Windows ile başlatma,
-bildirimler, otomatik yedekler, sıfırlama algılama ve kurtarma, oyuna göre
-profil ve profil adları. Komut satırı aracının salt okunur
+**Durum: Faz 5b (masaüstü uygulaması v0.2).** Masaüstü uygulamasının
+v0.1 sürümü (Windows) yedekleme ve geri yükleme, aktivasyon ve Rapid
+Trigger, ana ışık ayarlarını kapsar; arayüz Türkçe ve İngilizcedir. v0.2
+bunlara Tuşlar sayfasını (atamalar, makrolar, gelişmiş tuşlar), tetikleme
+hazır ayarlarını, ölü bölgeyi, SOCD'yi, canlı tuş derinliğini, tuş
+renklerini ve profil dışa/içe aktarmayı; ayrıca bildirim alanı (tepsi)
+simgesini, Windows ile başlatmayı, bildirimleri, otomatik yedekleri,
+sıfırlama algılama ve kurtarmayı, oyuna göre profili, profil adlarını ve
+komut satırı aracıyla sırayla çalışmayı ekler. v0.2 simülatörde ve
+kaydedilmiş senaryolarla sınandı, uygulama üzerinden klavyede henüz
+denenmedi (donanım denetimleri A11-A35). Komut satırı aracının salt okunur
 komutları: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
 `backup` (aktif profil), `show` (tablo veya `--json`), `monitor` ve
 `restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
@@ -808,24 +934,26 @@ aşağıdaki güvenlik kurallarının hepsi uygulama için de geçerlidir.
 
 | Sayfa | Neler yapılabilir |
 |---|---|
-| **Klavye** | Bağlantı, model, firmware, etkin profil; yeniden okuma; klavyeyi bırakma. Üst çubuktaki 1-4 düğmeleri etkin profili değiştirir. |
+| **Klavye** | Bağlantı, model, firmware, etkin profil; yeniden okuma; klavyeyi bırakma. Üst çubuktaki 1-4 düğmeleri etkin profili değiştirir; üst çubuk profilin yerel adını ("Profil 2 · FPS") ve bir oyun kuralı profili tutarken **Otomatik** etiketini gösterir. |
 | **Tuşlar** (v0.2) | **Atamalar:** her tuşun temel ve Fn katmanında ne yaptığı; değiştirme (bir tuş, medya tuşu, fare düğmesi, bir ya da iki değiştirici tuşlu kısayol, makro, gelişmiş tuş), varsayılana döndürme ya da iki tuşu takas etme; boş bir yuvaya bağlı tuşlar tek tıkla sıfırlanabilir. **Makrolar:** klavyedeki 10 makro yuvası ve bu bilgisayardaki makro kitaplığı; elle yazılan ya da klavyeden kaydedilen adımlar, dört çalma biçimi, her tuşun bırakıldığı denetimi. **Gelişmiş tuşlar:** dinamik tuş vuruşu (DKS), dokun ya da basılı tut (Mod-Tap) ve Toggle. |
 | **Aktivasyon** | **Aktivasyon ve Rapid Trigger:** W75 üzerinde tuş seçme (tıklama, Shift + tıklama, sürükleme, Ctrl + A, WASD, oklar, bir sıra, aynı ayardaki tuşlar), aktivasyon noktasını 0,02 mm adımlarla ve Rapid Trigger'ı ayarlama; tetikleme hazır ayarları (beş yerleşik, kendi kaydettikleriniz bu bilgisayarda). **Ölü bölge** (profil başına), **SOCD** (anahtar ve en çok 20 tuş çifti) ve **Tuş derinliği** (her tuşun ne kadar basıldığının canlı görünümü). |
 | **Işık** | **Efekt:** ana ışığın efekti (klavyenin listesi ve Özel), rengi, parlaklığı ve hızı. **Tuş renkleri:** her tuşa bir renk; seçme, fırça, damlalık, boyama, renk geçişi ve geri alma. |
-| **Yedek ve profiller** | Dört profilin hepsini ya da yalnızca etkin profili yedekleme; planı gördükten sonra bir yedeği (tüm ya da bazı profilleriyle) geri yükleme; **profil paylaşma** (bir profili `.owprofile.json` dosyasına dışa aktarma; bir profil dosyasını seçtiğiniz bölümlerle istediğiniz profile içe aktarma); güvenlik yedeklerini listeleme ve geri yükleme. |
-| **Ayarlar** | Dil (Windows'un dili, English, Türkçe), tema (Windows'un teması, açık, koyu), tetikleme hazır ayarlarınızın nerede yönetildiği, bir kez gösterilen ipuçları, güvenlik yedeği klasörü, hakkında. |
+| **Yedek ve profiller** | Dört profilin hepsini ya da yalnızca etkin profili yedekleme; planı gördükten sonra bir yedeği (tüm ya da bazı profilleriyle) geri yükleme; **profil paylaşma** (bir profili klavyeden, bir yedek dosyasından ya da bir otomatik yedekten, seçtiğiniz bölümlerle `.owprofile.json` dosyasına dışa aktarma; bir profil dosyasını seçtiğiniz bölümlerle istediğiniz profile içe aktarma); **otomatik yedekler** (geri yükleme, saklama, klasörde gösterme); klavye sıfırlanmış göründüğünde **Kurtarma** kartı; güvenlik yedeklerini listeleme ve geri yükleme. |
+| **Ayarlar** | **Genel:** dil (Windows'un dili, English, Türkçe), tema (Windows'un teması, açık, koyu), tetikleme hazır ayarlarınızın nerede yönetildiği, bir kez gösterilen ipuçları, güvenlik yedeği klasörü. **Arka plan:** bildirim alanı simgesi, Windows ile başlatma, bildirimler, otomatik yedekler. **Oyunlar:** oyuna göre profil. **Profil adları.** **Hakkında.** |
 
-Bu sürümde henüz olmayanlar: bildirim alanı (tepsi) simgesi, Windows ile
-başlatma, bildirimler, otomatik yedekler, sıfırlama algılama ve kurtarma,
-öndeki oyuna göre profil, profil adları; yan ışık, polling rate, switch
-türleri ve kalibrasyon, Win-Lock ve makrolarda fare ya da medya adımları
-(bunlar için henüz doğrulanmış bir yazma komutu yok).
+Bu sürümde olmayanlar: yan ışık, polling rate, switch türleri ve
+kalibrasyon, Win-Lock, oyun kumandası (analog) modu ve makrolarda fare ya
+da medya adımları (bunlar için henüz doğrulanmış bir yazma komutu yok);
+uygulamanın Linux ve macOS sürümleri; imzalı kurulum dosyaları. 0.2 sürümü
+klavyede henüz çalıştırılmadı: düzenleyicileri ve arka plan bölümleri
+simülatörde ve kaydedilmiş senaryolarla sınandı (donanım denetimleri
+A11-A35, [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
 
 **Kurulum (Windows 10 ve 11, x64):**
 
-- `OpenWraith_0.1.0_x64-setup.exe` yalnızca geçerli kullanıcı için, yönetici
+- `OpenWraith_0.2.0_x64-setup.exe` yalnızca geçerli kullanıcı için, yönetici
   izni istemeden kurar (Windows'un diline göre Türkçe ya da İngilizce);
-  `OpenWraith_0.1.0_x64_en-US.msi` bilgisayardaki herkes için kurar. Kurulum
+  `OpenWraith_0.2.0_x64_en-US.msi` bilgisayardaki herkes için kurar. Kurulum
   dosyalarını aşağıdaki geliştirici komutlarıyla kendiniz üretebilirsiniz;
   `target\release\bundle\nsis\` ve `target\release\bundle\msi\` klasörlerine
   yazılırlar.
@@ -835,8 +963,14 @@ türleri ve kalibrasyon, Win-Lock ve makrolarda fare ya da medya adımları
 - WebView2 Windows 11'de hazır gelir. Yoksa kurulum programı Microsoft'un
   WebView2 kurulumunu indirir (tek ağ erişimi budur; uygulamanın kendisi ağı
   hiç kullanmaz).
-- Kaldırmak için Windows Ayarlar > Uygulamalar. Güvenlik yedekleriniz
-  silinmez.
+- Kaldırmak için Windows Ayarlar > Uygulamalar. Güvenlik yedekleriniz ve
+  otomatik yedekleriniz silinmez. **"OpenWraith Windows ile başlasın"
+  seçeneğini açtıysanız, kaldırmadan önce Ayarlar > Arka plan'da bildirim
+  alanı simgesini kapatın:** kaldırma programı bu başlangıç kaydını silmez
+  (yoksa sonradan Görev Yöneticisi > Başlangıç uygulamaları'ndan
+  "OpenWraith" kaydını kaldırın). OpenWraith yönetici olarak çalışırken
+  oluşturulan bir kayıt bütün kullanıcılar içindir ve yalnızca Görev
+  Yöneticisi > Başlangıç uygulamaları'ndan kaldırılır.
 
 **Kullanım:**
 
@@ -887,9 +1021,10 @@ türleri ve kalibrasyon, Win-Lock ve makrolarda fare ya da medya adımları
 - **Yarıda kalan bir yazma** (çökme ya da elektrik kesintisi), siz kapatana
   kadar her açılışta, güvenlik yedeğini geri almak için bir düğmeyle
   gösterilir.
-- **Uygulama açıkken komut satırı aracını çalıştırmayın;** ikisi birden
-  klavyeyle konuşur. Üst çubuktaki "Klavyeyi bırak" uygulamayı kapatmadan
-  klavyeyi serbest bırakır.
+- **Komut satırı aracı ve uygulama sırayla çalışır** (v0.2'den beri,
+  aşağıya bakın): bir komut çalışırken uygulama hiçbir şey göndermez. Üst
+  çubuktaki "Klavyeyi bırak" uygulamayı kapatmadan klavyeyi serbest
+  bırakır.
 - 3.22.07 dışındaki bir firmware, Klavye sayfasında ve her onay penceresinde
   "henüz denenmedi" olarak belirtilir.
 - Hesap, telemetri ve ağ yok. Uygulama yalnızca kendi içeriğini gösterir
@@ -949,19 +1084,136 @@ v0.2 düzenleyicilerinin bunlara eklediği:
   Fn + 1-4 ya da Fn + Boşluk'un yerine başka bir şey atayan bir dosya ayrı
   bir onay ister.
 
-Uygulamanın dosyaları: güvenlik yedekleri yukarıdaki klasörde; ayarlar,
-tetikleme hazır ayarlarınız ve kapattığınız ipuçları
-`%APPDATA%\io.github.zeruh31.openwraith\settings.json` dosyasında; makro
-kitaplığı `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json`
-dosyasında; işlem günlüğü (yarıda kalan bir yazma için) ve tuş derinliği
-işareti (`travel-test-open`: hâlâ açık olabilecek bir görünüm)
-`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\` klasöründe.
+**Arka planda (v0.2):** v0.2'nin düzenleyicilerin çevresine eklediği her
+şey varsayılan olarak kapalıdır ya da sessiz çalışır ve hiçbiri yeni bir
+yazma yolu eklemez: otomatik yedekler uygulamanın zaten yaptığı okumaları
+kullanır, kurtarma kendi incelemesiyle olağan geri yüklemedir, otomatik
+profil değiştirme de Fn + 1-4 ile aynı profil seçimidir.
+
+- **Bildirim alanı (tepsi) simgesi** (Ayarlar > Arka plan, varsayılan
+  kapalı). Açıkken pencereyi kapatmak OpenWraith'i saatin yanında çalışır
+  bırakır (ilk seferde bir bildirim bunu söyler); simgenin menüsündeki
+  **Çık** uygulamayı kapatır, bir yazma sürerken ise pencereyi kapatma
+  uyarısıyla gösterir. Menü klavyeyi ve etkin profili gösterir, profil
+  değiştirir (yazılmamış değişiklikleriniz varken, bir inceleme açıkken,
+  yazma duraklatılmışken ya da bu çalıştırmada üreticinin sitesinin kapalı
+  olduğunu henüz onaylamadıysanız bunun yerine pencereyi açar), etkin
+  profili hemen yedekler, oyun profillerini duraklatır ve ilgilenmeniz
+  gerekenleri listeler (bir sıfırlama, başka bir program, hâlâ açık
+  olabilecek bir tuş derinliği testi). Pencereyi gizlemek canlı tuş
+  derinliği görünümünü durdurur, bir yazmayı asla.
+- **Windows ile başlatma** (simge gerekir):
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` altındaki kullanıcıya
+  özel `OpenWraith` kaydı uygulamayı bildirim alanında gizli başlatır
+  (`--tray`). Simgeyi kapatmak bu kaydı siler. **Kaldırma programı bu kaydı
+  silmez** (Kurulum'a bakın). Görev Yöneticisi'nde kapattığınız bir kayıt
+  kapalı kalır: OpenWraith onu yeniden açmaz, durumu size söyler.
+  Seçeneği açtığınızda OpenWraith yönetici olarak çalışıyorduysa kayıt
+  bütün kullanıcılar içindir (`HKLM`): simgeyi kapatmak onu silemez ve
+  OpenWraith, kaydı Görev Yöneticisi > Başlangıç uygulamaları'ndan
+  kapatmanızı söyler.
+- **Bildirimler** (kurulu uygulamanın Windows bildirimleri): klavye bir
+  sıfırlama bildirdi, bir profil sıfırlanmış görünüyor, firmware değişti,
+  otomatik yedek alınamadı ("sıfırlama uyarıları" ayarı, varsayılan açık);
+  bir oyun profili değiştirdi (varsayılan kapalı); bir oyunun profil
+  geçişi yazılmamış değişikliklerinizi bekliyor ya da atlandı, oyun
+  profilleri duraklatıldı. Her türden 10 dakikada en çok bir bildirim
+  gelir; tıklayınca ilgili sayfa açılır. Windows bildirimleri bekletebilir
+  (Rahatsız etmeyin); penceredeki uyarı bantları ve simge, ilgilenmeniz
+  gerekenleri her zaman gösterir.
+- **Otomatik yedekler** (varsayılan açık, her profilin en yeni 10 yedeği
+  saklanır): OpenWraith son otomatik yedeğinden beri değişmiş bir profili
+  okuduğunda onun bir kopyasını kaydeder (başka bir programın duyulduğu
+  okumalar ve tüm profillerin yedekleri kullanılmaz). Klavyeye fazladan
+  hiçbir şey gönderilmez. Yedek ve profiller sayfası bunları listeler
+  (zaman, profil, neden), birini olağan incelemeyle geri yükler, klasörü
+  gösterir; **Sakla** birini sabitler. Sabitlenmiş otomatik yedekler ve
+  güvenlik yedekleri hiçbir zaman silinmez. Profil paylaşma, klavyeye
+  dokunmadan bir otomatik yedekten de dışa aktarabilir.
+- **Sıfırlama algılama ve kurtarma. OpenWraith sormadan hiçbir şeyi geri
+  yüklemez.** Klavye fabrika ayarlarına dönüşü bildirir (Fn + Boşluk
+  birkaç saniye basılı tutulunca); bir firmware güncellemesi de büyük
+  olasılıkla ayarları sıfırlar. Klavye bir sıfırlama bildirdiyse, firmware
+  sürümü değiştiyse ya da bir okuma, otomatik yedekte başka değerler
+  varken bir profilin tetikleme ayarlarını (ya da tuş atamaları, makrolar
+  ve gelişmiş tuşlar tablolarından ikisini) fabrika ayarlarında
+  gösteriyorsa profil "sıfırlanmış görünür": OpenWraith o profilin
+  otomatik yedeğini almaz, size bir kez haber verir ve **Kurtarma**
+  kartını (Yedek ve profiller) gösterir. Kart nedenini sade bir dille
+  söyler: şu an neyin fabrika ayarlarında olduğu, hangi otomatik yedekle
+  karşılaştırıldığı ve o yedeğin ne kadar eski olduğu. **N numaralı
+  profili geri yükle…** ve **Tüm profilleri geri yükle…** olağan geri
+  yükleme incelemesini açar (önce güvenlik yedeği, üretici sitesi onay
+  kutusu, yarım saniye sonra etkinleşen yazma düğmesi, Geri al); **Sorun
+  yok, mevcut ayarlar kalsın** mevcut ayarları yeni otomatik yedekler
+  yapar ve hiçbir şey göndermez. Tek başına yeniden bağlanma, ışık, ölü
+  bölge ya da SOCD hiçbir zaman sıfırlama sayılmaz; klavyenin tamamına ait
+  tek ayar olan SOCD anahtarı hiçbir profile yüklenmez.
+- **Oyuna göre profil** (Ayarlar > Oyunlar, varsayılan kapalı). Bir kural
+  bir program (çalışan programlardan seçilen, dosya penceresinden seçilen,
+  "Açacağım sonraki programı algıla" ile bulunan ya da adı yazılan) ve bir
+  profildir; oyun kapanınca dönülecek profili de seçebilirsiniz. Açarken
+  bir kez onay istenir; bu onay otomatik geçişler için üreticinin sitesi
+  sorusunu da kapsar. Güvenlik koşulları: oyun 1,5 saniye önde olmalıdır;
+  her oyun başlangıcında bir kez ve klavye son değişikliğinizi kaydettikten
+  sonra geçer; yazılmamış değişiklikleriniz varken, bir inceleme açıkken,
+  tuş derinliği görünümü çalışırken, bir OpenWraith komutu çalışırken ya
+  da başka bir program (örneğin arka plandaki bir sekmede de olsa Wraith
+  web sitesi) son 2 dakikada klavyeyi kullandıysa hiçbir zaman geçmez; 30
+  saniye içinde yapılamayan bir geçiş atlanır (bir bildirimle). Kendi
+  seçtiğiniz bir profil (Fn + 1-4, üst çubuk, simgenin menüsü) oyun
+  kapanana kadar geçerlidir; oyun kapanınca OpenWraith yalnızca oyunun
+  profili hâlâ etkinse geri döner. Bir saatte 30'dan fazla geçiş ya da
+  klavyenin almadığı bir geçiş, siz sürdürene kadar oyun profillerini
+  duraklatır. Bir oyun kuralı profili tutarken üst çubukta **Otomatik**
+  yazar. Yalnızca öndeki programa (adına ve klasörüne) bakılır ve hiçbir
+  şey bilgisayarınızdan çıkmaz; birçok programın paylaştığı adlar
+  (`javaw.exe`, `steam.exe`, …) için uyarı gösterilir. Oyun profilleri
+  yalnızca OpenWraith çalışırken çalışır: pencere kapalıyken de çalışmaları
+  için simgeyi açın. Simge açıkken başka bir program 3 dakika boyunca
+  tamamen sessiz kalırsa otomatik geçişler (yalnızca onlar) kendiliğinden
+  sürer; elle yazmak için yine "Kapattım, yeniden denetle" gerekir.
+- **Profil adları** (Ayarlar > Profil adları): her klavye modeli için dört
+  yerel ad; üst çubukta ("Profil 2 · FPS"), simgenin menüsünde ve Kurtarma
+  kartında görünür, klavye bunları saklamaz.
+- **Komut satırı aracıyla sırayla çalışma.** Bir komut çalışırken uygulama
+  "Klavyeyi bir OpenWraith komutu kullanıyor" der, hiçbir şey göndermez
+  (oyun profilleri de bekler) ve komut bitince klavyeyi yeniden okur;
+  uygulama yazarken klavyeyi kullanmak isteyen bir komut hemen hata verir
+  ve hiçbir şey göndermez (aşağıdaki Güvenlik bölümüne bakın).
+
+Uygulamanın dosyaları: güvenlik yedekleri yukarıdaki klasörde; ayarlar (dil,
+tema, tetikleme hazır ayarlarınız, kapattığınız ipuçları, arka plan
+ayarları, oyun kuralları ve profil adları)
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json` dosyasında
+(okunamayan bir dosya `settings.invalid-<zaman>.json` adıyla saklanır ve
+uygulama bunu söyler); makro kitaplığı
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json`
+dosyasında; otomatik yedekler
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good\` klasöründe (her
+klavye ve profil için ayrı klasör); işlem günlüğü (yarıda kalan bir yazma
+için), tuş derinliği işareti (`travel-test-open`: hâlâ açık olabilecek bir
+görünüm) ve otomatik profil geçişlerinin kaydı (`automation.log`)
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\` klasöründe; komut
+satırı aracıyla paylaşılan kilit
+`%LOCALAPPDATA%\OpenWraith\device.lock` dosyasında.
 
 ### Güvenlik
 
 Bu kurallar kütüphanenindir; komut satırı aracı ve masaüstü uygulaması
 ikisi de bunlara uyar.
 
+- **Aynı anda tek OpenWraith programı.** Komut satırı aracı ve masaüstü
+  uygulaması bir kilit dosyasını paylaşır
+  (`%LOCALAPPDATA%\OpenWraith\device.lock`; hiçbir zaman beklenmez):
+  klavyeyi açan her komut, klavyeyi açmadan önce kilidi alır ve bitene
+  kadar tutar; okuyan komutlar ortak, yazan komutlar tek başına alır.
+  Uygulama kilidi yalnızca yazarken (ve klavyenin kaydetmesi için gereken
+  2 saniye boyunca) tek başına tutar. Uygulamayı yazarken bulan bir komut
+  hemen "the OpenWraith app is writing; try again" hatasıyla biter ve
+  hiçbir şey göndermez; bir komut çalışırken uygulama yalnızca dinler.
+  Kilit dosyası hiç kullanılamıyorsa komut satırı aracı bir uyarı verip
+  devam eder (aşağıdaki "başka program" denetimi her yazmayı yine korur).
 - **Salt okunur komutlar salt okunur kalır.** `list`, `info`, `show`,
   `monitor`, `profile` (`select` olmadan), `restore --dry-run`, `profile
   import --dry-run`, her `set ... --dry-run`, `backup` (`--all-profiles`
@@ -1117,10 +1369,10 @@ araç zinciri ve Visual Studio Build Tools içindeki "Desktop development with
 C++" bileşeni gerekir), sonra depo klasöründe `cargo build --release`
 çalıştırın. Program `target\release\openwraith.exe` olur; ayrıca sürücü
 gerekmez. `cargo build --release` yalnızca komut satırı aracını ve
-kütüphaneleri derler (Rust 1.85 ve üstü yeterlidir); açıkça
+kütüphaneleri derler (Rust 1.89 ve üstü yeterlidir); açıkça
 `cargo build -p openwraith-cli --release` de yazılabilir. Linux için
 yukarıdaki udev kuralına bakın. `cargo test --workspace` gibi bütün çalışma
-alanını kapsayan komutlar masaüstü uygulamasını da derler: Rust 1.90 ve
+alanını kapsayan komutlar masaüstü uygulamasını da derler: Rust 1.95 ve
 Linux'ta Tauri ön koşulları gerekir (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`,
 `libgtk-3-dev`, `libsoup-3.0-dev`, `librsvg2-dev`,
 `libayatana-appindicator3-dev`). Masaüstü uygulaması Linux'ta henüz test
@@ -1163,6 +1415,7 @@ openwraith set key Caps=L-Ctrl --dry-run --packets  # yalnızca plan ve paketler
 openwraith travel --duration 60s                    # canlı tuş derinliği; Ctrl+C durdurur, test hep kapatılır
 openwraith travel --close                           # çökmeden açık kalan testi kapatır
 openwraith profile export 1 -o fps.owprofile.json   # USB seri numarası dosyaya girmez
+openwraith profile export 1 -o fps.owprofile.json --include triggers,lighting,keys   # yalnızca seçilen bölümler
 openwraith profile import fps.owprofile.json --into 3 --include triggers,lighting,keys
 ```
 
@@ -1250,7 +1503,7 @@ henüz bilinmiyor (Q3); geri yükleme onları yalnızca karşılaştırır.
 
 ### Geliştirme
 
-**Masaüstü uygulaması:** Rust (1.90 veya üstü), Node (22.22.2 ve üstü,
+**Masaüstü uygulaması:** Rust (1.95 veya üstü), Node (22.22.2 ve üstü,
 24.15 ve üstü ya da 26 ve üstü) ve WebView2 gerekir. Komutlar depo
 klasöründe çalıştırılır:
 

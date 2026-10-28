@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
 use crate::dto::{
-    AllProfilesPreview, AppError, BackupSaved, ColorEditIntent, ColorEditPreview,
+    AllProfilesPreview, AppError, AutoBackupEntry, BackupSaved, ColorEditIntent, ColorEditPreview,
     DeadBandEditIntent, DeadBandEditPreview, DepthViewReport, DeviceId, DeviceSnapshot,
     EditReportView, ExportIntent, ExportedProfile, FileToken, ImportIntent, ImportPreview,
     KeymapEditIntent, KeymapEditPreview, LightEditIntent, LightEditPreview, PlanInvalidation,
-    PlanToken, PresetEditIntent, ProfileSwitchPreview, ProfileSwitchReport, RestoreIntent,
-    RestorePreview, RestoreReportView, SocdEditIntent, SocdEditPreview, TravelCloseReport,
-    TriggerEditIntent, TriggerEditPreview,
+    PlanToken, PresetEditIntent, ProfileSwitchPreview, ProfileSwitchReport, RecoveryIntent,
+    RestoreIntent, RestorePreview, RestoreReportView, SocdEditIntent, SocdEditPreview,
+    TravelCloseReport, TriggerEditIntent, TriggerEditPreview,
 };
 use crate::sink::{DepthSink, ProgressSink};
 
@@ -153,6 +153,15 @@ pub(crate) enum Request {
         token: PlanToken,
         progress: Progress,
         reply: Reply<RestoreReportView>,
+    },
+    PrepareRecovery {
+        intent: RecoveryIntent,
+        progress: Progress,
+        reply: Reply<RestorePreview>,
+    },
+    /// "Back up now" (the tray): an automatic backup of the active profile.
+    BackUpNow {
+        reply: Reply<Option<AutoBackupEntry>>,
     },
     // ----- queued, no admission -----
     DiscardPlan {

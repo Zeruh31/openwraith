@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::auto::{AutoCauseView, AutoPauseReason, AutoWaitReason, AutomationStatusView};
 use super::common::{DeviceId, DeviceIdentityView, FileRef, ForeignActivityView, OpId};
 use super::error::AppError;
 use super::progress::ProgressEvent;
+use super::recovery::{FirmwareView, RecoveryStatusView, ResetEvidenceView};
 use super::travel::{DepthStopReason, TravelCloseView, TravelStatusView};
 
 /// An event on the `subscribe` channel.
@@ -64,6 +66,93 @@ pub enum Notice {
     /// earlier run, or stream reports nobody here asked for): offer
     /// `close_stray_travel_test`.
     StrayTravelTest,
+    /// A profile looks reset compared with its last automatic backup: its
+    /// factory tables are held (no automatic backup replaces them) and the
+    /// Recovery card (`get_recovery`) offers a restore or "It's fine, keep
+    /// them". Nothing was written. Sent once per profile and backup.
+    ResetSuspected {
+        /// The profile.
+        profile: u8,
+        /// Why.
+        evidence: Vec<ResetEvidenceView>,
+    },
+    /// The keyboard runs another firmware than when its automatic backups
+    /// were read (an update very likely resets the settings). Sent once per
+    /// change.
+    FirmwareChanged {
+        /// The automatic backups' firmware.
+        known: FirmwareView,
+        /// The keyboard's firmware now.
+        current: FirmwareView,
+    },
+    /// The settings file could not be read: it was kept aside and the
+    /// defaults are used.
+    SettingsFileInvalid {
+        /// The name it was kept as (`settings.invalid-<stamp>.json`), if
+        /// it could be moved.
+        kept_as: Option<String>,
+    },
+    /// An automatic backup could not be saved (nothing else changed).
+    AutoBackupFailed {
+        /// The profile.
+        profile: u8,
+        /// Technical English.
+        message: String,
+    },
+    /// A game rule switched the profile (or a game exited and the default
+    /// profile is back).
+    AutoSwitched {
+        /// The rule (`null`: back to the default profile).
+        rule_id: Option<String>,
+        /// The game's name.
+        label: Option<String>,
+        /// The profile before, if known.
+        from: Option<u8>,
+        /// The profile now.
+        to: u8,
+        /// What for.
+        cause: AutoCauseView,
+    },
+    /// An automatic switch waits (sent once per switch; it is skipped
+    /// after 30 s).
+    AutoSwitchDeferred {
+        /// The rule (`null`: back to the default profile).
+        rule_id: Option<String>,
+        /// The game's name.
+        label: Option<String>,
+        /// The profile it will switch to.
+        profile: u8,
+        /// What for.
+        cause: AutoCauseView,
+        /// Why it waits.
+        reason: AutoWaitReason,
+    },
+    /// An automatic switch waited 30 s and was skipped.
+    AutoSwitchSkipped {
+        /// The rule (`null`: back to the default profile).
+        rule_id: Option<String>,
+        /// The game's name.
+        label: Option<String>,
+        /// The profile it would have switched to.
+        profile: u8,
+        /// What for.
+        cause: AutoCauseView,
+        /// Why.
+        reason: AutoWaitReason,
+    },
+    /// The automatic profiles were paused.
+    AutoProfilePaused {
+        /// Why.
+        reason: AutoPauseReason,
+    },
+    /// An OpenWraith command (the CLI) uses the keyboard: the app listens
+    /// and sends nothing until it has finished, then reads the keyboard
+    /// again (`DeviceStatus.paused_for_cli`).
+    PausedForCli {
+        /// What the command said it does (`set trigger`, `backup`, ...), if
+        /// known.
+        purpose: Option<String>,
+    },
 }
 
 /// Why a plan was invalidated.
@@ -129,6 +218,13 @@ pub struct DeviceStatus {
     pub sim: bool,
     /// Whether a key-depth test is (or may be) open on the keyboard.
     pub travel: TravelStatusView,
+    /// Whether the keyboard looks reset (the Recovery card).
+    pub recovery: RecoveryStatusView,
+    /// The per-game automatic profiles (the header's **Auto** chip).
+    pub automation: AutomationStatusView,
+    /// An OpenWraith command (the CLI) uses the keyboard: the app sends
+    /// nothing until it has finished.
+    pub paused_for_cli: bool,
 }
 
 /// The connection state machine.
@@ -246,6 +342,8 @@ pub enum WriteBlockReason {
     SnapshotStale,
     SafetyDirUnavailable,
     Fault,
+    /// An OpenWraith command (the CLI) uses the keyboard.
+    PausedForCli,
 }
 
 /// The running operation.
@@ -294,6 +392,13 @@ pub enum OpKind {
     ImportPrepare,
     /// An import of a profile file.
     Import,
+    /// The comparison of automatic backups with the keyboard for a
+    /// recovery (reads, and profile switches the user agreed to; the write
+    /// is a `restore`).
+    RecoveryCheck,
+    /// A profile switch made by a game rule (the profile select and the
+    /// read of the new profile; nothing else is written).
+    AutoSwitch,
 }
 
 /// An operation that was interrupted (the journal was left behind).

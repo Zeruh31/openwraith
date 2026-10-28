@@ -1469,8 +1469,8 @@ impl DeviceSim {
                 if b[2] != 0 || b[3] > 1 || b[4] != 0x28 || !zero_from(45) {
                     return Err("SOCD pair chunk with a bad index, length or extra bytes".into());
                 }
-                for entry in b[5..45].chunks_exact(4) {
-                    let valid = entry == [0, 0, 0, 0]
+                for entry in b[5..45].as_chunks::<4>().0 {
+                    let valid = *entry == [0, 0, 0, 0]
                         || (entry[0] == 0x01
                             && entry[1] <= 3
                             && entry[2] != 0
@@ -1485,12 +1485,12 @@ impl DeviceSim {
             0x26 if b[1] == 0x01 => {
                 let max = self.model.write_ceilings.max_dead_band;
                 let effect = chunk(b, SimTable::DeadBand, 58)?;
-                if let Effect::Chunk { data, .. } = &effect {
-                    if let Some(value) = data.iter().find(|v| u16::from(**v) > max) {
-                        return Err(format!(
-                            "dead-band value {value} is above the maximum {max}"
-                        ));
-                    }
+                if let Effect::Chunk { data, .. } = &effect
+                    && let Some(value) = data.iter().find(|v| u16::from(**v) > max)
+                {
+                    return Err(format!(
+                        "dead-band value {value} is above the maximum {max}"
+                    ));
                 }
                 Ok(effect)
             }
@@ -1688,7 +1688,7 @@ fn advanced_slot_violation(slot: &[u8; 40]) -> Option<String> {
             if r1 == 0 || r1 > r2 || r2 != r3 || r4 != r1 || r2 > 30 {
                 return Some(format!("DKS routes {r1} {r2} {r3} {r4} are not allowed"));
             }
-            for row in slot[5..37].chunks_exact(8) {
+            for row in slot[5..37].as_chunks::<8>().0 {
                 if !action_ok(&row[..4]) || row[4..].iter().any(|s| *s > 3) {
                     return Some("DKS row with a bad action or step".into());
                 }

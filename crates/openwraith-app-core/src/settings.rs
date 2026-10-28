@@ -1,26 +1,55 @@
 //! The user's settings file (`settings.json`), saved atomically: the
 //! settings the frontend edits (language, theme), the user's trigger
-//! presets and the hints already shown. Fields this version does not know
-//! (written by a newer one) are kept when it saves. Every read-modify-write
-//! of the file holds one lock, so the settings and the presets never
-//! overwrite each other's changes.
+//! presets, the hints already shown, the background settings (tray, start
+//! with Windows, notifications, automatic backups), the per-game rules and
+//! the local profile names. Fields this version does not know (written by a
+//! newer one) are kept when it saves. Every read-modify-write of the file
+//! holds one lock, so the settings and the presets never overwrite each
+//! other's changes.
+//!
+//! The fields added in v0.2 (`tray_enabled`, `start_with_windows`,
+//! `close_to_tray_explained`, `notifications`, `auto_backup`,
+//! `auto_profile`, `profile_names`) are read leniently: a missing or
+//! unreadable field is its default, never a reason to lose the file, and
+//! fields of a newer version inside them are kept when this version saves.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::dto::{
-    AppError, AppErrorKind, ErrorDetail, LanguageSetting, RtIntent, Settings, ThemeSetting,
+    AppError, AppErrorKind, AutoBackupSettings, AutoProfileRule, AutoProfileSettings,
+    BackgroundSettingsIntent, BackgroundSettingsView, EditProblemView, ErrorDetail,
+    LanguageSetting, RtIntent, Settings, ShellChanges, ThemeSetting,
 };
+use crate::map::editors::refused;
 
 /// Serializes every read-modify-write of a settings file.
 static SETTINGS_IO: Mutex<()> = Mutex::new(());
 
 /// At most this many hints are remembered.
 const MAX_HINTS: usize = 128;
+
+/// The keys of the v0.2 fields (kept in [`SettingsFile::other`] and read
+/// leniently).
+const TRAY_ENABLED: &str = "tray_enabled";
+const START_WITH_WINDOWS: &str = "start_with_windows";
+const CLOSE_TO_TRAY_EXPLAINED: &str = "close_to_tray_explained";
+const NOTIFICATIONS: &str = "notifications";
+const AUTO_BACKUP: &str = "auto_backup";
+const AUTO_PROFILE: &str = "auto_profile";
+const PROFILE_NAMES: &str = "profile_names";
+
+/// The longest local profile name.
+pub(crate) const MAX_PROFILE_NAME: usize = 32;
+
+/// The most per-game rules.
+pub(crate) const MAX_RULES: usize = 64;
 
 /// A user's trigger preset as stored in the settings file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +89,55 @@ impl SettingsFile {
             .iter()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect()
+    }
+
+    /// A v0.2 field: its default when missing or unreadable.
+    fn get<T: DeserializeOwned + Default>(&self, key: &str) -> T {
+        self.other
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// Sets a v0.2 field; inside an object, fields this version does not
+    /// know are kept.
+    fn set<T: Serialize>(&mut self, key: &str, value: &T) {
+        let Ok(new) = serde_json::to_value(value) else {
+            return;
+        };
+        match (self.other.get_mut(key), new) {
+            (Some(Value::Object(old)), Value::Object(new)) => {
+                for (k, v) in new {
+                    old.insert(k, v);
+                }
+            }
+            (_, new) => {
+                self.other.insert(key.to_string(), new);
+            }
+        }
+    }
+
+    fn background(&self) -> BackgroundSettingsView {
+        let auto_backup: AutoBackupSettings = self.get(AUTO_BACKUP);
+        let tray_enabled: bool = self.get(TRAY_ENABLED);
+        BackgroundSettingsView {
+            tray_enabled,
+            start_with_windows: tray_enabled && self.get::<bool>(START_WITH_WINDOWS),
+            close_to_tray_explained: self.get(CLOSE_TO_TRAY_EXPLAINED),
+            notifications: self.get(NOTIFICATIONS),
+            auto_backup: AutoBackupSettings {
+                keep: auto_backup.keep.clamp(1, crate::autobackup::MAX_KEEP),
+                ..auto_backup
+            },
+        }
+    }
+
+    fn profile_names(&self) -> BTreeMap<String, Vec<Option<String>>> {
+        let mut names: BTreeMap<String, Vec<Option<String>>> = self.get(PROFILE_NAMES);
+        for list in names.values_mut() {
+            list.resize(4, None);
+        }
+        names
     }
 }
 
@@ -218,6 +296,222 @@ pub(crate) fn mark_hint_shown(path: &Path, hint: &str) -> Result<Vec<String>, Ap
         file.hints_shown.drain(..excess);
         file.hints_shown.clone()
     })
+}
+
+/// Moves an unreadable settings file aside (`settings.invalid-<stamp>.json`)
+/// at start, so that it is kept and the defaults are used. `None`: the file
+/// is missing or valid; `Some(name)`: it was unreadable and is kept as
+/// `name` (`Some(None)`: it could not be moved; the next save moves it).
+pub(crate) fn quarantine_invalid(path: &Path) -> Option<Option<String>> {
+    let _guard = lock();
+    match read_file(path) {
+        OnDisk::Missing | OnDisk::Valid(_) => None,
+        OnDisk::Invalid => {
+            let target = invalid_name(path);
+            Some(
+                std::fs::rename(path, &target)
+                    .ok()
+                    .and_then(|()| target.file_name())
+                    .map(|n| n.to_string_lossy().into_owned()),
+            )
+        }
+    }
+}
+
+/// The background settings.
+pub(crate) fn background(path: &Path) -> BackgroundSettingsView {
+    current(path).background()
+}
+
+/// The automatic-backup settings (the defaults without a file).
+pub(crate) fn auto_backup(path: Option<&Path>) -> AutoBackupSettings {
+    path.map_or_else(AutoBackupSettings::default, |p| background(p).auto_backup)
+}
+
+/// Saves the background settings (validated: `keep` 1-100; without the
+/// tray there is no start with Windows) and returns them with what the
+/// shell must change.
+pub(crate) fn set_background(
+    path: &Path,
+    intent: &BackgroundSettingsIntent,
+) -> Result<(BackgroundSettingsView, ShellChanges), AppError> {
+    let keep = intent.auto_backup.keep;
+    if !(1..=crate::autobackup::MAX_KEEP).contains(&keep) {
+        return Err(refused(
+            EditProblemView::Other {
+                message: format!(
+                    "keep 1 to {} automatic backups per profile, not {keep}",
+                    crate::autobackup::MAX_KEEP
+                ),
+            },
+            "the background settings were not saved",
+        ));
+    }
+    modify(path, |file| {
+        let before = file.background();
+        let start_with_windows = intent.start_with_windows && intent.tray_enabled;
+        file.set(TRAY_ENABLED, &intent.tray_enabled);
+        file.set(START_WITH_WINDOWS, &start_with_windows);
+        file.set(NOTIFICATIONS, &intent.notifications);
+        file.set(AUTO_BACKUP, &intent.auto_backup);
+        let after = file.background();
+        let changes = ShellChanges {
+            tray: (before.tray_enabled != after.tray_enabled).then_some(after.tray_enabled),
+            start_with_windows: (before.start_with_windows != after.start_with_windows)
+                .then_some(after.start_with_windows),
+        };
+        (after, changes)
+    })
+}
+
+/// Remembers that the first close to the tray was explained.
+pub(crate) fn mark_close_to_tray_explained(path: &Path) -> Result<(), AppError> {
+    modify(path, |file| file.set(CLOSE_TO_TRAY_EXPLAINED, &true))
+}
+
+/// The local profile names, per product (four entries each).
+pub(crate) fn profile_names(path: &Path) -> BTreeMap<String, Vec<Option<String>>> {
+    current(path).profile_names()
+}
+
+/// A profile name as stored: control characters removed, trimmed, at most
+/// 32 characters; empty is no name.
+fn clean_name(name: Option<&str>) -> Option<String> {
+    let text: String = name?.chars().filter(|c| !c.is_control()).collect();
+    let text: String = text.trim().chars().take(MAX_PROFILE_NAME).collect();
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Names the profiles of `product` (exactly four names); returns every
+/// product's names.
+pub(crate) fn set_profile_names(
+    path: &Path,
+    product: &str,
+    names: &[Option<String>],
+) -> Result<BTreeMap<String, Vec<Option<String>>>, AppError> {
+    let valid_product = !product.is_empty()
+        && product.len() <= 32
+        && product
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !valid_product || names.len() != 4 {
+        return Err(refused(
+            EditProblemView::Other {
+                message: "four names of a product (letters, digits, '_', '-', '.')".to_string(),
+            },
+            "the profile names were not saved",
+        ));
+    }
+    let names: Vec<Option<String>> = names.iter().map(|n| clean_name(n.as_deref())).collect();
+    modify(path, |file| {
+        let mut all = file.profile_names();
+        if names.iter().all(Option::is_none) {
+            all.remove(product);
+        } else {
+            all.insert(product.to_string(), names);
+        }
+        // Replaced as a whole (a product without names is removed).
+        if let Ok(value) = serde_json::to_value(&all) {
+            file.other.insert(PROFILE_NAMES.to_string(), value);
+        }
+        all
+    })
+}
+
+/// The per-game rules (off by default).
+pub(crate) fn auto_profile(path: &Path) -> AutoProfileSettings {
+    current(path).get(AUTO_PROFILE)
+}
+
+/// Validates per-game rules: at most 64, unique ids (letters, digits and
+/// `-`, at most 16), a program file name (no folder), profiles 1-4, labels
+/// of at most 64 characters (control characters removed).
+pub(crate) fn validate_auto_profile(
+    settings: &AutoProfileSettings,
+) -> Result<AutoProfileSettings, AppError> {
+    let problem = |message: String| {
+        refused(
+            EditProblemView::Other { message },
+            "the game rules were not saved",
+        )
+    };
+    if settings.rules.len() > MAX_RULES {
+        return Err(problem(format!("at most {MAX_RULES} rules")));
+    }
+    if settings
+        .default_profile
+        .is_some_and(|p| !(1..=4).contains(&p))
+    {
+        return Err(problem("the default profile is 1 to 4".to_string()));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut rules = Vec::new();
+    for rule in &settings.rules {
+        let id_ok = !rule.id.is_empty()
+            && rule.id.len() <= 16
+            && rule
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !id_ok || !ids.insert(rule.id.clone()) {
+            return Err(problem(format!(
+                "rule id {:?} is not valid or used twice",
+                rule.id
+            )));
+        }
+        let exe = rule.exe.trim();
+        if exe.is_empty()
+            || exe.len() > 260
+            || exe.contains(['/', '\\', ':'])
+            || exe.chars().any(char::is_control)
+        {
+            return Err(problem(format!("{exe:?} is not a program file name")));
+        }
+        if !(1..=4).contains(&rule.profile) {
+            return Err(problem(format!("profile {} does not exist", rule.profile)));
+        }
+        let label: String = rule
+            .label
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect();
+        let path_hint = rule
+            .path_hint
+            .as_deref()
+            .map(|p| {
+                p.chars()
+                    .filter(|c| !c.is_control())
+                    .take(260)
+                    .collect::<String>()
+            })
+            .filter(|p| !p.trim().is_empty());
+        rules.push(AutoProfileRule {
+            id: rule.id.clone(),
+            label: label.trim().to_string(),
+            exe: exe.to_string(),
+            path_hint,
+            profile: rule.profile,
+            enabled: rule.enabled,
+        });
+    }
+    Ok(AutoProfileSettings {
+        enabled: settings.enabled,
+        default_profile: settings.default_profile,
+        rules,
+    })
+}
+
+/// Saves the per-game rules after [`validate_auto_profile`]; returns them
+/// as saved.
+pub(crate) fn set_auto_profile(
+    path: &Path,
+    settings: &AutoProfileSettings,
+) -> Result<AutoProfileSettings, AppError> {
+    let valid = validate_auto_profile(settings)?;
+    modify(path, |file| file.set(AUTO_PROFILE, &valid))?;
+    Ok(valid)
 }
 
 /// Forgets every hint shown ("Show tips again"); returns the empty list.

@@ -2363,3 +2363,48 @@ fn hardware_tests_h26_and_h27_in_the_simulator() {
     }
     sim.assert_clean();
 }
+
+#[test]
+fn an_export_can_hold_only_the_chosen_parts() {
+    use openwraith_hid::ImportSelection;
+    let fx = Fixture::new();
+    let mut connector = SimConnector::new(sim_with_profiles());
+    let path = fx.path("p1-triggers.owprofile.json");
+    let mut ui = TestUi::answering(&[]);
+    let exit = run(
+        &[
+            "profile",
+            "export",
+            "1",
+            "-o",
+            text(&path),
+            "--include",
+            "triggers,deadband",
+        ],
+        &mut connector,
+        &mut ui,
+    )
+    .expect("export");
+    assert_eq!(exit, Exit::Success);
+    assert!(ui.out.contains("(triggers, dead band)"), "{}", ui.out);
+    let file = Backup::load(&path).expect("loads");
+    assert_eq!(
+        file.parts_of(profile(1)),
+        Some(ImportSelection {
+            triggers: true,
+            dead_band: true,
+            ..ImportSelection::NONE
+        })
+    );
+    assert!(
+        file.note.contains("Parts: triggers, dead band."),
+        "{}",
+        file.note
+    );
+    assert!(file.response(ReadRequest::MainLight).is_none());
+    // By default every part.
+    let whole = export_profile_1(&mut connector, &fx);
+    let whole = Backup::load(&whole).expect("loads");
+    assert_eq!(whole.parts_of(profile(1)), Some(ImportSelection::ALL));
+    assert_reads_only(&connector.sim.borrow());
+}

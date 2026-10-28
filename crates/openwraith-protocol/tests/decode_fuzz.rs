@@ -199,11 +199,11 @@ fn v02_parsers_never_panic_on_arbitrary_input() {
             biased(&mut rng),
         ];
         let index = u8::try_from(rng.below(132)).unwrap_or(0);
-        if let Some(pos) = KeyPos::from_index(index) {
-            if let EntryKind::Assignable(a) = KeyAssignment::classify(&W75, pos, entry) {
-                parsed[2] += 1;
-                assert_eq!(a.entry(&W75, pos), Ok(entry));
-            }
+        if let Some(pos) = KeyPos::from_index(index)
+            && let EntryKind::Assignable(a) = KeyAssignment::classify(&W75, pos, entry)
+        {
+            parsed[2] += 1;
+            assert_eq!(a.entry(&W75, pos), Ok(entry));
         }
     }
 
@@ -219,7 +219,13 @@ fn v02_parsers_never_panic_on_arbitrary_input() {
                 // perturbed half of the time.
                 let used = usize::try_from(rng.below(21)).unwrap_or(0);
                 table.fill(0);
-                for (i, entry) in table.chunks_exact_mut(4).take(used).enumerate() {
+                for (i, entry) in table
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .take(used)
+                    .enumerate()
+                {
                     let key = u8::try_from(0x04 + 2 * i).unwrap_or(0);
                     let mode = u8::try_from(rng.below(4)).unwrap_or(0);
                     entry.copy_from_slice(&[0x01, mode, key, key + 1]);

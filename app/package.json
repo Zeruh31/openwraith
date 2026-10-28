@@ -1,7 +1,7 @@
 {
   "name": "openwraith-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenWraith desktop app frontend (not affiliated with Wraith).",
   "license": "GPL-3.0-or-later",
   "type": "module",

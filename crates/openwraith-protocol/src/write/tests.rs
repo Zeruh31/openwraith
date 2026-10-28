@@ -103,7 +103,7 @@ fn is_allowed_slot(s: &[u8]) -> bool {
 fn socd_chunk(entries: &[u8]) -> Option<Vec<u8>> {
     let mut usages = Vec::new();
     let mut ended = false;
-    for e in entries.chunks_exact(4) {
+    for e in entries.as_chunks::<4>().0 {
         if e.iter().all(|b| *b == 0) {
             ended = true;
             continue;

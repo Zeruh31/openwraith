@@ -8,6 +8,8 @@
 //! generated from these by the tests (`bindings`).
 
 mod app;
+mod auto;
+mod background;
 mod catalog;
 mod common;
 mod editors;
@@ -18,6 +20,7 @@ mod keys;
 mod plan;
 mod preview;
 mod progress;
+mod recovery;
 mod report;
 mod share;
 mod sim;
@@ -26,6 +29,17 @@ mod status;
 mod travel;
 
 pub use app::{AppInfo, LanguageSetting, PlatformView, SafetyDirView, Settings, ThemeSetting};
+pub use auto::{
+    AutoActivityView, AutoCauseView, AutoEpisodeState, AutoEventView, AutoHoldView, AutoLineView,
+    AutoPauseReason, AutoProfileRuleIntent, AutoProfileRuleView, AutoProfileRulesIntent,
+    AutoProfileStateView, AutoWaitReason, AutoWaitView, AutomationStatusView, ProgramToken,
+    ProgramView, RuleProgramIntent, UiStateReport,
+};
+pub use background::{
+    AutoBackupSettings, AutoProfileRule, AutoProfileSettings, BackgroundSettingsApplied,
+    BackgroundSettingsIntent, BackgroundSettingsView, NotificationSettings,
+    ProductProfileNamesView, ProfileNamesIntent, ProfileNamesView, ShellChanges,
+};
 pub use catalog::{
     ActionCatalog, BindingRuleView, CatalogEntry, CatalogGroup, CatalogLayerView, CatalogModifier,
     CatalogTab, ComboRuleView, DksRowRuleView, LayoutKeyActionView, MacroPlayKindView,
@@ -69,6 +83,11 @@ pub use preview::{
     AllProfilesPreview, KeyEditView, LightEditPreview, ProfileSwitchPreview, TriggerEditPreview,
 };
 pub use progress::{CancelState, ProgressEvent, ProgressStep, ReadPurpose};
+pub use recovery::{
+    AutoBackupEntry, AutoBackupReason, AutoBackupsView, FirmwareChangeView, FirmwareView,
+    KnownGoodTableView, RecoveryIntent, RecoveryProfileState, RecoveryProfileView,
+    RecoveryStatusView, RecoveryView, ResetEvidenceView,
+};
 pub use report::{
     BackupSaved, ClearedMacroView, DanglingBindingView, EditReportView, FinalCheckView,
     FinalMismatchView, Headline, ItemReportView, ItemResultView, LastReport, MismatchKindView,

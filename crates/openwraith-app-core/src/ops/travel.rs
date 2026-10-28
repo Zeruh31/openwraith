@@ -254,11 +254,11 @@ impl<B: DeviceBackend> Worker<B> {
                                 own = Some(DepthStopReason::NoMovement);
                                 return ControlFlow::Break(());
                             }
-                            if let Some(out) = coalescer.take(frame.open_ms) {
-                                if !sink.send(out) {
-                                    own = Some(DepthStopReason::ChannelClosed);
-                                    return ControlFlow::Break(());
-                                }
+                            if let Some(out) = coalescer.take(frame.open_ms)
+                                && !sink.send(out)
+                            {
+                                own = Some(DepthStopReason::ChannelClosed);
+                                return ControlFlow::Break(());
                             }
                             ControlFlow::Continue(())
                         })

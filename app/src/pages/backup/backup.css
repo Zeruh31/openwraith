@@ -60,6 +60,11 @@
   color: var(--warning-fg);
 }
 
+.br-chip--muted {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .br-reason {
   display: flex;
   align-items: flex-start;
@@ -324,6 +329,83 @@
   margin-top: var(--space-2);
 }
 
+/* ---------- automatic backups ---------- */
+
+.br-auto__reason {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.br-auto__pin[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+/* ---------- recovery ---------- */
+
+.br-recovery__title:focus-visible {
+  outline-offset: 4px;
+}
+
+.br-recovery__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.br-recovery__profiles {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-recovery__profile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+
+.br-recovery__profile:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.br-recovery__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.br-recovery__evidence > ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+}
+
+.br-recovery__restore {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+
+.br-recovery__all {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
 /* ---------- share a profile ---------- */
 
 /* Export and Import side by side from 1180 px of content (B12: two panes stack below). */
@@ -384,6 +466,20 @@
 
 .br-share__name {
   width: 100%;
+}
+
+.br-share__source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.br-share__picked {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .br-share__choice {
@@ -451,5 +547,9 @@
   .br-share__check,
   .br-share__icon {
     color: CanvasText;
+  }
+
+  .br-auto__pin[aria-pressed="true"] {
+    border: 2px solid Highlight;
   }
 }

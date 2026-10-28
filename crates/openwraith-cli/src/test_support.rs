@@ -127,11 +127,29 @@ impl openwraith_hid::Transport for SimReader {
 }
 
 /// A [`Connector`](crate::device::Connector) over a shared simulator. It
-/// counts the sessions of each kind it opened.
+/// counts the sessions of each kind it opened. With a lock directory the
+/// commands take the device lock there, and every session it opens records
+/// how the lock looked at that moment ([`LockSeen`]).
 pub struct SimConnector {
     pub sim: SharedSim,
     pub read_sessions: usize,
     pub write_sessions: usize,
+    pub lock_dir: Option<PathBuf>,
+    pub lock_seen: Vec<LockSeen>,
+}
+
+/// The device lock as a session of the simulator connector found it when
+/// it was opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockSeen {
+    /// A session that may write.
+    pub write_session: bool,
+    /// Whether another program could have taken the lock exclusively.
+    pub exclusive_free: bool,
+    /// Whether another program could have taken it shared.
+    pub shared_free: bool,
+    /// What `device.lock.json` said.
+    pub holder: Option<openwraith_hid::LockInfo>,
 }
 
 impl SimConnector {
@@ -140,7 +158,33 @@ impl SimConnector {
             sim: std::rc::Rc::new(std::cell::RefCell::new(sim)),
             read_sessions: 0,
             write_sessions: 0,
+            lock_dir: None,
+            lock_seen: Vec::new(),
         }
+    }
+
+    /// Commands take the device lock in `dir`.
+    pub fn with_lock_dir(mut self, dir: PathBuf) -> Self {
+        self.lock_dir = Some(dir);
+        self
+    }
+
+    /// Records how the lock looks now (the description first: a probe that
+    /// gets the lock replaces it).
+    fn probe_lock(&mut self, write_session: bool) {
+        use openwraith_hid::DeviceLock;
+        let Some(dir) = &self.lock_dir else {
+            return;
+        };
+        let holder = DeviceLock::holder(dir);
+        let exclusive_free = DeviceLock::try_exclusive(dir, "probe", "test").is_ok();
+        let shared_free = DeviceLock::try_shared(dir, "probe", "test").is_ok();
+        self.lock_seen.push(LockSeen {
+            write_session,
+            exclusive_free,
+            shared_free,
+            holder,
+        });
     }
 }
 
@@ -150,12 +194,18 @@ impl crate::device::Connector for SimConnector {
 
     fn open_read(&mut self) -> anyhow::Result<Session<SimReader>> {
         self.read_sessions += 1;
+        self.probe_lock(false);
         Ok(Session::new(SimReader(self.sim.clone())))
     }
 
     fn open_write(&mut self) -> anyhow::Result<Session<SimWriter>> {
         self.write_sessions += 1;
+        self.probe_lock(true);
         Ok(Session::new(SimWriter(self.sim.clone())))
+    }
+
+    fn lock_dir(&self) -> Result<Option<PathBuf>, openwraith_hid::LockError> {
+        Ok(self.lock_dir.clone())
     }
 }
 
@@ -224,12 +274,12 @@ impl crate::ui::Ui for TestUi {
         if self.cancel_armed {
             self.cancelled = true;
         }
-        if let Some((needle, n)) = &mut self.cancel_at {
-            if text.contains(needle.as_str()) {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    self.cancelled = true;
-                }
+        if let Some((needle, n)) = &mut self.cancel_at
+            && text.contains(needle.as_str())
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.cancelled = true;
             }
         }
     }

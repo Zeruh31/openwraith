@@ -49,6 +49,16 @@
 //! * [`ProfileSwitcher`] ([`Session::profile_switcher`]): profile selects
 //!   for standing rules (an automatic profile per game), nothing else.
 //!
+//! For the desktop app and the command line tool side by side:
+//!
+//! * [`known_good`]: reset detection against known-good (automatic)
+//!   backups ([`assess`], [`reset_verdict`]) and [`compose`], which builds
+//!   one all-profile backup from per-profile ones for a restore. Pure:
+//!   nothing is read, written or restored by itself.
+//! * [`coordination`]: [`DeviceLock`], the per-user lock file that the
+//!   programs writing to the keyboard hold exclusively and the ones reading
+//!   it hold shared.
+//!
 //! Reports the keyboard sends on its own (the SOCD switch on Fn + Right
 //! Shift, the key-depth stream) are never taken for another program; a
 //! key-depth stream that no test of the session opened refuses every table
@@ -86,10 +96,12 @@
 #![warn(missing_docs)]
 
 pub mod backup;
+pub mod coordination;
 pub mod edit;
 mod error;
 mod group;
 mod hid;
+pub mod known_good;
 #[cfg(feature = "mock")]
 pub mod mock;
 mod persist;
@@ -115,6 +127,7 @@ pub use backup::{
     Progress, SnapshotView, ToolInfo, read_all, read_all_cancellable, read_all_observed,
     read_all_with, rfc3339_utc,
 };
+pub use coordination::{DeviceLock, LockError, LockInfo, LockMode, LockState};
 pub use edit::{
     AdvancedSlotView, ColorChange, ColorEdit, ColorEditPlan, CommitTriggerMode, DeadBandChange,
     DeadBandEdit, DeadBandEditPlan, EditError, EditOptions, EditReport, EditWarning,
@@ -133,6 +146,10 @@ pub use group::{ClearedMacro, DanglingBinding, ResendReason, SlotRef};
 pub use hid::{
     DeviceChoiceError, DeviceDescriptor, DeviceListing, HidBackend, HidTransport,
     WritableHidTransport, choose_device, is_supported_interface,
+};
+pub use known_good::{
+    FirmwareId, KnownGoodError, KnownGoodTable, ProfileAssessment, ProfileEvidence, ResetEvidence,
+    ResetVerdict, TableAssessment, TableVerdict, assess, compose, reset_verdict,
 };
 #[cfg(feature = "mock")]
 pub use mock::{MockError, MockTransport};

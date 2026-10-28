@@ -175,6 +175,7 @@ export const errors = {
     snapshot_stale: "The values shown may be out of date; read the keyboard again",
     safety_dir_unavailable: "The safety-backup folder can't be used",
     fault: "OpenWraith hit an internal error; restart it",
+    paused_for_cli: "An OpenWraith command is using the keyboard; OpenWraith waits until it has finished",
   } satisfies Record<WriteBlockReason, string>,
   /** The "busy" reason while the live key-depth view holds the keyboard. */
   depthViewRunning: "The key-depth view is running. Stop it on Actuation > Key depth first.",

@@ -196,19 +196,32 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                let clean = super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                );
+                w.own_write_done(clean);
                 if w.foreign_heard() {
                     w.stale = true;
                 } else if report.active_profile_now != Some(profile) {
                     w.reread = true;
                 } else {
                     progress.step(ProgressStep::RefreshingView);
-                    w.refresh_colors();
+                    let mut reread = w.refresh_colors();
                     if plan
                         .writes()
                         .iter()
                         .any(|w| w.table == openwraith_hid::protocol::TableId::MainLight)
                     {
-                        w.refresh_light();
+                        reread = reread.zip(w.refresh_light()).map(|(mut a, b)| {
+                            a.extend(b);
+                            a
+                        });
+                    }
+                    if clean && let Some(reread) = reread {
+                        // What the edit left in the colours (and the light).
+                        w.own_write_reread(OpKind::ColorEdit, &fresh, reread);
                     }
                 }
                 let view = edit_report_view(&report, file);

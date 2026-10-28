@@ -37,13 +37,14 @@ pub(crate) fn test_config(dir: &std::path::Path) -> CoreConfig {
     CoreConfig {
         safety_dir: Ok(dir.join("safety")),
         state_dir: dir.join("state"),
-        version: "0.1.0".to_string(),
+        version: "0.2.0".to_string(),
         os_locale: Some("en-US".to_string()),
         repository: "https://github.com/Zeruh31/openwraith".to_string(),
         fixed_time: Some(fixed_time()),
         token_seed: Some(42),
         legal_dir: Some(dir.join("legal")),
         settings_path: Some(dir.join("config").join("settings.json")),
+        lock_dir: None,
     }
 }
 
@@ -680,6 +681,49 @@ impl Harness {
             progress,
             reply,
         })
+    }
+
+    pub(crate) fn prepare_recovery(
+        &mut self,
+        intent: crate::dto::RecoveryIntent,
+        watch: &Arc<Watch>,
+    ) -> Result<RestorePreview, AppError> {
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::PrepareRecovery {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    /// `get_recovery`.
+    pub(crate) fn recovery(&self) -> crate::dto::RecoveryView {
+        crate::ops::recovery::get_recovery(&self.shared, &self.worker.config)
+    }
+
+    /// `list_auto_backups`.
+    pub(crate) fn auto_backups(&self) -> crate::dto::AutoBackupsView {
+        crate::ops::recovery::list_auto_backups(&self.shared, &self.worker.config)
+    }
+
+    /// `keep_current_settings`.
+    pub(crate) fn keep_current(
+        &self,
+        profiles: &[u8],
+    ) -> Result<crate::dto::RecoveryView, AppError> {
+        crate::ops::recovery::keep_current_settings(&self.shared, &self.worker.config, profiles)
+    }
+
+    /// The automatic backups of profile `n` of the first simulated keyboard
+    /// (file names, newest first).
+    pub(crate) fn auto_files(&self, n: u8) -> Vec<String> {
+        let key = crate::autobackup::device_key(Some("W75HEARGB"), Some("SIM-1"));
+        let dir = crate::autobackup::profile_dir(&self.worker.config.known_good_dir(), &key, n);
+        crate::autobackup::list_profile(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.file_name)
+            .collect()
     }
 
     /// The trigger write packets (`21 .. 18 MM`) sent so far.

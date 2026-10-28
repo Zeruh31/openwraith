@@ -98,7 +98,8 @@ export function ImportReview({ preview }: { preview: ImportPreview }) {
           {preview.critical_blocked && index === critical.length - 1 ? <p>{s.critical.notImported}</p> : null}
         </Callout>
       ))}
-      <RestoreReview preview={preview} variant="import" />
+      {/* "Not imported" names every replaced shortcut ("Fn + 2 and Fn + Space"), not only the first by number. */}
+      <RestoreReview preview={preview} variant="import" criticalKeys={critical} />
     </div>
   );
 }
@@ -199,7 +200,9 @@ export function ImportFlow({ intent, onConsent, onFirmware, onImported, onRunAga
       token={(preview) => preview.token}
       title={(preview) => s.review.title({ from: preview.from, into: preview.into })}
       review={(preview) => <ImportReview preview={preview} />}
-      nothingToDo={(preview) => <RestoreNothing preview={preview} variant="import" />}
+      nothingToDo={(preview) => (
+        <RestoreNothing preview={preview} variant="import" criticalKeys={preview.critical_fn_overrides} />
+      )}
       confirmLabel={(preview) => s.review.confirm({ n: planChanges(groupPlan(preview.plan)) })}
       writesSettings
       safetyNote={(preview) => s.review.safetyNote({ n: preview.into, dir })}

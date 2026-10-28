@@ -1,8 +1,12 @@
 // App-wide banners above every page, in priority order: simulator, fault,
-// interrupted operation, keyboard reset, another program, a key-depth test
-// that may still be open, safety folder, stale values, untested firmware.
+// interrupted operation, keyboard reset, settings that look reset (or a
+// changed firmware), an OpenWraith command using the keyboard, another
+// program, paused game profiles, a key-depth test that may still be open,
+// safety folder, stale values, untested firmware.
 
 import type { ReactNode } from "react";
+
+import type { DeviceStatus } from "../ipc/bindings";
 
 import { Button } from "../components/Button";
 import { Callout } from "../components/Feedback";
@@ -13,8 +17,24 @@ import { api } from "../ipc/commands";
 import { navigate, tabOf, tabTarget, useRoute } from "../routes";
 import { useAppInfo } from "../state/appInfo";
 import { useOperationLock } from "../state/operation";
-import { useStatus } from "../state/status";
-import { readAgain, recheckOtherProgram, reconnect, toastError } from "./actions";
+import { cliPurposeStore, useStatus } from "../state/status";
+import { useStore } from "../state/store";
+import { readAgain, recheckOtherProgram, reconnect, resumeAutoProfiles, toastError } from "./actions";
+import { useReadBlockedReason } from "../state/operation";
+
+/** The route of the Recovery card. */
+export const RECOVERY_ROUTE = { page: "backup", params: { recover: "1" } } as const;
+
+/** Whether the Recovery card should be offered: profiles look reset, the firmware changed, or a reset report is unresolved. */
+export function recoveryAttention(status: Pick<DeviceStatus, "recovery" | "connection">): boolean {
+  const recovery = status.recovery;
+  return (
+    recovery.reset_suspected.length > 0 ||
+    recovery.firmware_changed ||
+    // While the keyboard's own report is shown (`reset_seen`), its banner says it.
+    (recovery.reset_reported && status.connection.state !== "reset_seen")
+  );
+}
 
 /** The banners that apply now. */
 export function BannerStack() {
@@ -23,7 +43,9 @@ export function BannerStack() {
   const status = useStatus();
   const info = useAppInfo();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
   const route = useRoute();
+  const cliPurpose = useStore(cliPurposeStore);
   const b = dict.shell.banners;
   const banners: ReactNode[] = [];
   const connection = status.connection;
@@ -107,7 +129,7 @@ export function BannerStack() {
               size="sm"
               icon="restore"
               onClick={() => {
-                navigate("backup");
+                navigate(RECOVERY_ROUTE);
               }}
             >
               {b.resetRestore}
@@ -116,6 +138,61 @@ export function BannerStack() {
         }
       >
         <p>{b.resetBody}</p>
+      </Callout>,
+    );
+  }
+
+  // Settings that look reset, or a changed firmware: the Recovery card
+  // (never shown on Backup & profiles, which opens the card itself whenever
+  // this banner would show, and drops `?recover=1` from its route). Nothing
+  // is restored without a click there and the standard restore review.
+  const onRecovery = route.page === "backup";
+  if (recoveryAttention(status) && !onRecovery) {
+    const recovery = status.recovery;
+    const suspected = [...recovery.reset_suspected].sort((x, y) => x - y);
+    banners.push(
+      <Callout
+        key="recovery"
+        kind={recovery.reset_suspected.length > 0 ? "danger" : "warning"}
+        title={recovery.firmware_changed ? b.firmwareTitle : b.recoveryTitle}
+        role="alert"
+        className="ow-banner"
+        actions={
+          <Button
+            size="sm"
+            variant="primary"
+            icon="restore"
+            onClick={() => {
+              navigate(RECOVERY_ROUTE);
+            }}
+          >
+            {b.recoveryReview}
+          </Button>
+        }
+      >
+        {recovery.firmware_changed ? <p>{b.firmwareBody}</p> : null}
+        {recovery.reset_reported ? <p>{b.recoveryReported}</p> : null}
+        {suspected.length > 0 ? (
+          <p>{b.recoveryProfiles({ list: format.list(suspected.map(String)), count: suspected.length })}</p>
+        ) : null}
+        {suspected.length > 0 ? <p>{b.recoveryNothingChanged({ count: suspected.length })}</p> : null}
+        <p className="ow-strong">{b.recoveryNever}</p>
+      </Callout>,
+    );
+  }
+
+  // An OpenWraith command (the CLI) holds the keyboard: the app only listens.
+  if (status.paused_for_cli) {
+    banners.push(
+      <Callout key="cli" kind="info" title={b.pausedForCliTitle} role="status" className="ow-banner">
+        <p>{b.pausedForCliBody}</p>
+        {cliPurpose === null ? null : (
+          <p>
+            {b.pausedForCliPurpose}
+            {": "}
+            <code className="ow-mono ow-selectable">{cliPurpose}</code>
+          </p>
+        )}
       </Callout>,
     );
   }
@@ -145,6 +222,39 @@ export function BannerStack() {
             })}
           </p>
         </Disclosure>
+      </Callout>,
+    );
+  }
+
+  // Game profiles paused by the app itself (too many switches, a failed
+  // switch); a pause the user chose shows only as the header's chip.
+  const paused = status.automation.paused;
+  const onGames = route.page === "settings" && route.params["tab"] === "games";
+  if (status.automation.enabled && paused !== null && paused.reason !== "user" && !onGames) {
+    banners.push(
+      <Callout
+        key="auto-paused"
+        kind="warning"
+        title={b.autoPausedTitle}
+        className="ow-banner"
+        actions={
+          <>
+            <Button size="sm" variant="primary" onClick={resumeAutoProfiles}>
+              {b.autoResume}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                navigate(tabTarget("settings", "games"));
+              }}
+            >
+              {b.autoOpenSettings}
+            </Button>
+          </>
+        }
+      >
+        <p>{paused.reason === "rate_limit" ? b.autoPausedRateLimit : b.autoPausedFailed}</p>
+        {paused.reason === "switch_failed" ? <TechnicalDetails>{paused.message}</TechnicalDetails> : null}
       </Callout>,
     );
   }
@@ -197,7 +307,7 @@ export function BannerStack() {
         className="ow-banner"
         actions={
           connection.state === "ready" ? (
-            <Button size="sm" icon="refresh" disabled={lock.busy} onClick={readAgain}>
+            <Button size="sm" icon="refresh" disabled={lock.busy} disabledReason={readBlocked} onClick={readAgain}>
               {dict.common.actions.readAgain}
             </Button>
           ) : undefined

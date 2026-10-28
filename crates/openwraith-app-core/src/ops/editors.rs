@@ -10,8 +10,8 @@
 use std::collections::HashSet;
 
 use openwraith_hid::protocol::{
-    ActiveCustomTable, ColorTable, CustomTable, DeadBandTable, DeviceEvent, KeyPos, Model,
-    ReadRequest, TableId,
+    ActiveCustomTable, ColorTable, CustomTable, DeadBandTable, DeviceEvent, FromResponse, KeyPos,
+    Model, RawResponse, ReadRequest, TableId,
 };
 use openwraith_hid::{Backup, PersistenceCheckMode, PlanAction, SocdState};
 
@@ -226,42 +226,45 @@ impl<B: DeviceBackend> Worker<B> {
     }
 
     /// Reads custom table 1 again after a colour edit and patches the
-    /// cache. Stops before the request once another program was heard.
-    pub(crate) fn refresh_colors(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
+    /// cache; the reply when it was read. Stops before the request once
+    /// another program was heard.
+    pub(crate) fn refresh_colors(&mut self) -> Option<Vec<RawResponse>> {
+        let session = self.session.as_mut()?;
         if !may_send(session) {
             self.stale = true;
-            return;
+            return None;
         }
-        let read = session.read::<ColorTable>(ReadRequest::CustomColors(CustomTable::Custom1));
-        let data = match read {
-            Ok(table) => TableRead::Ok(table),
-            Err(_) => {
-                self.reread = true;
-                return;
-            }
+        let read = session
+            .request(ReadRequest::CustomColors(CustomTable::Custom1))
+            .ok()
+            .and_then(|raw| ColorTable::from_response(&raw).ok().map(|t| (raw, t)));
+        let Some((raw, table)) = read else {
+            self.reread = true;
+            return None;
         };
         let revision = self.next_revision();
         self.shared.update_editors(|cache| {
             cache.colors.revision = revision;
-            cache.colors.data.custom1 = data;
+            cache.colors.data.custom1 = TableRead::Ok(table);
         });
+        Some(vec![raw])
     }
 
-    /// Reads the dead band again after its edit and patches the cache.
-    pub(crate) fn refresh_dead_band(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
+    /// Reads the dead band again after its edit and patches the cache; the
+    /// reply when it was read.
+    pub(crate) fn refresh_dead_band(&mut self) -> Option<Vec<RawResponse>> {
+        let session = self.session.as_mut()?;
         if !may_send(session) {
             self.stale = true;
-            return;
+            return None;
         }
-        let Ok(table) = session.read::<DeadBandTable>(ReadRequest::DeadBand) else {
+        let read = session
+            .request(ReadRequest::DeadBand)
+            .ok()
+            .and_then(|raw| DeadBandTable::from_response(&raw).ok().map(|t| (raw, t)));
+        let Some((raw, table)) = read else {
             self.reread = true;
-            return;
+            return None;
         };
         let revision = self.next_revision();
         self.shared.update_editors(|cache| {
@@ -270,20 +273,29 @@ impl<B: DeviceBackend> Worker<B> {
                 data: TableRead::Ok(table),
             };
         });
+        Some(vec![raw])
     }
 
-    /// Reads SOCD again after its edit and patches the cache.
-    pub(crate) fn refresh_socd(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
+    /// Reads SOCD again after its edit and patches the cache; the replies
+    /// (the power, then the pairs) when both were read.
+    pub(crate) fn refresh_socd(&mut self) -> Option<Vec<RawResponse>> {
+        let session = self.session.as_mut()?;
         if !may_send(session) {
             self.stale = true;
-            return;
+            return None;
         }
-        let Ok(state) = SocdState::read(session) else {
+        // The two reads of `SocdState::read`, keeping the replies.
+        let read = session
+            .request(ReadRequest::SocdSettings)
+            .ok()
+            .and_then(|settings| {
+                let pairs = session.request(ReadRequest::SocdPairs).ok()?;
+                let state = SocdState::from_replies(&settings, &pairs).ok()?;
+                Some((settings, pairs, state))
+            });
+        let Some((settings, pairs, state)) = read else {
             self.reread = true;
-            return;
+            return None;
         };
         let revision = self.next_revision();
         self.shared.update_editors(|cache| {
@@ -292,6 +304,7 @@ impl<B: DeviceBackend> Worker<B> {
                 data: TableRead::Ok(state),
             };
         });
+        Some(vec![settings, pairs])
     }
 
     /// The keyboard's SOCD pushes (Fn + Right Shift) since the last look:

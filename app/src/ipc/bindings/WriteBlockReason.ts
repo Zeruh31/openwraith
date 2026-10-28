@@ -3,4 +3,4 @@
 /**
  * Why writes are blocked.
  */
-export type WriteBlockReason = "not_connected" | "observing" | "busy" | "other_program" | "reset_seen" | "snapshot_stale" | "safety_dir_unavailable" | "fault";
+export type WriteBlockReason = "not_connected" | "observing" | "busy" | "other_program" | "reset_seen" | "snapshot_stale" | "safety_dir_unavailable" | "fault" | "paused_for_cli";

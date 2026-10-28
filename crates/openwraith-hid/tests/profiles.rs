@@ -325,10 +325,11 @@ fn another_product_in_another_profile_is_refused_and_the_original_selected() {
         // product (same length).
         tamper.rewrite = Box::new(|bytes, selects| {
             let product = b"W75HEARGB";
-            if selects == 1 && bytes[0] == 0x0D {
-                if let Some(at) = bytes.windows(product.len()).position(|w| w == product) {
-                    bytes[at..at + product.len()].copy_from_slice(b"W75HEARGX");
-                }
+            if selects == 1
+                && bytes[0] == 0x0D
+                && let Some(at) = bytes.windows(product.len()).position(|w| w == product)
+            {
+                bytes[at..at + product.len()].copy_from_slice(b"W75HEARGX");
             }
         });
         let mut session = Session::new(&mut tamper);

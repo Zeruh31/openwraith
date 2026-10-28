@@ -255,13 +255,23 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                let clean = super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                );
+                w.own_write_done(clean);
                 if w.foreign_heard() {
                     w.stale = true;
                 } else if report.active_profile_now != Some(profile) {
                     w.reread = true;
                 } else {
                     progress.step(ProgressStep::RefreshingView);
-                    w.refresh_socd();
+                    let reread = w.refresh_socd();
+                    if clean && let Some(reread) = reread {
+                        // What the edit left in the SOCD pairs.
+                        w.own_write_reread(OpKind::SocdEdit, &fresh, reread);
+                    }
                 }
                 let view = edit_report_view(&report, file);
                 w.shared.set_last_report(LastReport::Edit {

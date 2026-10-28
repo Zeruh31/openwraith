@@ -33,6 +33,8 @@ export const flow = {
     export: "Exporting a profile",
     import_prepare: "Comparing with the profile file",
     import: "Importing a profile",
+    recovery_check: "Comparing with the automatic backups",
+    auto_switch: "Switching the profile for a game",
   } satisfies Record<OpKind, string>,
   /** Dialog titles while a write runs and on its result (the review asks a question instead). */
   titles: {
@@ -55,6 +57,8 @@ export const flow = {
     export: "Profile export",
     import_prepare: "Profile import",
     import: "Profile import",
+    recovery_check: "Recovery",
+    auto_switch: "Game profile",
   } satisfies Record<OpKind, string>,
   preparing: "Reading what the keyboard has now…",
   steps: {

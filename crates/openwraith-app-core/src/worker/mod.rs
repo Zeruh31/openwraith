@@ -12,8 +12,10 @@
 //! While idle the worker sends nothing: it only listens (`Session::listen`)
 //! or, without a keyboard, enumerates every 1.5 s.
 
+pub(crate) mod coexist;
 mod conn;
-mod idle;
+mod hygiene;
+pub(crate) mod idle;
 mod pending;
 mod publish;
 pub(crate) mod request;
@@ -33,7 +35,7 @@ pub(crate) use request::{Envelope, Request};
 use crate::backend::{DeviceBackend, DeviceEntry};
 use crate::clock::Clock;
 use crate::config::CoreConfig;
-use crate::dto::{AppError, DeviceId, DeviceSnapshot, OpInfo};
+use crate::dto::{AppError, DeviceId, DeviceSnapshot, OpInfo, OpKind};
 use crate::shared::Shared;
 
 /// How long the worker listens per idle tick.
@@ -90,6 +92,44 @@ pub(crate) struct Worker<B: DeviceBackend> {
     pub(crate) socd_pushes_seen: u64,
     /// `StrayTravelTest` was sent for this connection.
     pub(crate) stray_notified: bool,
+    /// Idle sessions replaced by a new one (session hygiene).
+    pub(crate) session_recycles: u32,
+    /// The device lock, held exclusively around a write (and its commit
+    /// settle) and an automatic switch.
+    pub(crate) device_lock: Option<openwraith_hid::DeviceLock>,
+    /// When the lock kept for the commit settle may be released.
+    pub(crate) lock_until: Option<Instant>,
+    /// Paused while the CLI holds the lock.
+    pub(crate) cli_pause: Option<coexist::CliPause>,
+    /// When the lock is probed next.
+    pub(crate) next_probe: Option<Instant>,
+    /// When a probe last found the lock free.
+    pub(crate) last_free_probe: Option<Instant>,
+    /// When the current `OtherProgram` episode began.
+    pub(crate) other_since: Option<Instant>,
+    /// Everything heard so far (the 180 s silence of an `OtherProgram`
+    /// episode).
+    pub(crate) other_signature: u64,
+    /// Since when nothing at all was heard in `OtherProgram`.
+    pub(crate) other_quiet_since: Option<Instant>,
+    /// The gate was re-armed for the automatic switches after 180 s of
+    /// silence in `OtherProgram` (tray mode); manual writes stay blocked.
+    pub(crate) auto_rearmed: bool,
+    /// When another program was heard last, over every session.
+    pub(crate) foreign_seen_at: Option<Instant>,
+    /// The last pause for the CLI (from, to): what was heard then was the
+    /// CLI's, not another program's.
+    pub(crate) cli_window: Option<(Instant, Instant)>,
+    /// `foreign_seen_at` when a probe last found the lock free (what the
+    /// CLI made heard before the probe that found it is not remembered).
+    pub(crate) foreign_seen_at_free: Option<Instant>,
+    /// Profile reports (since the gate mark) already acted on in
+    /// `OtherProgram`.
+    pub(crate) other_reports_handled: u64,
+    /// The connection on which the command line tool last wrote under its
+    /// exclusive lock while the app paused (the next comparison takes
+    /// factory forms as the user's own change).
+    pub(crate) cli_wrote_on: Option<u32>,
 }
 
 impl<B: DeviceBackend> Worker<B> {
@@ -101,6 +141,7 @@ impl<B: DeviceBackend> Worker<B> {
         rx: Receiver<Envelope>,
     ) -> Self {
         let clock = backend.clock();
+        shared.set_clock(Arc::clone(&clock));
         let sim = backend.is_simulated();
         Worker {
             backend,
@@ -133,6 +174,21 @@ impl<B: DeviceBackend> Worker<B> {
             owns_busy: false,
             socd_pushes_seen: 0,
             stray_notified: false,
+            session_recycles: 0,
+            device_lock: None,
+            lock_until: None,
+            cli_pause: None,
+            next_probe: None,
+            last_free_probe: None,
+            other_since: None,
+            other_signature: 0,
+            other_quiet_since: None,
+            auto_rearmed: false,
+            foreign_seen_at: None,
+            cli_window: None,
+            foreign_seen_at_free: None,
+            other_reports_handled: 0,
+            cli_wrote_on: None,
         }
     }
 
@@ -255,6 +311,8 @@ impl<B: DeviceBackend> Worker<B> {
         self.session = None;
         self.current = None;
         self.pending = None;
+        self.device_lock = None;
+        self.cli_pause = None;
         self.shared.end_op();
         self.conn = Conn::Fault {
             message: message.to_string(),
@@ -362,7 +420,7 @@ impl<B: DeviceBackend> Worker<B> {
                 progress,
                 reply,
             } => {
-                let result = self.prepare_restore(&intent, progress);
+                let result = self.prepare_restore(&intent, progress, OpKind::RestorePrepare);
                 self.release();
                 let _ = reply.send(result);
             }
@@ -470,6 +528,20 @@ impl<B: DeviceBackend> Worker<B> {
                 reply,
             } => {
                 let result = self.apply_import(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareRecovery {
+                intent,
+                progress,
+                reply,
+            } => {
+                let result = self.prepare_recovery(&intent, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::BackUpNow { reply } => {
+                let result = self.back_up_now();
                 self.release();
                 let _ = reply.send(result);
             }

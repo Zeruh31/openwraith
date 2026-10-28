@@ -19,10 +19,17 @@ export interface BackupDemo {
   share?: "export" | "open_import" | "import" | undefined;
   /** The profile exported (default: the active one). */
   exportProfile?: number | undefined;
+  /** Where the export reads the profile (default: the keyboard). */
+  exportFrom?: "keyboard" | "file" | "automatic" | undefined;
   /** The profile imported into (default: the active one). */
   into?: number | undefined;
   /** Also tick "Key assignments, macros and advanced keys" for the import. */
   keys?: boolean | undefined;
+  /**
+   * The Recovery card: compare the first profile that looks reset with its
+   * newest automatic backup, or every profile ("Restore all profiles").
+   */
+  recovery?: "restore" | "restore_all" | undefined;
 }
 
 /** The delay before a demo action starts (the page has rendered by then). */

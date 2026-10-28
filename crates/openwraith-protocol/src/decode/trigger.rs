@@ -189,7 +189,9 @@ impl FromResponse for DeadBandTable {
         let bytes = response.table_bytes("dead band")?;
         need(&bytes, "dead band", MATRIX_SIZE * 2)?;
         let entries = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .take(MATRIX_SIZE)
             .map(|pair| DeadBand {
                 top: Distance::from(at(pair, 0)),

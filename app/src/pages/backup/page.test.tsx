@@ -9,6 +9,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DICTIONARIES, setLang } from "../../i18n";
+import type { AutoBackupsView } from "../../ipc/bindings";
 import { makeFormat } from "../../i18n/format";
 import { createMockBackend } from "../../preview/mockBackend";
 import { FIXTURES } from "../../preview/registry";
@@ -297,6 +298,16 @@ describe("back up", () => {
     mockIPC((command, args) => {
       calls.push({ command, args: (args ?? {}) as Record<string, unknown> });
       if (command === "list_safety_backups") return [];
+      if (command === "list_auto_backups") {
+        const empty: AutoBackupsView = {
+          enabled: true,
+          keep: 10,
+          connected_keyboard: true,
+          unidentified: false,
+          entries: [],
+        };
+        return empty;
+      }
       return null;
     });
     window.location.hash = "#/backup";
@@ -306,7 +317,12 @@ describe("back up", () => {
       expect(named("choose_backup_destination")).toHaveLength(1);
     });
     await sleep(50);
-    expect(calls.map((c) => c.command).sort()).toEqual(["choose_backup_destination", "list_safety_backups"]);
+    // Only the dialog and the two lists (file names only): nothing reaches the keyboard.
+    expect(calls.map((c) => c.command).sort()).toEqual([
+      "choose_backup_destination",
+      "list_auto_backups",
+      "list_safety_backups",
+    ]);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
@@ -324,6 +340,24 @@ describe("without a keyboard", () => {
       (c) => c.command.startsWith("prepare_") || c.command.startsWith("apply_") || c.command.startsWith("backup_"),
     );
     expect(deviceCommands).toEqual([]);
+  });
+
+  it("waits while an OpenWraith command uses the keyboard", async () => {
+    await mount("ready");
+    const ready = statusStore.get();
+    act(() => {
+      statusStore.set({
+        ...ready,
+        revision: ready.revision + 1,
+        paused_for_cli: true,
+        write_gate: { allowed: false, reasons: ["paused_for_cli"] },
+      });
+    });
+    expect(screen.getByRole("button", { name: t.backup.all })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: t.share.export.button({ n: 1 }) })).toHaveProperty("disabled", true);
+    expect(screen.getAllByText(t.reasons.pausedForCli).length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: t.backup.all }));
+    expect(calls.some((c) => c.command.startsWith("choose_") || c.command.startsWith("prepare_"))).toBe(false);
   });
 
   it("compares the opened file with the keyboard again once one has been read", async () => {

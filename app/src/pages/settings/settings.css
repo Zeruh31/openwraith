@@ -36,3 +36,261 @@
 .st-about {
   margin-top: var(--space-4);
 }
+
+/* ---------- Background ---------- */
+
+.st-keep__input {
+  width: 6em;
+}
+
+/* ---------- Games ---------- */
+
+.st-games__line {
+  margin: 0;
+}
+
+.st-games__pause {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.st-games__how {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.st-games__default {
+  max-width: 420px;
+}
+
+.st-games__default select {
+  width: 100%;
+}
+
+/* The table becomes cards below 900 px of width (B12). */
+.st-games {
+  container-type: inline-size;
+  container-name: st-games;
+}
+
+.st-games__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.st-games__table th,
+.st-games__table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: middle;
+}
+
+.st-games__table thead th {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.st-games__game {
+  font-weight: 600;
+}
+
+.st-games__folder {
+  display: block;
+}
+
+.st-games__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  color: var(--warning-fg);
+}
+
+.st-games__warn .ow-icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.st-games__row--off .st-games__game,
+.st-games__row--off .ow-mono {
+  color: var(--text-muted);
+}
+
+.st-games__profile {
+  min-width: 10em;
+  max-width: 100%;
+}
+
+.st-games__remove {
+  width: 1%;
+  white-space: nowrap;
+}
+
+@container st-games (max-width: 900px) {
+  .st-games__table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .st-games__table,
+  .st-games__table tbody {
+    display: block;
+  }
+
+  .st-games__table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-4);
+    margin-bottom: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .st-games__table th,
+  .st-games__table td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .st-games__table td[data-label]::before {
+    content: attr(data-label);
+    /* Visual captions only: the column headers name the cells already. */
+    content: attr(data-label) / "";
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .st-games__game {
+    grid-column: 1;
+  }
+
+  .st-games__remove {
+    grid-column: 2;
+    grid-row: 1;
+    width: auto;
+  }
+
+  .st-games__remove::before {
+    display: none !important;
+  }
+
+  .st-games__table td:nth-child(2) {
+    grid-column: 1 / -1;
+  }
+}
+
+.st-activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.st-activity__item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+
+.st-activity__time {
+  flex: none;
+  min-width: 6em;
+}
+
+/* "Add a game" */
+
+.st-add__heading {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+
+.st-add__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.st-add__chosen p {
+  margin: 0;
+}
+
+.st-add__ways {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.st-add__running {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.st-add__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.st-add__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.st-add__fields .ow-input {
+  width: 100%;
+}
+
+@media (max-width: 700px) {
+  .st-add__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Profile names ---------- */
+
+.st-names {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+
+.st-names__field .ow-input {
+  width: 100%;
+}
+
+.st-names__hint {
+  grid-column: 1 / -1;
+}
+
+.st-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--success);
+  border-radius: 999px;
+  background: var(--success-bg);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 22px;
+}

@@ -30,6 +30,49 @@ pub trait ExitHook: Send + Sync {
     fn exit(&self);
 }
 
+/// Applies changed background settings to the shell: the tray icon and the
+/// per-user Run entry (`tauri-plugin-autostart`). Implemented by the Tauri
+/// glue and registered with
+/// [`WorkerHandle::set_shell_hook`](crate::WorkerHandle::set_shell_hook);
+/// without one, the changes are only reported in the result of
+/// `set_background_settings`. Tests use a recording hook: nothing here
+/// touches the real tray or Run key.
+pub trait ShellHook: Send + Sync {
+    /// Applies `changes` (only the `Some` fields changed). An error is
+    /// reported to the frontend; the settings stay saved.
+    fn apply(&self, changes: &crate::dto::ShellChanges) -> Result<(), crate::dto::AppError>;
+}
+
+/// Lists the running programs for Settings > Games ("add from running
+/// programs"). Implemented by the Tauri glue (`sysinfo`, process names and
+/// paths only) and registered with
+/// [`WorkerHandle::set_program_source`](crate::WorkerHandle::set_program_source);
+/// without one the list is empty. Tests use a fixed list.
+pub trait ProgramSource: Send + Sync {
+    /// The running programs (any order; the core filters and sorts).
+    fn running_programs(&self) -> Vec<crate::shell::RunningProgram>;
+}
+
+/// Shows OS notifications. Implemented by the Tauri glue
+/// (`tauri-plugin-notification`) and registered with
+/// [`WorkerHandle::set_notification_sink`](crate::WorkerHandle::set_notification_sink).
+/// The core has already applied the user's notification settings and the
+/// "one per kind per 10 minutes" rule. Tests record them: nothing here shows
+/// a real notification.
+pub trait NotificationSink: Send + Sync {
+    /// Shows one notification.
+    fn show(&self, notification: &crate::shell::OsNotification);
+}
+
+/// Shows the tray icon and its menu. Implemented by the Tauri glue
+/// (`tray-icon`) and registered with
+/// [`WorkerHandle::set_tray_sink`](crate::WorkerHandle::set_tray_sink); called
+/// with the new model whenever it changes (and once at registration).
+pub trait TraySink: Send + Sync {
+    /// Shows `model`.
+    fn update(&self, model: &crate::shell::TrayModel);
+}
+
 /// A progress sink that drops everything.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NoProgress;
@@ -98,6 +141,32 @@ pub(crate) mod recorder {
                 v.push(frame);
             }
             true
+        }
+    }
+
+    impl super::NotificationSink for Recorder<crate::shell::OsNotification> {
+        fn show(&self, notification: &crate::shell::OsNotification) {
+            if let Ok(mut v) = self.items.lock() {
+                v.push(notification.clone());
+            }
+        }
+    }
+
+    impl super::TraySink for Recorder<crate::shell::TrayModel> {
+        fn update(&self, model: &crate::shell::TrayModel) {
+            if let Ok(mut v) = self.items.lock() {
+                v.push(model.clone());
+            }
+        }
+    }
+
+    /// A fixed list of running programs.
+    #[derive(Debug, Default)]
+    pub(crate) struct FixedPrograms(pub(crate) Vec<crate::shell::RunningProgram>);
+
+    impl super::ProgramSource for FixedPrograms {
+        fn running_programs(&self) -> Vec<crate::shell::RunningProgram> {
+            self.0.clone()
         }
     }
 

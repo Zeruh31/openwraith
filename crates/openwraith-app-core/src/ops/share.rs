@@ -1,6 +1,8 @@
 //! Sharing one profile as a file. An export is the library's
-//! `Backup::export_profile` of a fresh read (or of a backup file): no USB
-//! serial number, the raw replies authoritative. An import is a restore
+//! `Backup::export_profile` (or `export_profile_parts` with the chosen
+//! categories) of a fresh read or of a backup file (one the user opened, a
+//! safety backup or an automatic backup): no USB serial number, the raw
+//! replies authoritative. An import is a restore
 //! with the library's `ImportOptions`: the file is untrusted input that the
 //! library validates (only the chosen categories, the knob, the Fn key and
 //! locked keys keep the keyboard's entries, a critical Fn override needs
@@ -309,6 +311,13 @@ impl<B: DeviceBackend> Worker<B> {
         let profile = profile_id(intent.profile)?;
         let (path, file) = self.destination(&intent.destination)?;
         let label = label(intent.label.as_deref());
+        let include = intent.include.map(selection);
+        if include.is_some_and(|i| i.is_empty()) {
+            return Err(refused(
+                EditProblemView::NoChanges,
+                "choose at least one category to export",
+            ));
+        }
         let source_file = match &intent.source {
             ExportSource::File { file } => Some(load_backup(&self.shared, file)?.0),
             ExportSource::Keyboard => {
@@ -369,9 +378,15 @@ impl<B: DeviceBackend> Worker<B> {
                         }
                     }
                 };
-                let exported = backup
-                    .export_profile(profile, label.as_deref())
-                    .map_err(|e| AppError::from(&e))?;
+                // Only the chosen parts (the library's filter), or the whole
+                // profile.
+                let exported = match include {
+                    Some(include) => {
+                        backup.export_profile_parts(profile, label.as_deref(), include)
+                    }
+                    None => backup.export_profile(profile, label.as_deref()),
+                }
+                .map_err(|e| AppError::from(&e))?;
                 progress.step(crate::dto::ProgressStep::SavingFile);
                 exported
                     .save(&path, true)
@@ -512,11 +527,11 @@ impl<B: DeviceBackend> Worker<B> {
                 let view = restore_plan_view(plan);
                 let skipped = plan.skips().count();
                 let has_writes = plan.has_writes();
-                if let Some(index) = blocked.critical {
-                    if !critical_fn_overrides.iter().any(|key| key.index == index) {
-                        // (The list could not be worked out: the library's key.)
-                        critical_fn_overrides.push(key_ref_index(index));
-                    }
+                if let Some(index) = blocked.critical
+                    && !critical_fn_overrides.iter().any(|key| key.index == index)
+                {
+                    // (The list could not be worked out: the library's key.)
+                    critical_fn_overrides.push(key_ref_index(index));
                 }
                 let critical_blocked = blocked.critical.is_some();
                 let category_blocked = blocked.any();

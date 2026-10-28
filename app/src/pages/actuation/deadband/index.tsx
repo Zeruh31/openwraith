@@ -63,6 +63,7 @@ import {
 } from "./model";
 import { deadBandDrafts, deadBandPart } from "./store";
 import "../actuation.css";
+import { useReadBlockedReason } from "../../../state/operation";
 
 /** Every key of the dead band can be changed when the tab can (no per-key reasons). */
 const NO_TOOLTIPS: ReadonlyMap<number, string> = new Map();
@@ -88,6 +89,7 @@ export default function DeadbandTab() {
   const format = useFormat();
   const status = useStatus();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
   const { snapshot } = useSnapshot();
   const view = usePart(deadBandPart);
   const t = dict.actuation.deadband;
@@ -266,7 +268,7 @@ export default function DeadbandTab() {
             <Callout
               kind="info"
               actions={
-                <Button icon="refresh" size="sm" disabled={lock.busy} onClick={readAgain}>
+                <Button icon="refresh" size="sm" disabled={lock.busy} disabledReason={readBlocked} onClick={readAgain}>
                   {dict.common.actions.readAgain}
                 </Button>
               }

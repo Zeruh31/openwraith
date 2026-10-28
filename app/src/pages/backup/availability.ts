@@ -14,6 +14,8 @@ export function useDeviceBlock(): string | null {
   const reasons = dict.backupRestore.reasons;
   switch (status.connection.state) {
     case "ready":
+      // The command-line tool holds the keyboard: the app sends nothing until it has finished.
+      if (status.paused_for_cli) return reasons.pausedForCli;
       return status.busy !== null ? reasons.busy : null;
     case "other_program":
       return reasons.otherProgram;

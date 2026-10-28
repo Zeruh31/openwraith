@@ -140,6 +140,9 @@ impl<B: DeviceBackend> Worker<B> {
                         Err(fail) => w.read_failed(&fail),
                     }
                 }
+                // A manual switch (the header, the tray) overrides the
+                // automatic profiles' episode.
+                w.auto_manual_switch(outcome.profile.get());
                 let report = profile_switch_report(from, to, &outcome, w.active_profile.or(now));
                 w.shared.set_last_report(LastReport::ProfileSwitch {
                     report: report.clone(),

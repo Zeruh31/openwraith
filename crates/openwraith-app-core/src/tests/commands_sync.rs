@@ -27,7 +27,7 @@ fn commands_ts_declares_exactly_the_rust_commands() {
     let rust = read("app/src-tauri/src/command_names.rs");
     let commands = names(&rust, "pub const COMMANDS: &[&str] = &[", "];");
     let dev = names(&rust, "pub const DEV_COMMANDS: &[&str] = &[", "];");
-    assert_eq!(commands.len(), 63);
+    assert_eq!(commands.len(), 79);
     let ts = read("app/src/ipc/commands.ts");
     assert_eq!(
         names(&ts, "export const COMMAND_NAMES = [", "] as const"),

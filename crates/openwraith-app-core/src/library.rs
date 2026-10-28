@@ -296,7 +296,7 @@ mod tests {
 
     /// A configuration in `dir` at 2026-10-24T07:30:00Z.
     fn test_config(dir: &Path) -> CoreConfig {
-        let mut config = CoreConfig::new(dir.join("state"), "0.1.0");
+        let mut config = CoreConfig::new(dir.join("state"), "0.2.0");
         config.fixed_time = Some(UNIX_EPOCH + Duration::from_secs(1_792_827_000));
         config
     }

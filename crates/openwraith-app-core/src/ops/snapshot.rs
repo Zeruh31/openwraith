@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use openwraith_hid::protocol::RawResponse;
 use openwraith_hid::{
-    Backup, BackupError, BackupOptions, ForeignActivity, Progress, Session, Transport,
+    Backup, BackupEntry, BackupError, BackupOptions, ForeignActivity, Progress, Session, Transport,
     read_all_observed,
 };
 
@@ -101,6 +102,25 @@ pub(crate) fn read_profile<T: Transport>(
     })
 }
 
+/// `read` (a complete read of the active profile) with `replies` read since
+/// in place of its replies to the same requests: what the keyboard holds
+/// after an edit that re-read what it wrote. Nothing is sent.
+pub(crate) fn with_replies(read: &Backup, replies: Vec<RawResponse>) -> Backup {
+    let mut after = read.clone();
+    for raw in replies {
+        let entry = BackupEntry::new(raw);
+        match after
+            .entries
+            .iter_mut()
+            .find(|e| e.request() == entry.request())
+        {
+            Some(slot) => *slot = entry,
+            None => after.entries.push(entry),
+        }
+    }
+    after
+}
+
 /// Where the progress of a read goes.
 pub(crate) enum ReadVia<'a> {
     /// The connection state (`Reading { done, total }`).
@@ -126,7 +146,9 @@ fn status_progress(
 impl<B: DeviceBackend> Worker<B> {
     /// Reads every setting of the active profile; a profile change during
     /// the read is retried twice (after re-arming the gate), but only when
-    /// profile reports were the only activity heard since the gate mark.
+    /// profile reports were the only activity heard since the gate mark. A
+    /// complete read goes to the known-good comparison
+    /// ([`observe_read`](Self::observe_read)).
     /// Status reports or replies to another program's commands end the read
     /// with [`ReadFail::OtherProgram`] before its next request (nothing is
     /// sent at all when they were heard before it started): the gate is
@@ -136,7 +158,13 @@ impl<B: DeviceBackend> Worker<B> {
         let shared = Arc::clone(&self.shared);
         let clock = Arc::clone(&self.clock);
         let mut status = self.status();
+        // Fn + 1..4 heard during the last attempt.
+        let mut switched: Option<u8> = None;
         for attempt in 0..3 {
+            if let Some(to) = switched.take() {
+                // A manual switch for the automatic profiles.
+                self.keyboard_switch_heard(Some(to));
+            }
             let session = self
                 .session
                 .as_mut()
@@ -152,7 +180,12 @@ impl<B: DeviceBackend> Worker<B> {
                 }
             };
             let error = match result {
-                Ok(backup) => return Ok(backup),
+                Ok(backup) => {
+                    // Every complete read is compared with the profile's
+                    // automatic backup (and may become one).
+                    self.observe_read(&backup);
+                    return Ok(backup);
+                }
                 Err(error) => error,
             };
             let activity = session.activity_since_gate();
@@ -167,6 +200,7 @@ impl<B: DeviceBackend> Worker<B> {
                         && !session.connection_lost() =>
                 {
                     // Profile reports only (Fn + 1..4 on the keyboard).
+                    switched = crate::worker::idle::last_profile_report(session);
                     session.rearm_gate();
                 }
                 error => {
@@ -242,6 +276,11 @@ impl<B: DeviceBackend> Worker<B> {
     /// Reads the settings after the observation (or to refresh them after a
     /// profile change): the state shows `Reading`, then `Ready`.
     pub(crate) fn connect_read(&mut self, kind: OpKind) {
+        if self.paused_for_cli() {
+            // Nothing is sent while the CLI uses the keyboard; everything is
+            // read again when it has finished.
+            return;
+        }
         if self.foreign_heard() {
             // Another program was heard since the gate mark: nothing is
             // sent (D5); the state becomes `OtherProgram`.

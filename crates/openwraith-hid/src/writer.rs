@@ -551,13 +551,13 @@ impl<T: WriteTransport> Session<T> {
                 let known = self.last_known_profile();
                 let other = known.is_some_and(|k| reports.iter().any(|(p, _)| *p != k));
                 let pushes_only = reports.iter().all(|(_, extra)| *extra == 0x00);
-                if let Some(&(reported, _)) = reports.last() {
-                    if other || pushes_only {
-                        return Err(WriteError::ProfileChanged {
-                            expected: known,
-                            reported,
-                        });
-                    }
+                if let Some(&(reported, _)) = reports.last()
+                    && (other || pushes_only)
+                {
+                    return Err(WriteError::ProfileChanged {
+                        expected: known,
+                        reported,
+                    });
                 }
             }
             return Err(WriteError::OtherProgramActive { evidence: activity });

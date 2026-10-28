@@ -798,10 +798,10 @@ impl<T: Transport> Session<T> {
             match last {
                 Collected::Complete => {
                     let response = collector.finish()?;
-                    if request == ReadRequest::ActiveProfile {
-                        if let Some(profile) = response.payload().get(1) {
-                            self.last_profile = Some(*profile);
-                        }
+                    if request == ReadRequest::ActiveProfile
+                        && let Some(profile) = response.payload().get(1)
+                    {
+                        self.last_profile = Some(*profile);
                     }
                     return Ok(response);
                 }

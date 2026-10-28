@@ -25,6 +25,8 @@ export const device: Messages<typeof en> = {
     reading: "Klavyenin ayarları okunuyor. Bu birkaç saniye sürer.",
     readFailed: "OpenWraith klavyenin ayarlarını okuyamadı. Hiçbir şey yazılmadı.",
     ready: "Bağlı. Siz bir şey değiştirmediğiniz sürece OpenWraith klavyeyi yalnızca dinler, hiçbir şey göndermez.",
+    pausedForCli:
+      "Bağlı ve duraklatıldı: klavyeyi bir OpenWraith komutu (komut satırı aracı) kullanıyor. OpenWraith komut bitene kadar hiçbir şey göndermez, sonra klavyeyi yeniden okur.",
     lost: "Klavyenin bağlantısı kesildi. Yeniden takın; OpenWraith kendiliğinden bağlanır.",
     resetSeen:
       "Klavye fabrika ayarlarına döndü (Fn + Boşluk). OpenWraith durdu ve hiçbir şey göndermedi. Devam etmek için klavyeyi yeniden okuyun.",

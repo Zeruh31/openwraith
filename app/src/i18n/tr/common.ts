@@ -38,6 +38,7 @@ export const common: Messages<typeof en> = {
   showMore: (p) => `${p.n} tane daha göster`,
   andMore: (p) => `+${p.n} tane daha`,
   profile: (p) => `Profil ${p.n}`,
+  profileNamed: (p) => `Profil ${p.n} · ${p.name}`,
   profileUnknown: "Profil ?",
   profiles: (p) => `Profiller: ${p.list}`,
   badge: {

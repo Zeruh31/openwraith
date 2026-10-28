@@ -1,5 +1,5 @@
 // Shell scenarios: connection states, banners, the profile switch, the close
-// guard (shell-owned).
+// guard, the background agent's chips and banners (shell-owned).
 
 import type { PreviewScenario } from "../types";
 
@@ -26,4 +26,16 @@ export const scenarios: PreviewScenario[] = [
   { id: "settings", fixture: "ready", route: "#/settings" },
   // A key-depth test left open by an earlier run: the banner and its "Stop it".
   { id: "stray_travel_test", fixture: "depth_stray_marker", route: "#/device" },
+  // Settings look reset: the Recovery banner (it leads to #/backup?recover=1).
+  { id: "recovery_banner", fixture: "recovery_keep_current", route: "#/device" },
+  { id: "firmware_changed_banner", fixture: "recovery_firmware_changed", route: "#/device" },
+  // An OpenWraith command holds the keyboard: the banner, writes blocked.
+  { id: "paused_for_cli", fixture: "paused_for_cli", route: "#/device" },
+  // A game rule holds the profile: the header's Auto chip.
+  { id: "auto_chip", fixture: "games_live", route: "#/device" },
+  // The game profiles are paused: by the user (header chip), by the app (banner).
+  { id: "auto_paused", fixture: "games_paused", route: "#/device" },
+  { id: "auto_paused_failed", fixture: "games_paused_failed", route: "#/device" },
+  // The settings file could not be read: the notice stays until dismissed.
+  { id: "settings_file_invalid", fixture: "settings_invalid", route: "#/device" },
 ];

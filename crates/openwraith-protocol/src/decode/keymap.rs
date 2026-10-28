@@ -289,7 +289,7 @@ impl FromResponse for KeymapTable {
         let bytes = response.table_bytes("keymap")?;
         need(&bytes, "keymap", MATRIX_SIZE * 4)?;
         let entries = (0u8..)
-            .zip(bytes.chunks_exact(4).take(MATRIX_SIZE))
+            .zip(bytes.as_chunks::<4>().0.iter().take(MATRIX_SIZE))
             .map(|(index, entry)| {
                 let raw = quad(entry, 0);
                 KeymapEntry {

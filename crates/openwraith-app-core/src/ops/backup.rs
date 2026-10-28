@@ -13,8 +13,8 @@ use super::progress::CancelPolicy;
 use super::snapshot::{ReadFail, ReadVia};
 use crate::backend::DeviceBackend;
 use crate::dto::{
-    AllProfilesPreview, AppError, AppErrorKind, BackupSaved, FileRef, FileToken, LastReport,
-    OpKind, PlanInvalidation, PlanToken, ProgressStep, ReadPurpose,
+    AllProfilesPreview, AppError, AppErrorKind, AutoBackupEntry, BackupSaved, FileRef, FileToken,
+    LastReport, OpKind, PlanInvalidation, PlanToken, ProgressStep, ReadPurpose,
 };
 use crate::files::FileKind;
 use crate::map::{clean, foreign, sat16};
@@ -93,6 +93,53 @@ impl<B: DeviceBackend> Worker<B> {
                     saved: saved.clone(),
                 });
                 Ok(saved)
+            },
+        )
+    }
+
+    /// "Back up now" (the tray): a read of the active profile (no
+    /// switching), kept as an automatic backup of it. `None`: the profile
+    /// looks reset and is held (the Recovery card first).
+    ///
+    /// Refused while automatic backups are off (the store is not used then,
+    /// and the read could not be compared with it); a read that heard
+    /// another program is never kept.
+    pub(crate) fn back_up_now(&mut self) -> Result<Option<AutoBackupEntry>, AppError> {
+        if !crate::settings::auto_backup(self.config.settings_path.as_deref()).enabled {
+            return Err(AppError::new(
+                AppErrorKind::InvalidRequest,
+                "automatic backups are off; turn them on in Settings > Background first",
+            ));
+        }
+        self.check_readable()?;
+        self.invalidate(PlanInvalidation::Operation);
+        self.run_op(
+            OpKind::BackupActive,
+            Arc::new(crate::sink::NoProgress),
+            CancelPolicy::Boundaries,
+            |w, progress| {
+                let backup = match w.full_read(ReadVia::Op(progress, ReadPurpose::Backup)) {
+                    Ok(backup) => backup,
+                    Err(fail) => {
+                        let error = match &fail {
+                            ReadFail::OtherProgram(_) | ReadFail::Reset | ReadFail::Lost(_) => {
+                                w.read_failed(&fail);
+                                fail.into_error()
+                            }
+                            _ => fail.into_error(),
+                        };
+                        return Err(error);
+                    }
+                };
+                w.set_snapshot(&backup);
+                if w.foreign_heard() {
+                    // Not compared (another program was heard): not kept.
+                    return Err(AppError::new(
+                        AppErrorKind::OtherProgramActive,
+                        "another program was heard during the read; nothing was backed up",
+                    ));
+                }
+                crate::ops::recovery::save_now(&w.shared, &w.config, &backup)
             },
         )
     }

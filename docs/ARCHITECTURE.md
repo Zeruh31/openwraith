@@ -45,7 +45,7 @@ the same two libraries.
 | `hid` | `HidBackend` (hidapi; enumerates and filters supported interfaces, nothing is opened), `HidTransport` (read-only) and `WritableHidTransport` (opened with `HidBackend::open_writable`). |
 | `session` | `Session<T: Transport>`: one request at a time, reply collection, filtering, timeout and retry, conflict detection, reset detection, retry of reads interrupted by a signal (`TransportError::Interrupted`, Ctrl+C on Linux), and the classification of unrelated reports (status reports, write acknowledgements and profile reports of another program: `foreign_activity()`, `last_foreign_at()`; `listen()`; `rearm_gate()` starts the writer's gate afresh in a long-lived session). The keyboard's own pushes are never another program: SOCD pushes become events (`socd_pushes()`), travel-stream reports are queued for an open test or counted as stray (`travel_state()`: `Closed`, `Open`, `MaybeOpen`; `stray_travel_since_gate()`). `last_write_at()` / `last_write_profile()`: when and to which profile the last write that changes a setting was sent (for the commit settle; kept per session, so it spans writers). `base_keymap_unsaved()`: a base keymap sent without a complete Fn keymap after it. Every write packet passes `is_permitted_packet` right before it is sent; a refused one poisons the session (`WriteError::EgressRefused`). |
 | `summary` | `read_summary` / `DeviceSummary`: the few reads behind `openwraith info` and `openwraith profile`, with the model check shared with `read_all`. |
-| `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable` / `read_all_observed` (for a long-lived session: before every request it classifies what arrived, sending nothing, and asks a callback about the foreign activity since the gate mark, so a GUI can stop a read as soon as another program is heard), save/load, typed accessors. |
+| `backup` | `Backup` (file format, schema 1 and 2), `SnapshotView`, `read_all` / `read_all_with` / `read_all_cancellable` / `read_all_observed` (for a long-lived session: before every request it classifies what arrived, sending nothing, and asks a callback about the foreign activity since the gate mark, so a GUI can stop a read as soon as another program is heard), save/load, typed accessors, profile exports (`export_profile`, and `export_profile_parts` / `parts_of` for chosen categories: the others are simply absent from the file, so an import writes nothing for them). |
 | `writer` | `WriteConsent`, `WriteOptions` (with `CommitSettle`), the "other program" gate in `Session::writer`, and `Writer`: `write_guarded` (the only public table write: needs a `SavedBackup`) and `write_commit_trigger` (the same guards, for a `CommitTrigger`, the Fn keymap only, sent even when the keyboard holds it: the keyboard keeps a base keymap only when the Fn keymap is written after it; every packet must be acknowledged, else one more send of the whole table, then `WriteError::CommitTriggerIncomplete`), `base_keymap_unsaved()` (a base keymap sent without a complete Fn-keymap write after it; a profile switch then reports `WriteWarning::BaseKeymapNotSaved`), stop-and-wait writes with read-back verification, profile selection behind the commit settle (`select_profile[_observed]`, `commit_pending`, `wait_for_commit[_observed]`, `CommitWait`), detection of a profile change or lost connection before the keyboard saved (`commit_interrupted`, `WriteError::ProfileChangedBeforeSave`), poisoning after a reset or a lost connection. |
 | `profiles` | `read_profiles` / `read_all_profiles`: the all-profile backup (switches profiles and back). |
 | `safety` | `default_dir`, `Backup::save_safety` and `SavedBackup` (the proof that a verified safety backup exists). |
@@ -54,6 +54,8 @@ the same two libraries.
 | `presets` | `TRIGGER_PRESETS` (typing, balanced, fast, competitive, factory) and `preset_edit`: a preset is a normal trigger edit. `factory` writes the factory record `00 55 55 01 01` exactly (`RtEdit::OffWith`: RT off with 0.02 mm stored); part B's reset detection must take the automatic backup after such a write as the new known-good baseline, not as a reset. |
 | `travel` | The live key-depth view: `Writer::open_travel_test` returns a `TravelTest` guard that borrows the writer and always closes the test; `live_travel` runs the loop; `Writer::close_stray_travel_test`. See "The travel test" below. |
 | `switcher` | `ProfileSwitcher` (`Session::profile_switcher`): profile selects for standing rules (consent `standing_rule`), nothing else. |
+| `known_good` | Reset detection, pure (nothing is read, written or restored): `assess(known, current, profile)` classifies nine tables of one profile (`Unchanged`, `ChangedToFactory`, `ChangedOther`, `Missing`; factory forms only from captures, PROTOCOL.md 6.12) and gives the profile's evidence (R2 another firmware, R3 triggers or at least two keymap-group tables back at the factory form); `reset_verdict(assessments, reset_seen)` adds R1, the keyboard's reset report. The keyboard-wide SOCD power is compared once and never counts against a profile. `compose(parts)` / `Backup::compose` builds one all-profile backup from single-profile reads of one keyboard and firmware; the newest part supplies the SOCD power, which the restore writes once. |
+| `coordination` | `DeviceLock` (`try_exclusive`, `try_shared`, `holder`, `probe`): the lock file the CLI and the desktop app share (`default_dir()`: `%LOCALAPPDATA%\OpenWraith\device.lock`), `File::try_lock` / `try_lock_shared` (Rust 1.89), never waited for, released by the OS when a process ends; `device.lock.json` (pid, tool, purpose) only describes the holder and never blocks. `LockError::Busy` names the holder ("the OpenWraith app is writing; try again"). |
 | `group`, `persist` (crate-private) | The keymap group's cursor (cancellation rules, completing bindings, dangling references) shared by restores and edits; the persistence check and its evidence table (`persistence_confirmed`). |
 | `error` | Error types and `ErrorKind` (serialisable, for a GUI). |
 | `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. Read-only. |
@@ -71,7 +73,8 @@ the same two libraries.
 | `edit_text` | Text of the v0.2 plans (keymap group, colours, dead band, SOCD): "now -> new", the writes in order, the notes (unverified values, built-in Fn functions, scope), what happens after the write. |
 | `live` | `travel` (the live key-depth view, always closed again; Ctrl+C only asks to stop) and `travel --close`; `monitor` (read-only: prints what the keyboard sends on its own). |
 | `share` | `profile export` (one profile as a file, no USB serial) and `profile import` (a restore with `ImportOptions`). |
-| `device` | Choosing and opening the keyboard (`--device`, several-keyboard handling); the `Connector` trait and `HidConnector`. |
+| `device` | Choosing and opening the keyboard (`--device`, several-keyboard handling); the `Connector` trait (with `lock_dir`) and `HidConnector`. |
+| `lock` | The device lock per command (`main::lock_need`): commands that write hold it exclusively, the other commands that open the keyboard hold it shared; taken before the keyboard is opened and held until the command ends. Contention fails at once (exit code 1, nothing sent, no safety backup); a lock file that cannot be used at all only warns. |
 | `ui` | The `Ui` trait (output, progress, the `[y/N]` question, cancellation, `enable_cancel_close_first` for the key-depth view) and `Terminal` (stdout/stderr/stdin, Ctrl+C handler). |
 | `view` | Serialisable views over a `Backup` or a `DeviceSummary` (used for both text and `--json`); `JsonOutput` adds the confidence `note` and the list of undecoded replies to every JSON output. |
 | `render`, `report`, `table` | Text output: settings tables (`render`), restore plans, restore and edit reports (`report`). Values whose meaning the spec labels CODE-ONLY or GUESS are marked `*`, with one legend line per command. Text from the device or a backup file is stripped of control characters before it is printed. |
@@ -769,7 +772,9 @@ branch, `write_commit_trigger`, `open_travel_test`,
 `close_stray_travel_test`; `execute_restore` and the edits refuse before
 they open a writer), with `WriteError::ConsentOnlyForSelects`
 (`invalid_request`). The other origins are not restricted by the library;
-part B's source rules decide which code may build which consent.
+the desktop app's source rules decide which code may build which consent
+(both origins only in `ops/consent.rs`, the switcher only in
+`ops/auto_profile.rs`; see "Automatic profiles per game" below).
 
 ### The CLI around it
 
@@ -782,6 +787,13 @@ simulator mode.
 
 - Commands that write print the close-the-vendor-site note first. With stdin
   not a terminal and no `--yes` they refuse before the keyboard is opened.
+- Every command that opens the keyboard takes the device lock first
+  (`lock::take`, before any session): exclusive to write, shared to read.
+  While the desktop app writes, the command fails at once with "the
+  OpenWraith app is writing; try again" and the hint that nothing was sent;
+  a CLI reader blocks a CLI writer the same way. There is no retry loop.
+  Commands on files only (`--from`, `restore --dry-run --against`) take no
+  lock.
 - A wait for the keyboard to save is printed as a note that stays ("Waiting
   for the keyboard to save profile 2 (2 s)..."), not as a transient progress
   line, so the pause never looks like a hang. Restore reports print
@@ -1132,16 +1144,16 @@ chooses, ack
 
 | Crate | Contents |
 |---|---|
-| `crates/openwraith-app-core` | Everything but Tauri: the device worker and its connection state machine, the operations (prepare / apply), the IPC data types (`dto`; the TypeScript types are generated from them), the mappings from the library's types, the file registry, the operation journal, settings, the simulator backend (feature `sim`, or tests) and all Rust tests of the app. `#![forbid(unsafe_code)]`; `unwrap`, `expect` and `panic` are denied outside tests. |
-| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`: progress, events and the live key-depth frames), file dialogs from Rust (`dialogs.rs`), the close guard and the focus check (`window.rs`), paths (`paths.rs`). |
+| `crates/openwraith-app-core` | Everything but Tauri: the device worker and its connection state machine, the operations (prepare / apply), the IPC data types (`dto`; the TypeScript types are generated from them), the mappings from the library's types, the file registry, the operation journal, settings, the known-good store and reset detection (`autobackup.rs`, `ops/recovery.rs`), the per-game profile engine (`auto/`, `ops/auto_profile.rs`), the coexistence with the CLI and session hygiene (`worker/coexist.rs`, `worker/hygiene.rs`), the seams for the shell (`shell.rs` data types; traits `ShellHook`, `ProgramSource`, `NotificationSink`, `TraySink`), the simulator backend (feature `sim`, or tests) and all Rust tests of the app. `#![forbid(unsafe_code)]`; `unwrap`, `expect` and `panic` are denied outside tests. |
+| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`: progress, events and the live key-depth frames), file dialogs from Rust (`dialogs.rs`), the close guard, close to tray, the focus check and route navigation (`window.rs`), paths (`paths.rs`), and the background shell: the notification-area icon (`tray.rs`), Windows notifications (`notify.rs`), start with Windows (`autostart.rs`), the `ShellHook` (`shell.rs`), the foreground-program feed (`foreground.rs`) and the texts shown outside the window (`texts.rs`). |
 
 `cargo test --workspace` needs no Node: the core's tests use the simulator
 under `cfg(test)`. The Tauri crate builds without a built frontend
 (`build.rs` writes a placeholder `app/dist/index.html` when it is missing,
 and, in debug builds only, a placeholder `legal/THIRD-PARTY-NOTICES.txt`).
 `cargo build` without `-p` builds the default members only (the CLI and the
-libraries, Rust 1.85); the `--workspace` commands include the Tauri crate
-(Rust 1.90).
+libraries, Rust 1.89 for `File::try_lock`); the `--workspace` commands
+include the Tauri crate (Rust 1.95, for `sysinfo` 0.39).
 
 ### Threads
 
@@ -1167,6 +1179,16 @@ request admitted meanwhile keeps its admission and the window can still be
 closed. "Stop safely and close" is checked wherever an operation ends:
 after every request, after the worker's own reads and after every tick; the
 exit hook runs once.
+
+The Tauri crate adds one thread, `openwraith-foreground`: every second it
+reports the program in front (`active-win-pos-rs`) with
+`foreground_changed` and checks the watched game processes (`sysinfo`,
+`auto_watched_pids` / `process_exited`); it never touches the keyboard and
+stops at exit before the worker. The core calls the shell's sinks
+(`TraySink`, `NotificationSink`) from the worker thread; the glue only
+posts to the main thread (`run_on_main_thread`) and never waits, so the
+worker never blocks on the UI. Tray clicks run `WorkerHandle::tray_action`
+on a blocking thread (a profile switch is an operation with admission).
 
 ### Connection state machine
 
@@ -1213,7 +1235,12 @@ Starting -> Searching --1--> Opening -> Observing (2 s, listen only) -quiet-> Re
   30 s without traffic, and in any case by the drift check of every write.
 - **ResetSeen.** The reset notification drops the session at once; nothing
   is sent and nothing reconnects until the user asks for it.
+- **PausedForCli** is not a state of its own but a flag next to it: while
+  a CLI command holds the device lock the worker only listens (see
+  "Coexistence with the CLI").
 - Every new session increments the generation; plans and snapshots carry it.
+  Session hygiene replaces an idle session after 24 h or 1000 events
+  without a new generation (see "Session hygiene").
 - Before every request and every tick the worker updates the state from
   what the session saw (`keyboard_reset_seen`, `connection_lost`, foreign
   activity), so nothing is ever sent on a session that saw a reset.
@@ -1248,7 +1275,10 @@ saved or written), saves and verifies the safety backup, writes the
 **operation journal**, and only then calls the library. The consent
 (`WriteConsent::new(Application)`) is built in one function
 (`ops/consent.rs`) and used only by the apply steps and by the steps the
-user started explicitly: the restore's and the import's prepare step, whose
+user started explicitly (the standing rule's consent is built there too,
+`consent::standing_rule()`, and used only to check the library switcher's
+own consent in `ops/auto_profile.rs`): the restore's and the import's
+prepare step (also behind `prepare_recovery`), whose
 comparison switches profiles after the user confirmed those switches
 (`confirmed_switches` must equal the switches computed from a fresh
 `21/11`), the export of a profile that is not active (switch agreed), the
@@ -1273,6 +1303,10 @@ user click).
 | close a test left open (`travel_close`) | `Writer::close_stray_travel_test` | T2 |
 | export a profile (`export`) | `read_all_observed` / `read_profiles` (switch consent), `Backup::export_profile` | W1 only (another profile) |
 | import a profile (`import_prepare`, `import`) | `prepare_restore` with `ImportOptions`; `save_safety`, `execute_restore` | as planned by the library |
+| recovery (`recovery_check`; the write is `restore`) | `known_good::assess` on every full read; `Backup::compose` for several profiles; `prepare_restore`; `apply_restore` with the token | as planned by the library |
+| automatic switch (`auto_switch`) | `Session::profile_switcher().switch_to` (`ops/auto_profile.rs`), then the full read | W1 |
+| automatic backup | the full reads the worker made anyway (`full_read` -> `observe_read`) | none |
+| Back up now (tray, `backup_active`) | `read_all_observed`, then the known-good store | none |
 
 Every edit applies the same way: a drift check on exactly the tables the
 plan writes (the keymap group: both layers, every macro slot and `22 80`;
@@ -1315,7 +1349,24 @@ Nothing else may write. A source-scan test (`tests::source_rules`) checks:
 - each editor's apply calls its own library entry point, and the preset
   path ends in the trigger plan;
 - the consent is built once and used in exactly 14 places (the apply steps
-  and the explicitly started steps above);
+  and the explicitly started steps above); `ops/consent.rs` builds exactly
+  two origins (Application and StandingRule), and `consent::standing_rule()`
+  is used only in `switch_for_rule`;
+- reset detection and the store (`ops/recovery.rs`, `autobackup.rs`) use no
+  consent, writer, profile switcher, journal, restore execution or session;
+  a recovery reaches the keyboard only through `prepare_restore` in
+  `prepare_recovery`; `execute_restore` runs only in
+  `apply_prepared_restore`, reached only from `apply_*` steps that take
+  their plan by token; only `ops/recovery.rs` saves automatic backups;
+- the comparison runs only on reads the worker made anyway
+  (`observe_read` only from `full_read`), and session hygiene sends
+  nothing;
+- the automatic switch (`switch_for_rule`, the only `.profile_switcher(`)
+  uses the switcher only for its consent, `switch_to` and its session, and
+  no writer, application consent, journal, safety backup, plan, restore or
+  travel call; the engine and the tray, notification and program models are
+  pure (no session, no file); only `worker/coexist.rs` takes the device
+  lock, never shared, and `ensure_quiet` takes it before it listens;
 - hidapi is opened only by the HID backend.
 
 **Editor views and revisions.** Every full read (connect, refresh, after a
@@ -1374,7 +1425,282 @@ doesn't write) replace nothing, so the list is empty then;
 `other_cause_blocked` marks every chosen part left out for a cause the
 permission doesn't lift (the review's general note). An
 import token is a different plan kind from a restore token, so each apply
-refuses the other.
+refuses the other. An export takes `ExportIntent.include` (the categories;
+`null` = all) and maps it to `Backup::export_profile_parts`; its source is
+the keyboard, a backup file or an automatic backup (both by token, no
+traffic).
+
+### Known-good store, reset detection and recovery
+
+The **known-good store** is the automatic backups (`autobackup.rs`):
+complete single-profile reads (schema 1), saved with `Backup::save`
+(atomic, never replacing a file) in `<app local data>/known-good/<keyboard>/profile-N/`,
+where `<keyboard>` is the SHA-256 of the `0D` product code, a NUL and the
+USB serial number (`unidentified` without both; `sha256.rs`, checked against
+the standard vectors, no new crate). **The Wraith W75 reports no USB serial
+number** (every backup read from it has `device.usb` without `serial`), so
+on a W75 the folder is always `unidentified` and keyboards are told apart
+only when they report a serial: a second W75 on the same PC (or a
+replacement unit) shares the folder and is compared with the first one's
+backups. Adding the USB ids would not help (both are `2E3C:C368`). The
+Automatic backups list and the Recovery card say so (`unidentified` in
+`AutoBackupsView` and `RecoveryView`); within one run a read over another
+connection (another HID path) starts the comparisons afresh (held reads
+and own writes dropped, R1 kept, fail closed), and nothing is ever
+restored without the user's review. File names carry the time and the
+reason (`first-read`, `after-write`, `changed-elsewhere`, `kept-current`,
+`manual`). After each save the newest `auto_backup.keep` (default 10, 1-100)
+unpinned files of the profile stay; pinned files (`pinned.json`), files the
+module did not name and the safety backups (another folder) are never
+touched. A `pinned.json` that exists but cannot be read (a hand edit, a
+damaged file; a leading byte order mark is accepted) deletes nothing: the
+rotation is skipped (the new file is saved, with an `AutoBackupFailed`
+notice that older backups were kept) and pinning refuses instead of
+rewriting the file.
+
+**Comparison** (`ops/recovery.rs`). Every complete read of the active
+profile in `full_read` goes to `Worker::observe_read`; nothing is read for
+it. It is skipped when another program was heard, for all-profile reads
+and while automatic backups are off. The baseline is the newest loadable
+automatic backup of the same profile of the same keyboard; the library's
+`known_good::assess` classifies each table (`Unchanged`,
+`ChangedToFactory`, `ChangedOther`, `Missing`; factory forms only from
+captures, PROTOCOL.md 6.12) and gives the profile's evidence. Then:
+
+- no baseline: save (`first_read`);
+- OpenWraith's own writes are registered in `write_journal` per profile and
+  table (a trigger edit: triggers; a keymap edit: both keymaps, macros,
+  advanced keys; a restore: every table; an import: its chosen parts) and
+  finished right after each library call (`completed_cleanly`). A table
+  they wrote is no evidence of a profile that is not held **only while it
+  holds what the write left in it**: a clean write records the SHA-256 of
+  the table's canonical form (the library's pure
+  `KnownGoodTable::canonical`, equal exactly where `assess` finds the
+  table unchanged) taken from its own re-read patched into the complete
+  read made right before it (trigger, light, colour, dead band and SOCD
+  edits) or from the backup it wrote (`PreparedRestore::target_snapshot`;
+  restores and imports). A reset or another program that changed the
+  table since makes it evidence again. A table whose content is not known
+  (a write running or maybe lost, an edit whose re-read did not happen)
+  counts as the write's only within the run and until another program is
+  heard (`enter_other_program` drops it). A **held** profile is released
+  only by a restore that completed, or by an import that completed and
+  wrote every table held at its factory form; a restore that may not have
+  been saved (lost, maybe lost, failed, cancelled), a partial import or an
+  edit explain nothing about it, and it stays held with its evidence. A
+  completed restore (or a write that released a hold) accepts the
+  firmware the keyboard had when it started: R2 against that firmware is
+  no evidence and the next read is saved with it; R2 against any other
+  firmware still counts. A write that may be lost is not promoted on its
+  own connection. The own writes not yet saved are also kept in
+  `<keyboard>/own-writes.json` with their recorded contents (loaded at the
+  next run's first comparison, as made on another connection; tables of
+  unknown content are not loaded), so an edit saved only at the next start
+  (the app closed before a complete read) is not taken for a reset, and a
+  reset while the app was closed is still found;
+- evidence: R2 (another `0D` firmware), R3 (triggers back at the factory
+  form, or at least two keymap-group tables), and R1 (the keyboard's reset
+  report, `ResetSeen`, applied to the first comparison of each profile
+  after it, only when factory tables changed). R1 stays armed for the rest
+  of the run for every profile not compared yet: "It's fine, keep them" or
+  a restore of one profile resolve that profile, not the others, and the
+  report's banner goes once every profile with automatic backups was
+  compared and nothing is held (at the comparison that completes it; "It's
+  fine, keep them" with nothing held acknowledges it then, and the
+  Recovery card says to switch to the profiles not compared yet while
+  there are). The report also turns earlier comparisons into "not
+  compared yet". The lighting, the dead band and SOCD alone never count;
+  the keyboard-wide SOCD power is compared once and never counts against a
+  profile, but at the first comparison after the report and at any while
+  the report stands a read whose SOCD power is back at its reset form is
+  not saved (the backup from before the reset keeps the power "Restore all
+  profiles" writes). The first comparison after the
+  command line tool wrote under its exclusive lock (same connection, no
+  reset report during the pause) takes factory forms as the user's own
+  change (R1 and R2 still count);
+- **reset-like** (evidence present): the profile is **held**: nothing is
+  saved, nothing is sent, `Notice::ResetSuspected{profile, evidence}` once
+  per (profile, baseline) and `Notice::FirmwareChanged` once per change;
+  `DeviceStatus.recovery` (`reset_suspected`, `reset_reported`,
+  `firmware_changed`) drives the banner and the tray;
+- otherwise, when anything changed: save (`after_write` with own writes,
+  else `changed_elsewhere`). Edits that re-read only what they wrote
+  (trigger, light, colours, dead band, SOCD) are promoted at the next
+  complete read; keymap edits, restores and imports at their own full read.
+
+**Recovery never restores without asking.** `get_recovery` builds the
+Recovery card's view from the store and the comparisons (no traffic);
+`keep_current_settings` saves the held reads as `kept_current` and clears
+the hold (no traffic); `prepare_recovery` loads the chosen automatic
+backups (tokens of store files only), composes several with
+`Backup::compose` (saved under `<keyboard>/recovery/`, newest 5), and runs
+the restore's own `prepare_restore` with `OpKind::RecoveryCheck` (the switch
+consent rules unchanged). Its plan is a restore plan: the write is the
+existing `apply_restore(token)` with its safety backup, journal,
+persistence check and report; there is no `apply_recovery`. Automatic
+backups are listed (`list_auto_backups`), pinned (`pin_auto_backup`),
+revealed (`reveal{auto_backup_dir}`), restored through the restore wizard
+and exported (`ExportSource::File` takes an automatic-backup token).
+
+### Automatic profiles per game
+
+**Engine** (`auto/engine.rs`): a pure state machine on a virtual clock, one
+episode per game process (pid). A ruled game in front for 1.5 s gets its
+profile once per episode; alt-tab away never switches; a manual switch
+(the keyboard's Fn + k report, the header or tray switch, the focus check,
+a read that shows another profile than the engine set) marks the episode
+overridden. When a game has been gone for 3 s, another ruled game in front
+gets its profile, else the default profile, but only while the active
+profile is still the one the engine set. Rules match by exe name and, when
+given, folder (`path_hint`); a sample without a path would fall back to
+the name, but the feed in use never sends one: `active-win-pos-rs` 0.11
+fails as a whole when `QueryFullProcessImageNameW` or the limited query is
+denied (some anti-cheat protection), so such a program is "nothing known";
+a program running as administrator is known with its path (the limited
+query crosses integrity levels). A picked file's path is canonicalised
+(junctions, links, SUBST) as Windows reports the running program; a typed
+name without an extension becomes `<name>.exe`. Fn + k is never assumed to
+exist (5b-1 lets the user replace it). The default profile comes back only
+when the game that exited is the one whose rule **switched** to the active
+profile (a profile the user chose, also one a rule then merely kept, is
+never switched away; a second ruled game that exits leaves a running
+game's profile alone; two games on one profile return after both exit),
+and the Auto chip names only such a hold while its game runs. Fn + k heard
+while `OtherProgram` (also re-armed by the 180 s rule), while observing
+after a reconnect, during a read's retries or in a write's 2 s gate
+(`ensure_quiet`, also the automatic switch's own: that switch is then
+dropped, not retried) is a manual switch too. The return to the default
+profile holds nothing (a later manual switch with no game around is no
+override). While the keyboard is not connected or connecting a switch
+waits silently (no deferral, no skip, nothing assumed about the unknown
+active profile); the first profile known after that is an observation at
+every tick, and when it is not the one the engine set, that hold ends
+silently. A waiting switch is announced once per episode, also across
+alt-tabs, and skipped 30 s after it first waited.
+
+**Gates** (`Worker::auto_block`, in this order): paused for the CLI; `Ready`
+(or `OtherProgram` re-armed by the 180 s rule); no reset or lost session;
+no live depth view; no operation (the busy flag) and no pending plan; no
+drafts in the frontend (`report_ui_state`); travel test closed, no stray
+reports; no base keymap waiting for its Fn keymap; no foreign activity
+since the gate; no re-read due or profile report settling; no foreign
+status or ack in the last 120 s (`Session::last_foreign_at`). A blocked
+switch sends `Notice::AutoSwitchDeferred` once, is retried every tick and
+is skipped after 30 s (`AutoSwitchSkipped`; an OS notification only for
+another program, recent foreign activity, the CLI and drafts). The commit settle
+(`last_write_at` + 2 s) and the 5 s gap between switches wait silently.
+The 31st switch within an hour, or a switch that failed after sending,
+pauses the automation (`AutoProfilePaused`) for this run until the user
+resumes it; switcher refusals before anything was sent make the switch
+wait again; so do a reset report or an unplug during the switch's own 2 s
+gate (nothing was sent: the switch waits, the automation is not paused).
+
+**The switch** (`ops/auto_profile.rs::switch_for_rule`, the only
+`.profile_switcher(` of the app): admission by the busy flag
+(compare-exchange), `run_op(OpKind::AutoSwitch)`, `ensure_quiet` (the rest
+of the 2 s gate and the device lock), a check that the library switcher's
+consent equals `consent::standing_rule()`, `switch_to(profile)`, then the
+full read of the new profile (and its known-good comparison). No journal
+and no safety backup: a select changes no setting, as the manual switch.
+Notices, the recent activity (the last 20) and the rotating
+`<state>/automation.log` record the rule id. Settings > Games uses
+`get_auto_profile_state`, `set_auto_profile_rules` (programs by token from
+`list_running_programs`, `pick_game_program` or `detect_next_program`, by
+typed file name, or kept by rule id; no path crosses IPC),
+`pause_auto_profile` and `report_ui_state` (drafts and the vendor-site
+acknowledgement, reset by every `subscribe`). `DeviceStatus.automation`
+gives the header's Auto chip (`holding`), the pause and a waiting switch.
+
+### Coexistence with the CLI
+
+`openwraith_hid::coordination::DeviceLock` on one lock file
+(`CoreConfig.lock_dir`: `coordination::default_dir()`; the simulator build
+`<sim>/lock`; tests none). The app takes it **exclusively** as the first
+step of `ensure_quiet`, so around every write and every automatic switch,
+and holds it until the operation ends plus the 2 s commit settle; it never
+holds it shared and never while idle. A busy lock means the CLI: nothing is
+sent, no safety backup, `writes_blocked [paused_for_cli]`. While idle the
+worker probes the lock about once a second, and at once when it hears
+traffic of another program, before it counts as one (`DeviceLock::probe`,
+which takes nothing it keeps): a CLI holder puts the app in **PausedForCli**
+(`DeviceStatus.paused_for_cli`, `Notice::PausedForCli{purpose}` from
+`device.lock.json`, the plan invalidated): it only listens, and what it
+hears is the CLI's (no `OtherProgram`, no re-read, no focus check, no
+hygiene). When the lock is free again: `rearm_gate`, 2 s observation, a
+full read and its known-good comparison. What was heard since the last
+probe that found the lock free is the CLI's too (`cli_window` starts there,
+`foreign_seen_at` goes back to its value then), so a CLI command is never
+followed by 120 s of "recent activity of another program". Left over: a
+one-query command that released the lock before the app heard its traffic
+cannot be told from another program (`OtherProgram`, "check again"). A CLI command that finds the app
+holding the lock fails at once ("the OpenWraith app is writing; try
+again"). **180 s rule** (open decision 4): with the tray on and the
+automation on and not paused, an `OtherProgram` episode followed by 180 s
+without any report re-arms the gate for automatic switches only
+(`Worker::auto_rearmed`); the state stays `OtherProgram`, so manual writes
+still need "check again" and the vendor tick, and the automatic switch
+then reads nothing after its select. Turning the tray or the automation
+off, or pausing it, ends the re-arm at the next tick.
+
+### The background shell (tray, notifications, start with Windows)
+
+The core stays Tauri-free; the Tauri crate implements its seams:
+
+- `ShellHook` (`shell.rs`): `set_background_settings` saves first, then
+  applies the changes (`ShellChanges`): start with Windows through
+  `autostart.rs` (`tauri-plugin-autostart`, the per-user Run value
+  `OpenWraith` = `<exe> --tray`, checked with `is_enabled` afterwards; a
+  disabled Task Manager entry or a machine-wide one is reported as an error,
+  never forced; not registered in simulator builds, so a dev build never
+  writes the Run key), then the icon. Turning the icon off also removes the
+  Run value and shows a hidden window. At start, `autostart::reconcile`
+  removes a Run value the settings no longer want and never re-creates one.
+- `TraySink` (`tray.rs`): the core computes the `TrayModel` (state normal /
+  disconnected / attention, a header, Profile 1-4 with local names, Pause
+  game profiles, Back up now, attention items); the glue draws it on the
+  main thread. A menu click runs `WorkerHandle::tray_action` on a blocking
+  thread: a profile item switches through `ops/profile.rs` (prepare +
+  apply) or returns `OpenWindow{route}` when drafts exist, a plan is
+  pending, writes are blocked or this run has no vendor-site
+  acknowledgement; Back up now saves a `manual` automatic backup (none
+  while the profile is held). Left click shows the window.
+- `NotificationSink` (`notify.rs`, `tauri-plugin-notification`): the core
+  maps notices to `OsNotification`s, filtered by the settings
+  (`notifications.reset`, `notifications.auto_switch`) and throttled to one
+  per kind per 10 minutes; the glue words them in the user's language
+  (`texts.rs`) and a click focuses the window and opens the route.
+- `ProgramSource` and the foreground feed (`foreground.rs`):
+  `active-win-pos-rs` for the program in front (every second) and
+  `sysinfo` (processes only) for the running list and the exit check of the
+  watched game pids. No `unsafe`.
+- `window.rs`: close to tray (`CloseRequested` while the icon is shown:
+  hide, stop a live depth view with `WindowHidden`, never a write; the
+  first time, a notification explains it and `close_to_tray_explained` is
+  saved); Quit from the menu exits, or shows the close guard while an
+  operation runs; the window is created hidden and shown at the end of
+  `setup` unless the app was started with `--tray` while the icon is on; a
+  second start (also with `--tray`) only focuses the first instance.
+- **Routes** from the tray and from notifications: `window::open_route`
+  validates the route (`#/` and `[A-Za-z0-9/?=&_-]`, at most 128
+  characters) and the page origin, then sets `location.hash` and
+  dispatches `openwraith:navigate` (the frontend focuses the page). No
+  Tauri event, so no `core:event` permission.
+- Texts shown outside the window live in `texts.rs` (EN/TR, the same
+  placeholder and translation rules as the frontend) and are mirrored into
+  `app/src/i18n/{en,tr}/native.ts` (`UPDATE_NATIVE_TEXTS=1 cargo test -p
+  openwraith-app texts`), where the frontend's parity tests check them too.
+
+### Session hygiene
+
+The tray makes the app run for days. In `Ready`, before an idle listen, a
+session older than 24 h or with 1000 events is replaced by a new
+`Session` on the same transport when it is idle (no operation or admitted
+request, no plan, no re-read due, no profile report settling, travel
+closed without stray reports, no base keymap waiting, no reset or loss, a
+quiet gate, no setting written in the last 10 s, no other program in the
+last 120 s). Nothing is sent; the generation and the snapshot stay, and the
+new gate makes the next write observe 2 s first. Travel samples never
+enter `Session::events`.
 
 ### Files
 
@@ -1413,11 +1739,15 @@ copy, and a deleted file is an error, not a plan.
 |---|---|
 | Safety backups | the CLI's folder: `OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups` |
 | Operation journal | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\operation-journal.json`; an interrupted one: `interrupted-operation.json` next to it |
-| Settings (language, theme, trigger presets, tips shown) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` (unknown fields are kept; an unreadable file is kept as `settings.invalid-<stamp>.json` before it is replaced) |
+| Settings (language, theme, trigger presets, tips shown; since v0.2 `tray_enabled`, `start_with_windows`, `close_to_tray_explained`, `notifications`, `auto_backup`, `auto_profile`, `profile_names`, each read leniently: missing or invalid means the default) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` (unknown fields are kept; an unreadable file is moved to `settings.invalid-<stamp>.json` at start and the first `subscribe` gets `Notice::SettingsFileInvalid`) |
+| Automatic backups (known-good store) | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good\<sha256(product NUL serial) or unidentified>\profile-N\openwraith-<product>-<stamp>-auto-<reason>[-n].owbackup.json`; `profile-N\pinned.json`; `<keyboard>\recovery\` (the composed backups of "Restore all profiles", newest 5) |
+| Automation log | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\automation.log` (JSON lines with the rule id of every automatic switch; rotated to `automation.1.log` at 256 KiB) |
+| Device lock (shared with the CLI) | `%LOCALAPPDATA%\OpenWraith\device.lock`; `device.lock.json` next to it while a program holds it |
+| Start with Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `OpenWraith` = `<exe> --tray` (HKLM when the app runs as administrator); removed when the icon is turned off, not by the uninstaller |
 | Macro library ("this PC") | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json` (matched to keyboard slots by content hash; an unreadable file is kept as `macro-library.invalid-<stamp>.json`) |
 | Key-depth test marker | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\travel-test-open` (a live view that may still be on) |
 | WebView2 data | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\EBWebView\` |
-| Simulator safety backups, journal, marker and macro library | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` |
+| Simulator safety backups, journal, marker, macro library, automatic backups and device lock | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` (the lock in `sim\lock\`, never the CLI's) |
 
 ### Closing
 
@@ -1465,7 +1795,24 @@ answers each command as follows:
   resolves with the recorded report when the page stops it (or at once for
   a stop the backend decided);
 - the macro library of "this PC" and the tips shown are kept in memory,
-  starting from the recorded ones.
+  starting from the recorded ones;
+- a recording may start with calls that set the scene (saved game rules,
+  background settings, profile names, the UI report): their results are
+  the starting state and the UI never replays them; events recorded before
+  the first user action are replayed at `subscribe` on their recorded
+  timeline (an automatic switch happens on its own), the rest after the
+  last user action (a recording of views only: once its last view is due);
+- the views of local settings and of the store (`get_recovery`,
+  `list_auto_backups`, `get_background_settings`, `get_profile_names`,
+  `get_auto_profile_state`) are kept in memory: a getter answers with the
+  latest recorded answer that is due by the fixture's virtual time and
+  whose earlier user actions were replayed, and once the user changed the
+  view, with the changed view. Their setters replay the recorded call with
+  the same arguments while the view is unchanged, else answer as app-core
+  would (validation included): background settings, profile names, game
+  rules, the pause, pins and "It's fine, keep them"; a completed restore of
+  a recovery resolves the hold; the status (`automation`, `recovery`)
+  follows. Writes are refused while the status says `paused_for_cli`.
 
 Commands that a fixture didn't record are answered from its state,
 synthesized (profile switch, reconnect, simulator actions), or borrowed from
@@ -1540,7 +1887,12 @@ check) and the safety-backup list ran end to end on the simulator.
 
 Both download Microsoft's WebView2 bootstrapper only when WebView2 is
 missing; the VC runtime is linked statically. The installers are not signed
-yet (SmartScreen warns on the first start).
+yet (SmartScreen warns on the first start). Neither uninstaller removes the
+start-with-Windows Run value (`OpenWraith`): the app removes it when the
+icon is turned off, and the README says to do that before uninstalling.
+Windows notifications need the Start menu shortcut the installers create
+(its AppUserModelID is the identifier); a development build shows them
+under another name.
 
 - **Metadata.** `bundle.publisher` is "OpenWraith contributors" (without it
   Tauri takes the identifier's second part, "github", as the publisher of
@@ -1699,6 +2051,40 @@ or i18n library.
   its `scroll-padding-bottom` keeps a focused control above the bar
   (WCAG 2.4.11). In Windows high contrast, colour swatches keep their
   colour (`forced-color-adjust: none`) with a `CanvasText` boundary.
+- **Settings** has tabs (`?tab=general|background|games|profiles|about`).
+  Its changes are local settings saved at once (no drafts, so they never
+  defer an automatic switch). Background shows `shell_error` from
+  `set_background_settings` (a Run entry Windows kept off, for example);
+  Games turns on only after a one-time explanation whose tick also stands
+  for the vendor-site acknowledgement of automatic switches
+  (`hints_shown` `settings.games.consent`), polls `get_auto_profile_state`
+  every 2 s while open, and lays its table out as cards below 900 px of
+  container width (a container query).
+- **Background state.** `state/uiReport.ts` sends `report_ui_state({drafts,
+  vendor_acknowledged})` after every `subscribe` (`onSubscribed`) and on
+  every change, deduplicated; `state/profileNames.ts` (the names of the
+  connected product: header "Profile 2 · FPS", popover, Keyboard page) and
+  `state/background.ts` are small stores. Notices that arrive before the
+  toaster mounts are buffered (up to 20), so `settings_file_invalid` at
+  the first subscribe is shown.
+- **Background banners and chips.** The header shows **Auto** while a game
+  rule holds the active profile and "Auto paused" while game profiles are
+  paused; one Recovery banner covers profiles that look reset, a changed
+  firmware and an unresolved reset report, leads to `#/backup?recover=1`
+  and is hidden on Backup & profiles (which opens the Recovery card itself
+  and drops `?recover=1`); a banner while the CLI holds the keyboard (with
+  its purpose); a banner when the app paused game profiles itself (rate
+  limit, failed switch) with Resume. Routes from the tray and notifications
+  arrive as a hash change, plus `openwraith:navigate`
+  (`shell/routeEvents.ts`), which focuses the page.
+- **Recovery and automatic backups** (Backup & profiles): the Recovery card
+  explains the evidence per profile, restores through `prepare_recovery`
+  and the standard restore review (switch consent first when other
+  profiles are involved, "Restore anyway" after a firmware change), and
+  "It's fine, keep them" sends nothing; the Automatic backups section lists,
+  pins, reveals and opens an entry in the restore wizard; Share a profile
+  exports from the keyboard, a backup file or an automatic backup with
+  include checkboxes (dead band and SOCD off by default).
 - **i18n.** `i18n/en/*.ts` are the shape source. Every `i18n/tr/*.ts` is
   typed `Messages<typeof en>`, so a missing key is a compile error. Tests
   check that Turkish is complete and that no `.tsx` contains UI literals.
@@ -1719,9 +2105,13 @@ or i18n library.
 | `tests::editors` | colours, dead band, SOCD and presets: own revisions (a write of one leaves the others' drafts valid), the drift checks (colours, dead band, SOCD power and pairs), the SOCD journal, refusals before traffic (never clamped; preset names 1-40 characters, at most 32 presets), the opt-in switch to Custom, the keyboard's SOCD push (only a plan made against the SOCD power is invalidated: SOCD edit, restore comparing SOCD, import writing SOCD; tests in `tests::restore` and `tests::share` too), the SOCD mode evidence against the library |
 | `tests::travel` | the live view: frames coalesced and sent only on movement, every stop reason (time limit, lost connection and a reloaded window included), a stop sent before the worker started the view, the marker written before T1 and removed only after an acknowledged close (a refused start keeps an earlier run's), a marker left at start, stray reports, the close on a user click |
 | `tests::share` | export (no traffic for the active profile, switch consent for another) and import (chosen categories into a chosen profile, every critical Fn override named and each needing the permission, import and restore tokens not interchangeable) |
-| `tests::interleavings` | 150 seeded random sequences of commands and keyboard events (SOCD edits and pushes, stray streams and live views included) against the write-path invariants (`INTERLEAVING_SEEDS=5000` runs more) |
+| `tests::recovery_holds` | what keeps a profile held: a recovery restore that may be lost (unplug at the save, after five packets; with and without R1) or was cancelled, a partial import (and a full one that releases it), R1 for profiles not read yet after "keep" or a restore, "not compared yet" after a report, the R1-only hold (light-only profile) and no R1 for a profile already at factory, another keyboard (serial) and two serial-less W75s on two connections, the CLI's own factory writes (and a reset during its pause), an edit saved only at the next start (persisted own writes), own writes checked against what they wrote (an edit not saved when the app closed, a vendor-site reset after an edit, "Restore all profiles" and a reset or another firmware of a profile not read since; a recovery restore on new firmware), the report's banner once every profile was compared, Back up now (manual backup, refused while automatic backups are off), the list with no keyboard read, the composed recoveries' rotation |
+| `tests::recovery`, `tests::hygiene` | the known-good store end to end: first read, a change made elsewhere, the factory preset written by OpenWraith never alarms, R1 / R2 / R3, held profiles send and save nothing, "keep them", a single restore and a composed restore of four profiles, a maybe-lost write never promoted on its connection, pins and rotation (own files only, safety backups untouched), automatic backups off, export options and an automatic-backup source, background settings with a recording shell hook, profile names, the invalid settings notice; hygiene after 24 h and 1000 events, never while in use |
+| `tests::auto`, `tests::coexist`, `auto::*` units | the engine on a virtual clock (dwell, once per episode, exit, manual override (also of a switch on its way, none after the return to the default, none for the profile found after a reconnect at later ticks), Fn + k heard while observing or during a read, every wait reason deferred then skipped, the settle and the 5 s gap, the hourly limit and a failed switch pausing, folder and name matching); on the simulator the automatic path sends exactly one `21 .. 12 02` and reads; every worker gate; tray click rules, Back up now, the notification throttle; the CLI lock (pause, attribution of what is heard, the re-read after release, the app's busy message, refusal before anything is sent, an automatic switch waiting for the CLI) |
+| `tests::interleavings` | 150 seeded random sequences of commands and keyboard events (SOCD edits and pushes, stray streams and live views, keymap, colour and dead-band edits, resets with the factory forms, recovery prepare and apply, "keep them"; half of the seeds with automation on, foreground changes, game exits and CLI lock flips) against the write-path invariants: outside apply steps only automatic profile selects are written, and nothing at all while paused for the CLI (`INTERLEAVING_SEEDS=5000` runs more) |
 | `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, and the simulator's configuration and scripts |
 | `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, the action catalogue, the `KeyboardEvent.code` table, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
+| `openwraith-app` (Tauri crate) | the text table (EN/TR parity, placeholders, every core notification key and wait reason, the `native.ts` mirror up to date), the tray menu model and ids, notification wording and the route book, the `--tray` start rule, route validation, the origin check and the route script, the autostart check, the foreground feed (failure grace, exit once, pid reuse) |
 | frontend (Vitest) | per tab: the draft to the exact recorded intent, review, write and report on the recorded fixtures; the DKS grid round trip for every grammar-valid row; the recorder's code table; catalogue search in English and Turkish; tab draft dots; i18n parity, no JSX literals, WCAG contrast of the tokens (badges and keycaps included) |
 
 ### Security
@@ -1729,7 +2119,10 @@ or i18n library.
 The window's capability (`capabilities/main.json`) allows exactly the app's
 commands (`allow-<command>`, generated by `build.rs` from
 `command_names.rs`) and no core or plugin permission: dialogs, the file
-manager and single instance are used from Rust only. The simulator's
+manager, single instance, notifications and autostart are used from Rust
+only, and v0.2 added no capability (the tray is a Tauri feature; routes
+from the tray and notifications are set with a validated script on the
+app's own origin, not with an event). The simulator's
 commands are registered only in simulator builds and allowed only by
 `capabilities/dev-sim.json`, which only `tauri.sim.conf.json` enables. The
 CSP allows nothing but the app itself and the IPC (`connect-src ipc:
@@ -1773,6 +2166,10 @@ outside `CAPTURES`).
 
 Still open:
 
+- a helper that merges the tables of a held profile that changed for other
+  reasons into a new automatic backup: a held profile keeps its old
+  baseline until "Restore" or "Keep" (the app's comparison saves nothing
+  while it is held);
 - a user-file summary command of its own: `open_safety_backup` summarizes
   any backup file token for now (see "Files" above);
 - `Deserialize` for the library's intents (`TriggerEdit`, `LightEdit`,

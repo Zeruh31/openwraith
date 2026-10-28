@@ -389,3 +389,59 @@ fn every_full_plan_request_is_served_by_the_c06_mock() {
     assert_eq!(session.stats().retries, 0);
     assert_only_reads(session.transport());
 }
+
+/// `Session::last_foreign_at` (the gate of automatic profile switches):
+/// when another program's status report or write acknowledgement last
+/// arrived, on the transport clock. The keyboard's own pushes, our replies
+/// and our acknowledgements never set it, and re-arming the gate does not
+/// clear it.
+#[test]
+fn last_foreign_at_is_when_another_program_was_last_heard() {
+    use openwraith_hid::{ConsentOrigin, DeviceSim, WriteConsent};
+    let ms = Duration::from_millis;
+    let mut sim = DeviceSim::from_backup(&common::c06_backup());
+    // Fn + Right Shift and a profile report from the keyboard, then another
+    // program's heartbeat (a status report) and its write acknowledgement.
+    sim.press_socd_hotkey_at(ms(100));
+    sim.push_input_at(ms(200), report(&[0x21, 0, 0, 0, 0x03, 0x11, 0x01, 0x00]));
+    sim.push_input_at(ms(1000), captured_status_report(C06));
+    sim.push_input_at(ms(3000), report(&[0x19, 0, 0, 0, 0]));
+    let start = Transport::now(&sim);
+    let mut session = Session::new(&mut sim);
+    assert_eq!(session.last_foreign_at(), None);
+
+    // Our own read and its reply.
+    let _: DeviceInfo = session.read(ReadRequest::DeviceInfo).unwrap();
+    assert_eq!(session.last_foreign_at(), None);
+    // The keyboard's own pushes.
+    session.listen(ms(500)).unwrap();
+    assert_eq!(session.socd_pushes(), 1);
+    assert_eq!(session.events().len(), 2);
+    assert_eq!(session.last_foreign_at(), None);
+    // The heartbeat.
+    session.listen(ms(1000)).unwrap();
+    assert_eq!(session.stats().status_reports, 1);
+    assert_eq!(session.last_foreign_at(), Some(start + ms(1000)));
+    // The acknowledgement of a write we did not send.
+    session.listen(ms(2500)).unwrap();
+    assert_eq!(session.stats().foreign_acks, 1);
+    let heard = start + ms(3000);
+    assert_eq!(session.last_foreign_at(), Some(heard));
+
+    // Re-arming the gate keeps the time; our own write and its
+    // acknowledgement (a profile switch, after a quiet observation) do not
+    // change it.
+    session.rearm_gate();
+    assert_eq!(session.last_foreign_at(), Some(heard));
+    let mut writer = session
+        .writer(WriteConsent::new(ConsentOrigin::CommandLineFlag))
+        .expect("quiet since the gate");
+    let profile2 = openwraith_hid::protocol::ProfileId::new(2).expect("2");
+    writer.select_profile(profile2).expect("switched");
+    drop(writer);
+    session.listen(ms(500)).unwrap();
+    assert_eq!(session.stats().foreign_acks, 1);
+    assert_eq!(session.last_foreign_at(), Some(heard));
+    drop(session);
+    sim.assert_clean();
+}

@@ -5,6 +5,7 @@ import type { AppError, DeviceId } from "../ipc/bindings";
 import { api } from "../ipc/commands";
 import { toAppError } from "../ipc/errors";
 import { tryLock, unlock } from "../state/operation";
+import { statusStore } from "../state/status";
 import { toast } from "../state/toasts";
 
 /** Shows an error as a toast (title from the dictionary, the message as details). */
@@ -42,6 +43,9 @@ function run(name: string, start: () => Promise<unknown>, quiet: readonly AppErr
 
 /** Reads the keyboard again (progress shows in the header). */
 export function readAgain(): void {
+  // The worker refuses reads while an OpenWraith command holds the keyboard
+  // (the buttons say so already); never a "Writing is paused" toast for a read.
+  if (statusStore.get().paused_for_cli) return;
   run(
     "refresh",
     () =>
@@ -70,6 +74,11 @@ export function release(): void {
 /** "I closed it, check again" (a second click after the first one worked finds nothing to recheck). */
 export function recheckOtherProgram(): void {
   run("recheck", () => api.recheckOtherProgram(), ["operation_running", "invalid_request"]);
+}
+
+/** Resumes the paused game profiles (a pause lasts for this run until resumed). */
+export function resumeAutoProfiles(): void {
+  run("resume-auto", () => api.pauseAutoProfile(false));
 }
 
 /** Shows the safety-backup folder in the file manager. */

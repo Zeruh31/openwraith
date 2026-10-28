@@ -1,6 +1,7 @@
 // Yedek ve profiller sayfası (yedekleme sayfası ajanına ait): yedekleme,
 // geri yükleme sihirbazı, planın incelenmesi, geri yükleme raporu, profil
-// paylaşma (dışa ve içe aktarma) ve güvenlik yedeklerinin listesi.
+// paylaşma (dışa ve içe aktarma), Kurtarma kartı, otomatik yedekler ve
+// güvenlik yedeklerinin listesi.
 
 import type { backupRestore as en } from "../en/backupRestore";
 import type { Messages } from "../types";
@@ -11,6 +12,7 @@ export const backupRestore: Messages<typeof en> = {
   reasons: {
     notConnected: "Klavyeyi bağlayın ve okunmasını bekleyin.",
     busy: "Süren işlemin bitmesini bekleyin.",
+    pausedForCli: "Klavyeyi bir OpenWraith komutu kullanıyor. Bitmesini bekleyin.",
     otherProgram:
       "Klavyeyi başka bir program kullanıyor. Bütün wraith.software sekmelerini kapatın, sonra yeniden denetleyin.",
     resetSeen: "Klavye kendini sıfırladı. Önce klavyeyi yeniden okuyun.",
@@ -65,11 +67,12 @@ export const backupRestore: Messages<typeof en> = {
     step3: "Klavyeyle karşılaştırın",
     openFile: "Dosya aç…",
     openOther: "Başka bir dosya aç…",
-    orSafety: "Aşağıda listelenen güvenlik yedeklerinden birini de geri yükleyebilirsiniz.",
+    orSafety: "Aşağıda listelenen otomatik yedeklerden ya da güvenlik yedeklerinden birini de geri yükleyebilirsiniz.",
     opening: "Yedek açılıyor…",
     kinds: {
       user: "Yedek dosyası",
       safety: "Güvenlik yedeği",
+      automatic: "Otomatik yedek",
     },
     facts: {
       made: "Oluşturulma",
@@ -114,6 +117,10 @@ export const backupRestore: Messages<typeof en> = {
       p.count === 1
         ? `Bu işlem profilin tamamını o zamanki durumuna döndürür; profil ${p.list} üzerinde sonradan yapılan değişiklikler de geri alınır.`
         : `Bu işlem bu profilleri o zamanki durumlarına döndürür; ${p.list} numaralı profillerde sonradan yapılan değişiklikler de geri alınır.`,
+    autoTitle: (p) =>
+      p.count === 1
+        ? `Profil ${p.list}, ${p.date} tarihindeki durumuna döndürülsün mü?`
+        : `${p.list} numaralı profiller, ${p.date} tarihindeki durumlarına döndürülsün mü?`,
     facts: {
       file: "Yedek",
       backupMade: "Yedeğin tarihi",
@@ -266,6 +273,131 @@ export const backupRestore: Messages<typeof en> = {
     showFolder: "Klasörü göster",
     count: (p) => `${p.total} yedekten ${p.shown} tanesi gösteriliyor`,
   },
+  autoBackups: {
+    title: "Otomatik yedekler",
+    intro: (p) =>
+      `OpenWraith klavyeyi okuduğunda bir profil değişmişse o profilin bir kopyasını buraya kaydeder. Her profilin en yeni ${p.keep} yedeğini tutar; sabitlenmiş yedekler ve güvenlik yedekleri hiçbir zaman silinmez.`,
+    off: "Otomatik yedekler kapalı: OpenWraith yenilerini oluşturmaz ve klavyenin sıfırlanıp sıfırlanmadığını denetlemez. Burada listelenenleri yine de geri yükleyebilirsiniz.",
+    openSettings: "Arka plan ayarlarını aç",
+    everyKeyboard:
+      "Henüz bir klavye okunmadı; bu yüzden OpenWraith'in okuduğu bütün klavyelerin otomatik yedekleri gösteriliyor.",
+    unidentified:
+      "Bu klavye bir seri numarası bildirmiyor: bu bilgisayardaki başka bir W75'in otomatik yedekleri bunlarla karışır.",
+    empty: "Henüz otomatik yedek yok. OpenWraith ilkini klavyeyi okuduğunda oluşturur.",
+    loadFailed: "Otomatik yedeklerin listesi okunamadı.",
+    columns: {
+      made: "Oluşturulma",
+      profile: "Profil",
+      reason: "Neden",
+      actions: "İşlemler",
+    },
+    reasons: {
+      first_read: "İlk okuma",
+      after_write: "OpenWraith'te yapılan bir değişiklikten sonra",
+      changed_elsewhere: "OpenWraith dışında değişmiş",
+      kept_current: "Olası bir sıfırlamadan sonra korundu",
+      manual: "Bildirim alanında “Şimdi yedekle”",
+    },
+    kept: "Sabitlendi",
+    keep: "Sabitle",
+    keepRow: (p) => `Profil ${p.n} için ${p.date} tarihli otomatik yedeği sabitle`,
+    keepHint: "Sabitlenmiş bir yedek hiçbir zaman silinmez ve en yeni yedeklerin sayısına katılmaz.",
+    restore: "Geri yükle…",
+    restoreRow: (p) => `Profil ${p.n} için ${p.date} tarihli otomatik yedeği geri yükle`,
+    showRow: (p) => `Profil ${p.n} için ${p.date} tarihli otomatik yedeği klasöründe göster`,
+    refresh: "Listeyi yenile",
+    showFolder: "Klasörü göster",
+    count: (p) => `${p.total} yedekten ${p.shown} tanesi gösteriliyor`,
+  },
+  recovery: {
+    title: "Kurtarma",
+    never: "OpenWraith sormadan hiçbir şeyi geri yüklemez.",
+    loadFailed: "OpenWraith sıfırlamayla ilgili bildiklerini okuyamadı.",
+    attentionTitle: "Klavyenin ayarları sıfırlanmış olabilir",
+    fineTitle: "Sıfırlanmış görünen bir şey yok",
+    fineBody: "OpenWraith'in karşılaştırdığı her profil, en yeni otomatik yedeğiyle aynı.",
+    resetReported: (p) =>
+      `Klavye bir sıfırlama bildirdi (saat: ${p.time}). Fn + Boşluk basılı tutulunca klavye fabrika ayarlarına döner.`,
+    resetReportedNoTime: "Klavye bir sıfırlama bildirdi. Fn + Boşluk basılı tutulunca klavye fabrika ayarlarına döner.",
+    firmwareChanged: (p) =>
+      `Klavyenin firmware sürümü değişti: önce ${p.known}, şimdi ${p.current}. Firmware güncellemesi genellikle ayarları sıfırlar.`,
+    heldProfiles: (p) =>
+      p.count === 1
+        ? `Profil ${p.list} sıfırlanmış görünüyor: otomatik yedeğinden farklı.`
+        : `${p.list} numaralı profiller sıfırlanmış görünüyor: otomatik yedeklerinden farklılar.`,
+    reconnectHint:
+      "Yeniden bağlanın; OpenWraith klavyeyi yeniden okusun ve otomatik yedekleriyle karşılaştırsın. Hiçbir şey yazılmaz.",
+    reconnect: "Yeniden bağlan ve karşılaştır",
+    keep: "Sorun yok, mevcut ayarlar kalsın",
+    keepHint:
+      "Klavyeyi bilerek sıfırladıysanız ya da bu ayarları kendiniz değiştirdiyseniz: OpenWraith mevcut ayarları en yeni otomatik yedekler olarak kaydeder ve uyarmayı bırakır. Klavyeye hiçbir şey gönderilmez. Eski otomatik yedekler, yenileri yerlerini alana kadar listede kalır; birini korumak için sabitleyin.",
+    keepFirst: "Önce yeniden bağlanıp karşılaştırın.",
+    keepCompareFirst: "Önce henüz karşılaştırılmamış profillere geçin; OpenWraith her birini okuduğunda karşılaştırır.",
+    unidentified:
+      "Bu klavye bir seri numarası bildirmiyor; bu yüzden OpenWraith onu başka bir W75'ten ayıramaz: sıfırlanmış görünen ayarlar, bu modelden başka bir klavyenin bağlandığı anlamına da gelebilir. Geri yüklemeden önce otomatik yedeğin tarihine bakın.",
+    kept: "OpenWraith mevcut ayarları olduğu gibi koruyor.",
+    autoOff: "Otomatik yedekler kapalı; bu yüzden OpenWraith klavyeyi otomatik yedeklerle karşılaştırmıyor.",
+    openSettings: "Arka plan ayarlarını aç",
+    profiles: "Profiller",
+    profileNamed: (p) => `Profil ${p.n} · ${p.name}`,
+    states: {
+      no_known_good: "Henüz otomatik yedek yok",
+      not_checked: "Henüz karşılaştırılmadı",
+      fine: "Otomatik yedeğiyle aynı",
+      reset_suspected: "Sıfırlanmış görünüyor",
+    },
+    notes: {
+      no_known_good: "OpenWraith ilk otomatik yedeği bu profili bir sonraki okuyuşunda oluşturur.",
+      not_checked:
+        "OpenWraith bu profili bir sonraki okuyuşunda (örneğin bu profile geçtiğinizde) karşılaştırır.",
+      fine: (p) => `Okunma: ${p.date}; otomatik yedeğiyle aynıydı.`,
+    },
+    evidenceTitle: "Neden sıfırlanmış görünüyor",
+    evidence: {
+      reset_seen: "Bu profil okunmadan önce klavye bir sıfırlama bildirdi.",
+      firmware_changed: (p) =>
+        `Otomatik yedek ${p.known} sürümlü firmware ile alınmış; klavyede şimdi ${p.current} sürümü var.`,
+      triggers_to_factory: "Aktivasyon ve Rapid Trigger, otomatik yedekten farklı olarak fabrika ayarlarına dönmüş.",
+      keymap_group_to_factory: (p) => `Otomatik yedekten farklı olarak fabrika ayarlarına dönenler: ${p.list}.`,
+    },
+    factoryNow: (p) => `Şu an fabrika ayarlarında olanlar: ${p.list}.`,
+    changed: (p) => `Otomatik yedekten farklı olan diğer ayarlar: ${p.list}.`,
+    comparedWith: (p) => `Karşılaştırılan otomatik yedek: ${p.date} (karşılaştırmadan ${p.age} önce alınmış).`,
+    comparedWithDate: (p) => `Karşılaştırılan otomatik yedek: ${p.date}.`,
+    tables: {
+      triggers: "Aktivasyon/Rapid Trigger",
+      main_light: "Işık",
+      custom_colors1: "Tuş renkleri",
+      base_keymap: "Tuş atamaları",
+      fn_keymap: "Fn katmanı tuş atamaları",
+      macros: "Makrolar",
+      advanced_keys: "Gelişmiş tuşlar",
+      dead_band: "Ölü bölge",
+      socd_pairs: "SOCD tuş çiftleri",
+    },
+    age: {
+      underMinute: "bir dakikadan kısa süre",
+      minutes: (p) => `${p.n} dakika`,
+      hours: (p) => `${p.n} saat`,
+      days: (p) => `${p.n} gün`,
+    },
+    restoreFrom: (p) => `Profil ${p.n} için otomatik yedek`,
+    backupOption: (p) => (p.kept ? `${p.date} · ${p.reason} · sabitlendi` : `${p.date} · ${p.reason}`),
+    restore: (p) => `${p.n} numaralı profili geri yükle…`,
+    noBackups: "Bu profilin geri yüklenebilecek bir otomatik yedeği yok.",
+    restoreAll: "Tüm profilleri geri yükle…",
+    restoreAllHint: (p) =>
+      `${p.list} numaralı profilleri en yeni otomatik yedeklerinden, tek bir incelemeyle geri yükler.`,
+    compareHint: "OpenWraith önce karşılaştırır ve neyin değişeceğini gösterir; siz onaylamadan hiçbir şey yazılmaz.",
+    notCheckedNote: "OpenWraith, o zamandan beri okunmamış profilleri bir sonraki okuyuşunda karşılaştırır.",
+    firmwareTitle: "Otomatik yedekler başka bir firmware sürümüyle alınmış",
+    firmwareBody: (p) =>
+      `Otomatik yedekler: firmware ${p.backup}. Klavye: firmware ${p.keyboard}. Firmware güncellemesinden sonra geri yüklemek olağan bir durumdur, ama bazı ayarların biçimi sürümler arasında değişmiş olabilir.`,
+    reviewTitle: (p) =>
+      p.count === 1
+        ? `Profil ${p.list} otomatik yedeğinden geri yüklensin mi?`
+        : `${p.list} numaralı profiller otomatik yedeklerinden geri yüklensin mi?`,
+  },
   skipReasons: {
     unconfirmed_command: "OpenWraith bu ayarı henüz yazmıyor: yazılması klavyede doğrulanmadı.",
     no_known_command: "OpenWraith bu ayarı nasıl yazacağını bilmiyor.",
@@ -296,7 +428,9 @@ export const backupRestore: Messages<typeof en> = {
     incomplete: (p) => `şu bölüm tam okunamadı: ${p.table}.`,
     fn_keymap_not_writable: "Fn katmanı tuş atamaları yazılamıyor; bu yüzden klavye tuş atamalarını kaydetmez.",
     critical_fn_override: (p) =>
-      `içe aktarılan Fn katmanı klavyenin kendi kısayollarından birinin yerini alıyor (profil değiştirme ya da sıfırlama, ${p.index} numaralı tuş) ve buna izin verilmedi.`,
+      p.count === 1
+        ? `içe aktarılan Fn katmanı, klavyenin kendi kısayollarından biri olan ${p.keys} kısayolunun yerini alıyor ve buna izin verilmedi.`
+        : `içe aktarılan Fn katmanı, klavyenin kendi kısayolları olan ${p.keys} kısayollarının yerini alıyor ve buna izin verilmedi.`,
     unwritable_imported_entry: (p) =>
       `dosyadaki ${p.layer} içinde OpenWraith'in yazmadığı bir kayıt var (${p.index} numaralı tuş). Yalnızca tuşlar, medya tuşları, fare düğmeleri, tuş kombinasyonları, makrolar ve gelişmiş tuşlar içe aktarılır.`,
   },
@@ -346,6 +480,7 @@ export const backupRestore: Messages<typeof en> = {
       saveFilter: "OpenWraith profil dosyaları",
       open: "İçe aktarılacak profil dosyasını seçin",
       openFilter: "OpenWraith profil dosyaları ve yedekleri",
+      openBackup: "Profilin dışa aktarılacağı yedeği seçin",
     },
     profileOption: (p) => (p.active ? `Profil ${p.n} (etkin)` : `Profil ${p.n}`),
     parts: {
@@ -357,13 +492,40 @@ export const backupRestore: Messages<typeof en> = {
     },
     export: {
       title: "Profili dışa aktar",
-      intro: "OpenWraith profili şimdi klavyeden okur ve bir profil dosyası (.owprofile.json) olarak kaydeder.",
+      intro:
+        "Bir profili profil dosyası (.owprofile.json) olarak kaydedin: şimdi klavyeden okunarak ya da bir yedek dosyasından veya otomatik yedekten alınarak.",
+      source: "Profil nereden okunsun",
+      sources: {
+        keyboard: "Şu anki klavye",
+        file: "Bir yedek dosyası",
+        automatic: "Bir otomatik yedek",
+      },
+      sourceHints: {
+        keyboard: "OpenWraith profili bağlı klavyeden okur.",
+        file: "Kaydettiğiniz bir yedek ya da bir güvenlik yedeği. Klavye kullanılmaz.",
+        automatic: "OpenWraith'in klavyeyi okurken aldığı bir kopya. Klavye kullanılmaz.",
+      },
       profile: "Profil",
+      chooseFile: "Yedek seç…",
+      chooseOther: "Başka bir yedek seç…",
+      fileProfile: "Yedekteki profil",
+      fileMade: (p) => `Oluşturulma: ${p.date} · firmware ${p.firmware}`,
+      automatic: "Otomatik yedek",
+      automaticOption: (p) => `Profil ${p.n} · ${p.date} · ${p.reason}`,
+      noAutomatic: "Henüz otomatik yedek yok: OpenWraith bunları klavyeyi okurken oluşturur.",
+      automaticFailed: "Otomatik yedekler listelenemedi.",
       name: "Ad (isteğe bağlı)",
       nameHint: "Dosyaya kaydedilir, örneğin “Turnuva”. Dosya adını bir sonraki adımda seçersiniz.",
-      holds:
-        "Dosya profilin tamamını içerir: aktivasyon ve Rapid Trigger, ışık ve tuş renkleri, makrolar ve gelişmiş tuşlarla birlikte tuş atamaları, ölü bölge ve SOCD tuş çiftleri. Hangi bölümlerin kullanılacağını içe aktaran kişi seçer; varsayılan olarak yalnızca aktivasyon ve ışık seçilidir.",
+      parts: "Dosyada neler olsun",
+      partsHint:
+        "Ölü bölge ve SOCD tuş çiftleri, siz işaretlemedikçe dosyaya eklenmez: ölü bölge genellikle tek bir klavyeye göre ayarlanır ve bazı oyunlar SOCD'yi yasaklar.",
+      holds: "Dosyayı içe aktaran kişi, bu bölümlerden hangilerinin kullanılacağını yeniden seçer.",
       macrosNote: "Makrolar bastıkları tuşlar olarak kaydedilir; dosyayı verdiğiniz herkes bunları okuyabilir.",
+      reasons: {
+        noPart: "Dışa aktarılacak en az bir bölüm seçin.",
+        noFile: "Önce bir yedek dosyası seçin.",
+        noAutomatic: "Önce bir otomatik yedek seçin.",
+      },
       switchNote: (p) =>
         `${p.n} numaralı profili okumak için klavye bu profile geçip geri döner (ışık kısa süre değişir). Hiçbir ayar değiştirilmez.`,
       button: (p) => `${p.n} numaralı profili dışa aktar…`,

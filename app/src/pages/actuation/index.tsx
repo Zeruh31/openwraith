@@ -77,6 +77,7 @@ import { gateReason } from "./shared/editTexts";
 import { Toolbar } from "./Toolbar";
 import { NothingToChange, TriggerReview } from "./TriggerReview";
 import "./actuation.css";
+import { useReadBlockedReason } from "../../state/operation";
 
 /** The Actuation & Rapid Trigger page. */
 export default function ActuationPage() {
@@ -85,6 +86,7 @@ export default function ActuationPage() {
   const status = useStatus();
   const { snapshot, stale, loading } = useSnapshot();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
   const t = dict.actuation;
 
   const [seed] = useState(() => seedFrom(previewUi<ActuationPreviewUi>("actuation")));
@@ -313,7 +315,7 @@ export default function ActuationPage() {
             <Callout
               kind="info"
               actions={
-                <Button icon="refresh" size="sm" disabled={lock.busy} onClick={readAgain}>
+                <Button icon="refresh" size="sm" disabled={lock.busy} disabledReason={readBlocked} onClick={readAgain}>
                   {dict.common.actions.readAgain}
                 </Button>
               }

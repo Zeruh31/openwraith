@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use openwraith_hid::protocol::{Distance, KeyPos, ReadRequest, W75};
+use openwraith_hid::protocol::{Distance, KeyPos, RawResponse, ReadRequest, W75};
 use openwraith_hid::{
     Backup, RtEdit, Session, Transport, TriggerEdit, TriggerEditPlan, WriteOptions,
     apply_trigger_edit, plan_trigger_edit, read_summary,
@@ -315,6 +315,12 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                let clean = super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                );
+                w.own_write_done(clean);
                 if w.foreign_heard() {
                     // Another program talks to the keyboard: send nothing
                     // more (the state becomes `OtherProgram`).
@@ -323,7 +329,11 @@ impl<B: DeviceBackend> Worker<B> {
                     w.reread = true;
                 } else {
                     progress.step(crate::dto::ProgressStep::RefreshingView);
-                    w.refresh_keys(plan.keys().iter().map(|k| k.pos));
+                    let reread = w.refresh_keys(plan.keys().iter().map(|k| k.pos));
+                    if clean && let Some(reread) = reread {
+                        // What the edit left in the triggers.
+                        w.own_write_reread(OpKind::TriggerEdit, &fresh, reread);
+                    }
                 }
                 let view = edit_report_view(&report, file);
                 w.shared.set_last_report(LastReport::Edit {
@@ -334,25 +344,22 @@ impl<B: DeviceBackend> Worker<B> {
         )
     }
 
-    /// Reads the trigger settings of `keys` again and patches the snapshot.
-    /// Stops before the next request once another program is heard (the
-    /// snapshot stays as it was, marked stale; the state becomes
-    /// `OtherProgram`).
-    fn refresh_keys(&mut self, keys: impl Iterator<Item = KeyPos>) {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return;
-        };
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
+    /// Reads the trigger settings of `keys` again and patches the snapshot;
+    /// the replies when every key was read again. Stops before the next
+    /// request once another program is heard (the snapshot stays as it was,
+    /// marked stale; the state becomes `OtherProgram`).
+    fn refresh_keys(&mut self, keys: impl Iterator<Item = KeyPos>) -> Option<Vec<RawResponse>> {
+        let mut snapshot = self.snapshot.clone()?;
+        let session = self.session.as_mut()?;
+        let mut replies = Vec::new();
         for pos in keys {
             if !may_send(session) {
                 self.stale = true;
-                return;
+                return None;
             }
             let Ok(raw) = session.request(ReadRequest::KeyTrigger(pos)) else {
                 self.reread = true;
-                return;
+                return None;
             };
             let view = key_trigger_view(&W75, pos, Some(&raw));
             if let Some(slot) = snapshot
@@ -363,7 +370,9 @@ impl<B: DeviceBackend> Worker<B> {
             {
                 *slot = view;
             }
+            replies.push(raw);
         }
         self.update_snapshot(snapshot);
+        Some(replies)
     }
 }

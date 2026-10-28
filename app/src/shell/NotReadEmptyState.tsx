@@ -14,6 +14,7 @@ import { useOperationLock } from "../state/operation";
 import { useStatus } from "../state/status";
 import { readAgain } from "./actions";
 import { connectionSummary } from "./statusText";
+import { useReadBlockedReason } from "../state/operation";
 
 /** Props of {@link NotReadEmptyState}. */
 export interface NotReadEmptyStateProps {
@@ -36,6 +37,7 @@ export function NotReadEmptyState({ icon, title, body, failed, loading, error }:
   const format = useFormat();
   const status = useStatus();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
   const state = status.connection.state;
   if (loading || state === "reading") {
     return (
@@ -53,7 +55,12 @@ export function NotReadEmptyState({ icon, title, body, failed, loading, error }:
         icon={icon}
         title={title}
         action={
-          <Button icon="refresh" disabled={lock.busy || state !== "ready"} onClick={readAgain}>
+          <Button
+            icon="refresh"
+            disabled={lock.busy || state !== "ready"}
+            disabledReason={readBlocked}
+            onClick={readAgain}
+          >
             {dict.common.actions.readAgain}
           </Button>
         }

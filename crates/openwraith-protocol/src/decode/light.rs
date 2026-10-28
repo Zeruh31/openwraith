@@ -375,7 +375,9 @@ impl FromResponse for ColorTable {
         let bytes = response.table_bytes("colour table")?;
         need(&bytes, "colour table", MATRIX_SIZE * 3)?;
         let colors = bytes
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .take(MATRIX_SIZE)
             .map(|c| Rgb::new(at(c, 0), at(c, 1), at(c, 2)))
             .collect();

@@ -172,10 +172,23 @@ fn consent_is_built_in_one_place_and_used_only_by_apply_steps() {
             assert!(path.ends_with("ops/consent.rs"), "{path} builds a consent");
             assert_eq!(
                 code.matches("ConsentOrigin::").count(),
-                1,
-                "one consent origin"
+                2,
+                "two consent origins: the application's and the standing rule's"
             );
             assert!(code.contains("ConsentOrigin::Application"));
+            assert!(code.contains("ConsentOrigin::StandingRule"));
+        }
+        // The standing rule's consent only in the automatic switch, where
+        // it checks that the library's switcher uses it.
+        if code.contains("consent::standing_rule()") {
+            assert!(
+                path.ends_with("ops/auto_profile.rs"),
+                "{path} uses the standing rule's consent"
+            );
+            assert_eq!(
+                enclosing_fns(&code, "consent::standing_rule()"),
+                ["switch_for_rule"]
+            );
         }
         for (at, _) in code.match_indices("consent::application()") {
             uses += 1;
@@ -292,15 +305,33 @@ fn travel_and_standing_rule_calls_stay_in_their_operations() {
 
 #[test]
 fn editor_intents_carry_no_raw_bytes() {
-    // The colour, dead-band, SOCD, preset, export and import intents are
-    // typed: keys by index, colours as "#rrggbb", values in trigger units.
-    for file in ["dto/editors.rs", "dto/share.rs", "dto/travel.rs"] {
-        let text = std::fs::read_to_string(
-            repo_root()
-                .join("crates/openwraith-app-core/src")
-                .join(file),
-        )
-        .unwrap();
+    // Every intent the frontend sends (every `Deserialize` type of `dto/`)
+    // is typed: keys by index, colours as "#rrggbb", values in trigger
+    // units, files as tokens: no bytes, no hex, no paths.
+    let dto = repo_root().join("crates/openwraith-app-core/src/dto");
+    let mut files: Vec<String> = std::fs::read_dir(&dto)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".rs"))
+        .collect();
+    files.sort();
+    // The files known to hold intents must keep holding some (a renamed
+    // derive would otherwise hide them from the scan).
+    for known in [
+        "editors.rs",
+        "share.rs",
+        "travel.rs",
+        "auto.rs",
+        "recovery.rs",
+        "background.rs",
+        "intent.rs",
+    ] {
+        assert!(files.iter().any(|f| f == known), "dto/{known}");
+    }
+    for name in &files {
+        let file = format!("dto/{name}");
+        let text = std::fs::read_to_string(dto.join(name)).unwrap();
         let mut deserialized = 0;
         for item in text.split("#[derive(").skip(1) {
             let derive = &item[..item.find(')').unwrap()];
@@ -318,7 +349,19 @@ fn editor_intents_carry_no_raw_bytes() {
                 );
             }
         }
-        assert!(deserialized >= 1, "{file}: {deserialized} intent types");
+        if [
+            "editors.rs",
+            "share.rs",
+            "travel.rs",
+            "auto.rs",
+            "recovery.rs",
+            "background.rs",
+            "intent.rs",
+        ]
+        .contains(&name.as_str())
+        {
+            assert!(deserialized >= 1, "{file}: {deserialized} intent types");
+        }
     }
 }
 
@@ -347,6 +390,188 @@ fn the_new_editors_use_only_the_library_entry_points() {
     assert!(!presets.contains("consent::application()"));
     assert!(presets.contains("prepare_trigger_plan("));
     assert!(!presets.contains("apply_trigger_edit("));
+}
+
+/// The code of `file` (comments removed).
+fn code_of(file: &str) -> String {
+    sources()
+        .into_iter()
+        .find(|(p, _)| p.ends_with(file))
+        .map(|(_, c)| c)
+        .unwrap_or_else(|| panic!("{file} not found"))
+}
+
+/// The names of the functions in `code` that contain `needle` (an empty
+/// name where `needle` is the name of a function being defined).
+fn enclosing_fns(code: &str, needle: &str) -> Vec<String> {
+    code.match_indices(needle)
+        .map(|(at, _)| {
+            let head = &code[..at];
+            head.rfind("fn ")
+                .map(|i| {
+                    head[i + 3..]
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<String>()
+                })
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+#[test]
+fn recovery_never_writes_and_restores_only_through_a_user_apply() {
+    // Detection, promotion, "keep them" and the Recovery card only read
+    // and write the store's files: no consent, no writer, no profile
+    // switcher, no journal, no restore execution, no session call.
+    for file in ["ops/recovery.rs", "autobackup.rs"] {
+        let code = code_of(file);
+        for token in [
+            "consent::",
+            ".writer(",
+            ".profile_switcher(",
+            "execute_restore",
+            "write_journal",
+            "apply_restore",
+            "apply_prepared_restore",
+            "select_profile",
+            "read_profiles",
+            ".request(",
+            "session",
+        ] {
+            assert!(!code.contains(token), "{file} uses {token}");
+        }
+    }
+    // A recovery reaches the keyboard only through the restore's
+    // comparison (`prepare_restore`, whose plan waits for a token).
+    let recovery = code_of("ops/recovery.rs");
+    assert_eq!(recovery.matches("self.prepare_restore(").count(), 1);
+    assert_eq!(
+        enclosing_fns(&recovery, "self.prepare_restore("),
+        ["prepare_recovery"]
+    );
+    // A restore is executed in one place, which only the apply steps reach
+    // (each consumes the token of a plan the user reviewed).
+    let mut executes = Vec::new();
+    for (path, code) in sources() {
+        for name in enclosing_fns(&code, "execute_restore(") {
+            executes.push((path.clone(), name));
+        }
+        for name in enclosing_fns(&code, "apply_prepared_restore(") {
+            // (An empty name: the definition itself.)
+            if !name.is_empty() {
+                assert!(
+                    name.starts_with("apply_") && code.contains("take_plan("),
+                    "{path}: apply_prepared_restore reached from fn {name}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        executes,
+        [(
+            "crates/openwraith-app-core/src/ops/restore.rs".to_string(),
+            "apply_prepared_restore".to_string()
+        )]
+    );
+    // Automatic backups are saved only by the known-good comparison.
+    for (path, code) in sources() {
+        if code.contains("autobackup::save(") || code.contains("autobackup::save_recovery(") {
+            assert!(
+                path.ends_with("ops/recovery.rs"),
+                "{path} saves automatic backups"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_automatic_path_reuses_reads_only() {
+    // The comparison runs on reads the worker made anyway (`full_read`);
+    // it is never a request of its own.
+    let snapshot = code_of("ops/snapshot.rs");
+    assert_eq!(
+        enclosing_fns(&snapshot, "self.observe_read("),
+        ["full_read"]
+    );
+    for (path, code) in sources() {
+        if code.contains("observe_read(") && !path.ends_with("ops/recovery.rs") {
+            assert!(path.ends_with("ops/snapshot.rs"), "{path} compares reads");
+        }
+    }
+    // Session hygiene replaces an idle session without sending anything.
+    let hygiene = code_of("worker/hygiene.rs");
+    for token in [".request(", ".read::<", ".writer(", "consent::", "listen("] {
+        assert!(!hygiene.contains(token), "hygiene uses {token}");
+    }
+}
+
+#[test]
+fn the_automatic_switch_sends_only_the_profile_select_and_reads() {
+    // `.profile_switcher(` once, in the switch of a game rule; its only use
+    // is `switch_to`. The automatic path builds no writer, uses no
+    // application consent, writes no journal or safety backup and never
+    // reaches a table write or a restore.
+    let auto = code_of("ops/auto_profile.rs");
+    assert_eq!(auto.matches(".profile_switcher(").count(), 1);
+    assert_eq!(
+        enclosing_fns(&auto, ".profile_switcher("),
+        ["switch_for_rule"]
+    );
+    let compact: String = auto.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(
+        compact.matches("switcher.").count(),
+        3,
+        "consent, switch_to, session"
+    );
+    assert_eq!(compact.matches("switcher.switch_to(").count(), 1);
+    for token in [
+        ".writer(",
+        "consent::application()",
+        "write_journal",
+        "save_safety",
+        "execute_restore",
+        "prepare_restore",
+        "apply_",
+        "select_profile",
+        "read_profiles",
+        "live_travel",
+        "close_stray_travel_test",
+        ".request(",
+        "plan_",
+    ] {
+        assert!(!auto.contains(token), "ops/auto_profile.rs uses {token}");
+    }
+    // The engine and the shell's model are pure: no session, no file.
+    for file in [
+        "auto/engine.rs",
+        "auto/tray.rs",
+        "auto/notify.rs",
+        "auto/programs.rs",
+    ] {
+        let code = code_of(file);
+        for token in ["session", "Session", "std::fs", "consent::", "Worker"] {
+            assert!(!code.contains(token), "{file} uses {token}");
+        }
+    }
+    // The device lock is taken only by the worker's coexistence code.
+    for (path, code) in sources() {
+        if code.contains("DeviceLock::try_exclusive(") || code.contains("DeviceLock::try_shared(") {
+            assert!(path.ends_with("worker/coexist.rs"), "{path} takes the lock");
+        }
+        assert!(
+            !code.contains("DeviceLock::try_shared("),
+            "{path}: the app never holds the lock shared"
+        );
+    }
+    // Every write passes `ensure_quiet`, which takes the lock first.
+    let ops = code_of("ops/mod.rs");
+    let quiet = &ops[ops.find("fn ensure_quiet(").unwrap()..];
+    let first = quiet.find("self.take_device_lock()?").unwrap();
+    assert!(
+        first < quiet.find("listen(").unwrap(),
+        "the lock before anything"
+    );
 }
 
 #[test]

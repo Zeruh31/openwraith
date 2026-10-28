@@ -914,3 +914,215 @@ fn a_plain_restore_of_an_exported_profile_is_refused() {
     assert!(dry.is_err());
     assert!(write_bytes(&sim).is_empty());
 }
+
+/// The requests of a backup's primary entries, in order.
+fn requests_of(backup: &Backup) -> Vec<ReadRequest> {
+    backup.entries.iter().map(|e| e.request()).collect()
+}
+
+#[test]
+fn exporting_chosen_parts_keeps_only_their_replies() {
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let all = read_profiles(
+        &mut Session::new(&mut sim),
+        ProfileSet::ALL,
+        consent(),
+        &ProfilesOptions {
+            backup: common::fixed_options(),
+            ..ProfilesOptions::default()
+        },
+        |_| ControlFlow::Continue(()),
+    )
+    .expect("all profiles");
+    let p2 = profile(2);
+    let snapshot: Vec<ReadRequest> = all
+        .snapshot(p2)
+        .expect("profile 2")
+        .entries()
+        .iter()
+        .map(|e| e.request())
+        .collect();
+
+    // The whole profile, as before.
+    let whole = all.export_profile(p2, Some("fps")).expect("export");
+    assert_eq!(requests_of(&whole), snapshot);
+    assert_eq!(whole.parts_of(p2), Some(ImportSelection::ALL));
+    assert!(!whole.note.contains("Parts:"), "{}", whole.note);
+    assert_eq!(
+        all.export_profile_parts(p2, Some("fps"), ImportSelection::ALL)
+            .expect("export"),
+        whole
+    );
+
+    // Each category alone.
+    let none = ImportSelection::NONE;
+    let always = [
+        ReadRequest::DeviceInfo,
+        ReadRequest::Status,
+        ReadRequest::ActiveProfile,
+        ReadRequest::FnLockedKeys,
+        ReadRequest::MainLightModes,
+        ReadRequest::TriggerGlobal,
+        ReadRequest::SwitchTypes,
+        ReadRequest::PollRate,
+    ];
+    for (only, label, has, lacks) in [
+        (
+            ImportSelection {
+                triggers: true,
+                ..none
+            },
+            "triggers",
+            ReadRequest::KeyTrigger(pos(2, 2)),
+            ReadRequest::MainLight,
+        ),
+        (
+            ImportSelection {
+                lighting: true,
+                ..none
+            },
+            "lighting",
+            ReadRequest::CustomColors(openwraith_hid::protocol::CustomTable::Custom1),
+            ReadRequest::KeyTrigger(pos(2, 2)),
+        ),
+        (
+            ImportSelection {
+                keymap_group: true,
+                ..none
+            },
+            "keys",
+            ReadRequest::AdvancedKeys,
+            ReadRequest::SideLight,
+        ),
+        (
+            ImportSelection {
+                dead_band: true,
+                ..none
+            },
+            "dead band",
+            ReadRequest::DeadBand,
+            ReadRequest::Keymap(Layer::Fn),
+        ),
+        (
+            ImportSelection { socd: true, ..none },
+            "SOCD",
+            ReadRequest::SocdSettings,
+            ReadRequest::DeadBand,
+        ),
+    ] {
+        let export = all
+            .export_profile_parts(p2, None, only)
+            .expect("export of one part");
+        let requests = requests_of(&export);
+        assert!(requests.contains(&has), "{label}");
+        assert!(!requests.contains(&lacks), "{label}");
+        for request in always {
+            assert!(requests.contains(&request), "{label}: {request}");
+        }
+        assert!(
+            requests.iter().all(|r| only.includes_request(*r)),
+            "{label}"
+        );
+        assert_eq!(export.parts_of(p2), Some(only), "{label}");
+        assert!(
+            export.note.contains(&format!("Parts: {label}.")),
+            "{}",
+            export.note
+        );
+        assert_eq!(export.scope, BACKUP_SCOPE_EXPORT);
+        assert_eq!(export.active_profile, Some(2));
+        // It loads again as it was saved.
+        let loaded = Backup::from_json(&export.to_json().expect("json")).expect("loads");
+        assert_eq!(loaded, export);
+    }
+    let two = ImportSelection {
+        triggers: true,
+        socd: true,
+        ..none
+    };
+    let export = all.export_profile_parts(p2, None, two).expect("export");
+    assert!(
+        export.note.contains("Parts: triggers, SOCD."),
+        "{}",
+        export.note
+    );
+    // Nothing chosen, or a profile the backup does not hold.
+    assert!(matches!(
+        all.export_profile_parts(p2, None, none),
+        Err(BackupError::InvalidSnapshot { .. })
+    ));
+    let single = read_all(&mut Session::new(&mut sim)).expect("backup");
+    assert!(
+        single
+            .export_profile_parts(profile(3), None, ImportSelection::ALL)
+            .is_err()
+    );
+    assert_eq!(single.parts_of(profile(3)), None);
+    sim.assert_clean();
+}
+
+#[test]
+fn importing_an_export_of_some_parts_writes_only_those() {
+    // The file: profile 1 of c06 with a remapped key and SOCD on, exported
+    // with its triggers and keys only.
+    let mut source = DeviceSim::from_backup(&c06_backup());
+    let mut base = source
+        .table(profile(1), SimTable::Keymap(Layer::Base))
+        .expect("keymap")
+        .to_vec();
+    base[46 * 4..47 * 4].copy_from_slice(&[0x00, 0x04, 0x00, 0x00]);
+    source.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
+    socd_on(&mut source);
+    let parts = ImportSelection {
+        triggers: true,
+        keymap_group: true,
+        ..ImportSelection::NONE
+    };
+    let file = read_all(&mut Session::new(&mut source))
+        .expect("backup")
+        .export_profile_parts(profile(1), None, parts)
+        .expect("export");
+
+    // Imported with every category chosen: the file holds two.
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let light3 = sim
+        .table(profile(3), SimTable::MainLight)
+        .map(<[u8]>::to_vec);
+    let options = RestoreOptions {
+        import: Some(ImportOptions {
+            from: profile(1),
+            into: profile(3),
+            include: ImportSelection::ALL,
+            allow_critical_fn_overrides: false,
+        }),
+        ..options()
+    };
+    let report = restore_with(&mut sim, &file, &options);
+    assert!(report.is_success(), "{:#?}", report.error);
+    let written: Vec<TableId> = report
+        .items()
+        .filter(|(_, i)| matches!(i.result, ItemResult::Written { .. }))
+        .map(|(_, i)| i.table)
+        .collect();
+    assert!(written.contains(&TableId::Triggers), "{written:?}");
+    assert!(written.contains(&TableId::Keymap { layer: Layer::Base }));
+    for table in [TableId::MainLight, TableId::Socd, TableId::DeadBand] {
+        assert!(!written.contains(&table), "{table}");
+    }
+    assert_eq!(
+        sim.persisted_table(profile(3), SimTable::Keymap(Layer::Base))
+            .map(|b| b[46 * 4..47 * 4].to_vec()),
+        Some(vec![0x00, 0x04, 0x00, 0x00])
+    );
+    assert_eq!(
+        sim.table(profile(3), SimTable::MainLight)
+            .map(<[u8]>::to_vec),
+        light3
+    );
+    assert_eq!(
+        sim.persisted_table(profile(3), SimTable::SocdPairs)
+            .map(|b| b[..4].to_vec()),
+        Some(vec![0; 4])
+    );
+    sim.assert_clean();
+}

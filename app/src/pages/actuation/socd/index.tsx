@@ -67,6 +67,7 @@ import { PairRow } from "./PairRow";
 import { SocdReview } from "./SocdReview";
 import { socdDrafts, socdPart } from "./store";
 import "../actuation.css";
+import { useReadBlockedReason } from "../../../state/operation";
 
 /** Why SOCD can't be changed, in words. */
 export function socdDisabledText(disabled: SocdDisabled, dict: Dict): string {
@@ -89,6 +90,7 @@ export default function SocdTab() {
   const format = useFormat();
   const status = useStatus();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
   const { snapshot } = useSnapshot();
   const view = usePart(socdPart);
   const t = dict.actuation.socd;
@@ -302,7 +304,7 @@ export default function SocdTab() {
             <Callout
               kind="info"
               actions={
-                <Button icon="refresh" size="sm" disabled={lock.busy} onClick={readAgain}>
+                <Button icon="refresh" size="sm" disabled={lock.busy} disabledReason={readBlocked} onClick={readAgain}>
                   {dict.common.actions.readAgain}
                 </Button>
               }

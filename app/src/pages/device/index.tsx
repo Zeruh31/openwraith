@@ -14,10 +14,12 @@ import { navigate } from "../../routes";
 import { readAgain, reconnect, release, revealSafetyDir, selectDevice } from "../../shell/actions";
 import { useAppInfo } from "../../state/appInfo";
 import { useOperationLock } from "../../state/operation";
+import { profileLabel, useProfileNames } from "../../state/profileNames";
 import { useSnapshot } from "../../state/snapshot";
 import { useStatus } from "../../state/status";
 import { buildDateText } from "./buildDate";
 import "./device.css";
+import { useReadBlockedReason } from "../../state/operation";
 
 const GUIDE_KEY = "openwraith.guideDismissed";
 
@@ -166,7 +168,7 @@ function ConnectionCard() {
       break;
     case "ready":
       // "Read again" is on the Keyboard card below.
-      body = <p>{t.ready}</p>;
+      body = <p>{status.paused_for_cli ? t.pausedForCli : t.ready}</p>;
       actions = (
         <Button icon="plug" disabled={lock.busy} onClick={release} title={dict.shell.popover.releaseHint}>
           {t.release}
@@ -227,6 +229,8 @@ function KeyboardCard() {
   const status = useStatus();
   const { snapshot } = useSnapshot();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
+  const names = useProfileNames();
   const t = dict.device.keyboard;
   const device = snapshot?.device ?? status.device;
   if (device === null) {
@@ -263,7 +267,10 @@ function KeyboardCard() {
   items.push({
     key: "profile",
     label: t.activeProfile,
-    value: status.active_profile === null ? dict.common.profileUnknown : dict.common.profile({ n: status.active_profile }),
+    value:
+      status.active_profile === null
+        ? dict.common.profileUnknown
+        : profileLabel(dict, status.active_profile, names[status.active_profile - 1] ?? null),
   });
   if (snapshot !== null) {
     if (snapshot.poll_rate_hz !== null) {
@@ -286,7 +293,7 @@ function KeyboardCard() {
       title={t.title}
       actions={
         status.connection.state === "ready" ? (
-          <Button size="sm" icon="refresh" disabled={lock.busy} onClick={readAgain}>
+          <Button size="sm" icon="refresh" disabled={lock.busy} disabledReason={readBlocked} onClick={readAgain}>
             {dict.common.actions.readAgain}
           </Button>
         ) : undefined

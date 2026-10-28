@@ -25,6 +25,8 @@ export const flow: Messages<typeof en> = {
     export: "Profil dışa aktarılıyor",
     import_prepare: "Profil dosyasıyla karşılaştırılıyor",
     import: "Profil içe aktarılıyor",
+    recovery_check: "Otomatik yedeklerle karşılaştırılıyor",
+    auto_switch: "Oyun için profil değiştiriliyor",
   },
   titles: {
     refresh: "Klavye okunuyor",
@@ -46,6 +48,8 @@ export const flow: Messages<typeof en> = {
     export: "Profil dışa aktarma",
     import_prepare: "Profil içe aktarma",
     import: "Profil içe aktarma",
+    recovery_check: "Kurtarma",
+    auto_switch: "Oyun profili",
   },
   preparing: "Klavyedeki güncel ayarlar okunuyor…",
   steps: {

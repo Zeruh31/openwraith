@@ -116,7 +116,7 @@ impl KeymapData {
     /// [`KeymapReference::Malformed`], never silently accepted.
     pub fn references(&self) -> Vec<KeymapReference> {
         (0u8..)
-            .zip(self.0.chunks_exact(4))
+            .zip(self.0.as_chunks::<4>().0.iter())
             .filter_map(|(index, entry)| reference(index, copy_at(entry, 0)))
             .collect()
     }
@@ -231,7 +231,7 @@ fn macro_violation(bytes: &[u8; MACRO_SLOT_LEN]) -> Option<&'static str> {
     if bytes[2] != 0 {
         return Some("byte 2 is not 0");
     }
-    if !(4..=MACRO_MAX_STEP_BYTES).contains(&n) || n % 4 != 0 {
+    if !(4..=MACRO_MAX_STEP_BYTES).contains(&n) || !n.is_multiple_of(4) {
         return Some("step length is not a multiple of 4 in 4..=248");
     }
     if bytes[6] != 0 || bytes[7] != 0 {
@@ -240,7 +240,9 @@ fn macro_violation(bytes: &[u8; MACRO_SLOT_LEN]) -> Option<&'static str> {
     let steps_end = MACRO_STEPS_OFFSET + usize::from(n);
     let steps = bytes.get(MACRO_STEPS_OFFSET..steps_end).unwrap_or_default();
     if steps
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|step| !matches!(step.get(1), Some(0x00 | 0x01 | 0x10 | 0x11)))
     {
         return Some("a step has an unknown press/release byte");
@@ -441,7 +443,7 @@ impl DeadBandData {
 
     /// Checks that every top and bottom value is at most `max_units`.
     pub fn validate(&self, max_units: u16) -> Result<(), WriteBuildError> {
-        for (index, pair) in (0u8..).zip(self.0.chunks_exact(2)) {
+        for (index, pair) in (0u8..).zip(self.0.as_chunks::<2>().0.iter()) {
             for (which, value) in ["top", "bottom"].into_iter().zip(pair) {
                 if u16::from(*value) > max_units {
                     return Err(WriteBuildError::DeadBandOutOfRange {

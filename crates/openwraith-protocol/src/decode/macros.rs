@@ -116,7 +116,9 @@ impl MacroSlot {
             let steps = bytes
                 .get(STEPS_OFFSET..steps_end)
                 .unwrap_or_default()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|s| MacroStep {
                     code: at(s, 0),
                     flags: at(s, 1),

@@ -10,6 +10,11 @@
 //! gate, a verified safety backup before any change, stop-and-wait writes
 //! and read-back verification. Their logic lives in [`commands`],
 //! [`edits`], [`share`] and [`live`].
+//!
+//! Every command that opens the keyboard first takes the device lock
+//! shared with the desktop app ([`lock`]): exclusively when it may write,
+//! shared when it only reads. When the app is writing, the command stops at
+//! once, before anything is sent.
 
 #![forbid(unsafe_code)]
 
@@ -19,12 +24,15 @@ mod device;
 mod edit_text;
 mod edits;
 mod live;
+mod lock;
 mod parse;
 mod render;
 mod report;
 mod share;
 #[cfg(test)]
 mod sim_tests;
+#[cfg(test)]
+mod sim_tests_lock;
 #[cfg(test)]
 mod sim_tests_v02;
 mod table;
@@ -49,6 +57,7 @@ use openwraith_protocol::{DeviceEvent, PlacementError, ProfileId, WriteBuildErro
 use crate::args::{MonitorArgs, ProfileAction, RestoreArgs, SetCommand, TravelArgs};
 use crate::commands::{Exit, Globals, OutputTarget, UsageError, tool_options};
 use crate::device::{Connector, DeviceError, HidConnector};
+use crate::lock::LockNeed;
 use crate::ui::{Terminal, Ui};
 use crate::view::{
     AdvancedView, AllView, InfoView, JSON_NOTE, JsonOutput, KeymapView, LightView, MacrosView,
@@ -90,6 +99,11 @@ keyboard or a lost connection before the keyboard has saved is reported as \
 Close the vendor web configurator first, the whole browser tab (a tab in the \
 background may not be detected): it receives OpenWraith's replies too and \
 reacts to them.
+
+The OpenWraith desktop app and these commands take turns: a command that \
+opens the keyboard while the app is writing to it stops at once (\"the \
+OpenWraith app is writing; try again\") and sends nothing, and the app does \
+not write while a command runs.
 
 Values marked * come from the vendor configurator's code and are not yet \
 confirmed on the wire (see docs/PROTOCOL.md).
@@ -278,18 +292,27 @@ fn run(cli: &Cli) -> anyhow::Result<Exit> {
             json,
             from,
             profile,
-        } => cmd_info(cli, *json, from.as_deref(), *profile).map(|()| Exit::Success),
+        } => {
+            let _lock = read_command_lock(cli)?;
+            cmd_info(cli, *json, from.as_deref(), *profile).map(|()| Exit::Success)
+        }
         Command::Backup {
             output,
             force,
             all_profiles: false,
-        } => cmd_backup(cli, output.as_deref(), *force).map(|()| Exit::Success),
+        } => {
+            let _lock = read_command_lock(cli)?;
+            cmd_backup(cli, output.as_deref(), *force).map(|()| Exit::Success)
+        }
         Command::Show {
             what,
             from,
             profile,
             json,
-        } => cmd_show(cli, *what, from.as_deref(), *profile, *json).map(|()| Exit::Success),
+        } => {
+            let _lock = read_command_lock(cli)?;
+            cmd_show(cli, *what, from.as_deref(), *profile, *json).map(|()| Exit::Success)
+        }
         Command::Backup {
             all_profiles: true, ..
         }
@@ -305,15 +328,76 @@ fn run(cli: &Cli) -> anyhow::Result<Exit> {
     }
 }
 
+/// What a command needs of the device lock shared with the desktop app
+/// ([`lock`]): `None` for the commands that never open the keyboard.
+fn lock_need(command: &Command) -> Option<LockNeed> {
+    let (read, write) = (LockNeed::read, LockNeed::write);
+    match command {
+        Command::List
+        | Command::Info { from: Some(_), .. }
+        | Command::Show { from: Some(_), .. } => None,
+        Command::Info { .. } => Some(read("info")),
+        Command::Show { .. } => Some(read("show")),
+        Command::Backup {
+            all_profiles: false,
+            ..
+        } => Some(read("backup")),
+        Command::Backup {
+            all_profiles: true, ..
+        } => Some(write("backup --all-profiles")),
+        Command::Profile { action } => match action {
+            None => Some(read("profile")),
+            Some(ProfileAction::Select { .. }) => Some(write("profile select")),
+            // Reading a profile that is not active switches to it and back.
+            Some(ProfileAction::Export(args)) => {
+                args.from.is_none().then(|| write("profile export"))
+            }
+            Some(ProfileAction::Import(args)) if args.flags.dry_run => {
+                Some(read("profile import --dry-run"))
+            }
+            Some(ProfileAction::Import(_)) => Some(write("profile import")),
+        },
+        Command::Set { what } if what.dry_run() => {
+            Some(LockNeed::read(format!("{} --dry-run", what.name())))
+        }
+        Command::Set { what } => Some(write(what.name())),
+        Command::Restore(args) => match (args.dry_run, &args.against) {
+            (true, Some(_)) => None,
+            (true, None) => Some(read("restore --dry-run")),
+            (false, _) => Some(write("restore")),
+        },
+        Command::Travel(args) if args.close => Some(write("travel --close")),
+        Command::Travel(_) => Some(write("travel")),
+        Command::Monitor(_) => Some(read("monitor")),
+    }
+}
+
+/// The device lock of a read-only command of the binary (`info`, `show`,
+/// `backup` against the keyboard); warnings go to stderr.
+fn read_command_lock(cli: &Cli) -> anyhow::Result<Option<openwraith_hid::DeviceLock>> {
+    let Some(need) = lock_need(&cli.command) else {
+        return Ok(None);
+    };
+    let connector = HidConnector::new(cli.device.clone());
+    lock::take(connector.lock_dir(), &need, &mut |warning| {
+        eprintln!("{}", printable(warning));
+    })
+}
+
 /// The commands whose logic lives in [`commands`] (the ones that may write,
 /// and `profile`), with any connector and console. The binary passes the
-/// HID connector; unit tests pass the device simulator.
+/// HID connector; unit tests pass the device simulator. The device lock is
+/// taken first and held until the command ends.
 fn run_command<C: Connector, U: Ui>(
     command: &Command,
     globals: &Globals,
     connector: &mut C,
     ui: &mut U,
 ) -> anyhow::Result<Exit> {
+    let _lock = match lock_need(command) {
+        Some(need) => lock::take(connector.lock_dir(), &need, &mut |warning| ui.note(warning))?,
+        None => None,
+    };
     match command {
         Command::Backup {
             output,
@@ -620,6 +704,8 @@ fn hint(err: &anyhow::Error) -> Option<&'static str> {
     err.chain().find_map(|cause| {
         if let Some(e) = cause.downcast_ref::<DeviceError>() {
             device_hint(e)
+        } else if let Some(e) = cause.downcast_ref::<openwraith_hid::LockError>() {
+            lock_hint(e)
         } else if let Some(e) = cause.downcast_ref::<RestoreError>() {
             restore_hint(e)
         } else if let Some(e) = cause.downcast_ref::<ProfilesError>() {
@@ -803,6 +889,13 @@ fn build_hint(err: &WriteBuildError) -> Option<&'static str> {
         WriteBuildError::TooManySocdPairs { .. } => Some("at most 20 SOCD pairs"),
         _ => None,
     }
+}
+
+fn lock_hint(err: &openwraith_hid::LockError) -> Option<&'static str> {
+    err.is_busy().then_some(
+        "nothing was sent to the keyboard; run the command again when the other OpenWraith \
+         program has finished",
+    )
 }
 
 fn device_hint(err: &DeviceError) -> Option<&'static str> {

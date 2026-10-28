@@ -239,6 +239,14 @@ impl<B: DeviceBackend> Worker<B> {
     /// The keyboard sent its reset notification: the session is dropped at
     /// once and nothing more is sent until the user reconnects.
     pub(crate) fn enter_reset_seen(&mut self) {
+        // R1 for the known-good comparison of the next reads.
+        self.note_reset_reported();
+        if self.conn != Conn::ResetSeen {
+            let settings = self.shared.auto().background.notifications;
+            if let Some(n) = crate::auto::notify::keyboard_reset(&settings) {
+                self.shared.os_notify(n);
+            }
+        }
         self.drop_session();
         self.clear_snapshot();
         self.invalidate(PlanInvalidation::ResetSeen);
@@ -249,6 +257,15 @@ impl<B: DeviceBackend> Worker<B> {
     pub(crate) fn enter_other_program(&mut self, evidence: ForeignActivityView) {
         self.stale = true;
         self.invalidate(PlanInvalidation::OtherProgram);
+        // It may change any table: OpenWraith's own writes whose content
+        // is unknown no longer explain anything.
+        self.own_writes_after_other_program();
+        if !matches!(self.conn, Conn::OtherProgram { .. }) {
+            self.other_since = Some(self.now());
+            self.other_quiet_since = None;
+            self.auto_rearmed = false;
+            self.other_reports_handled = 0;
+        }
         self.conn = Conn::OtherProgram { evidence };
     }
 

@@ -69,6 +69,22 @@ pub const COMMANDS: &[&str] = &[
     "get_hints_shown",
     "mark_hint_shown",
     "reset_hints_shown",
+    "list_auto_backups",
+    "pin_auto_backup",
+    "get_recovery",
+    "keep_current_settings",
+    "prepare_recovery",
+    "get_background_settings",
+    "set_background_settings",
+    "get_profile_names",
+    "set_profile_names",
+    "get_auto_profile_state",
+    "set_auto_profile_rules",
+    "pause_auto_profile",
+    "list_running_programs",
+    "pick_game_program",
+    "detect_next_program",
+    "report_ui_state",
 ];
 
 /// The developer simulator's commands: registered only in simulator builds

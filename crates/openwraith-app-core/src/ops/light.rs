@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use openwraith_hid::protocol::{LightMode, ReadRequest, Rgb};
+use openwraith_hid::protocol::{LightMode, RawResponse, ReadRequest, Rgb};
 use openwraith_hid::{
     LightEdit, LightEditPlan, Session, Transport, WriteOptions, apply_light_edit, plan_light_edit,
 };
@@ -82,19 +82,19 @@ impl<B: DeviceBackend> Worker<B> {
                 })?)
             }
         };
-        if let Some(brightness) = intent.brightness {
-            if brightness > light.max_brightness {
-                return Err(out_of_range(
-                    RangeField::Brightness,
-                    brightness,
-                    light.max_brightness,
-                ));
-            }
+        if let Some(brightness) = intent.brightness
+            && brightness > light.max_brightness
+        {
+            return Err(out_of_range(
+                RangeField::Brightness,
+                brightness,
+                light.max_brightness,
+            ));
         }
-        if let Some(speed) = intent.speed {
-            if speed > light.max_speed {
-                return Err(out_of_range(RangeField::Speed, speed, light.max_speed));
-            }
+        if let Some(speed) = intent.speed
+            && speed > light.max_speed
+        {
+            return Err(out_of_range(RangeField::Speed, speed, light.max_speed));
         }
         if mode.is_none()
             && foreground.is_none()
@@ -201,6 +201,12 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                let clean = super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                );
+                w.own_write_done(clean);
                 if w.foreign_heard() {
                     // Another program talks to the keyboard: send nothing
                     // more (the state becomes `OtherProgram`).
@@ -209,7 +215,11 @@ impl<B: DeviceBackend> Worker<B> {
                     w.reread = true;
                 } else {
                     progress.step(ProgressStep::RefreshingView);
-                    w.refresh_light();
+                    let reread = w.refresh_light();
+                    if clean && let Some(reread) = reread {
+                        // What the edit left in the light.
+                        w.own_write_reread(OpKind::LightEdit, &fresh, reread);
+                    }
                 }
                 let view = edit_report_view(&report, file);
                 w.shared.set_last_report(LastReport::Edit {
@@ -220,24 +230,21 @@ impl<B: DeviceBackend> Worker<B> {
         )
     }
 
-    /// Reads the main light again and patches the snapshot. Stops before
-    /// the next request once another program is heard (the snapshot stays
-    /// as it was, marked stale; the state becomes `OtherProgram`).
-    pub(crate) fn refresh_light(&mut self) {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return;
-        };
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
+    /// Reads the main light again and patches the snapshot; the replies
+    /// when both were read again. Stops before the next request once
+    /// another program is heard (the snapshot stays as it was, marked
+    /// stale; the state becomes `OtherProgram`).
+    pub(crate) fn refresh_light(&mut self) -> Option<Vec<RawResponse>> {
+        let mut snapshot = self.snapshot.clone()?;
+        let session = self.session.as_mut()?;
         if !may_send(session) {
             self.stale = true;
-            return;
+            return None;
         }
         let modes = session.request(ReadRequest::MainLightModes);
         if !may_send(session) {
             self.stale = true;
-            return;
+            return None;
         }
         let light = session.request(ReadRequest::MainLight);
         match (modes, light) {
@@ -249,8 +256,12 @@ impl<B: DeviceBackend> Worker<B> {
                     .and_then(openwraith_hid::protocol::model_for_product);
                 snapshot.light = light_state(model, Some(&modes), Some(&light));
                 self.update_snapshot(snapshot);
+                Some(vec![modes, light])
             }
-            _ => self.reread = true,
+            _ => {
+                self.reread = true;
+                None
+            }
         }
     }
 }

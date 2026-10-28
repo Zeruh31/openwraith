@@ -8,6 +8,8 @@ import { tableName } from "../../../flow/labels";
 import type { Dict } from "../../../i18n";
 import type { Format } from "../../../i18n/format";
 import type {
+  AutoBackupEntry,
+  BackupFileSummary,
   EditProblemView,
   ExportIntent,
   FileToken,
@@ -129,22 +131,62 @@ export function exportLabel(name: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+/** Where an export reads the profile: the keyboard now, a backup file, or an automatic backup. */
+export type ExportFrom = "keyboard" | "file" | "automatic";
+
+/** The export sources in the order the page offers them. */
+export const EXPORT_SOURCES: readonly ExportFrom[] = ["keyboard", "file", "automatic"];
+
+/**
+ * The parts an export holds at first (design B4): everything but the dead
+ * band and the SOCD key pairs, which suit one keyboard and one game more
+ * than a shared profile.
+ */
+export function defaultExportInclude(): ShareSelectionView {
+  return { triggers: true, lighting: true, keys: true, dead_band: false, socd: false };
+}
+
+/** The profile of a backup file offered first for an export: its active profile, else its first. */
+export function exportFileProfile(summary: Pick<BackupFileSummary, "profiles" | "active_profile">): number | null {
+  const profiles = sortedUnique(summary.profiles);
+  const active = summary.active_profile;
+  return active !== null && profiles.includes(active) ? active : (profiles[0] ?? null);
+}
+
+/** An automatic backup as an export choice ("Profile 1 · 24 Oct 2026, 07:30:00 · First read"). */
+export function automaticOptionText(entry: AutoBackupEntry, dict: Dict, format: Format): string {
+  return dict.backupRestore.share.export.automaticOption({
+    n: entry.profile,
+    date: format.dateTimeSeconds(entry.created_at),
+    reason: dict.backupRestore.autoBackups.reasons[entry.reason],
+  });
+}
+
 /** What {@link buildExportIntent} needs. */
 export interface ExportIntentInput {
   profile: number;
   name: string;
   destination: FileToken;
+  /** The user agreed to switch profiles (read from the keyboard only). */
   confirmedSwitch: boolean;
+  /** The backup file or automatic backup the profile is taken from; `null` reads the keyboard. */
+  file: FileToken | null;
+  /** The parts the file holds (at least one). */
+  include: ShareSelectionView;
 }
 
-/** The export intent (always from the keyboard in this version). */
+/**
+ * The export intent. A file source never switches profiles (the keyboard
+ * isn't used), so it never carries the switch consent.
+ */
 export function buildExportIntent(input: ExportIntentInput): ExportIntent {
   return {
-    source: { source: "keyboard" },
+    source: input.file === null ? { source: "keyboard" } : { source: "file", file: input.file },
     profile: input.profile,
     label: exportLabel(input.name),
     destination: input.destination,
-    confirmed_switch: input.confirmedSwitch,
+    confirmed_switch: input.file === null && input.confirmedSwitch,
+    include: { ...input.include },
   };
 }
 

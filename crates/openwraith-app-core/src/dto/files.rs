@@ -50,6 +50,8 @@ pub enum BackupFileKind {
     User,
     /// A safety backup.
     Safety,
+    /// An automatic backup (the known-good store).
+    Automatic,
 }
 
 /// The program that made a backup.

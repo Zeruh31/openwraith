@@ -4,7 +4,7 @@ import type { FileToken } from "./FileToken";
 /**
  * What to show in the file manager.
  */
-export type RevealTarget = { "target": "safety_dir" } | { "target": "legal_notices" } | { "target": "file", 
+export type RevealTarget = { "target": "safety_dir" } | { "target": "auto_backup_dir" } | { "target": "legal_notices" } | { "target": "file", 
 /**
  * The file.
  */

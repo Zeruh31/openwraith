@@ -2,12 +2,12 @@
 import type { Fixture } from "../types";
 
 export const fixture: Fixture = {
-  "app_info": {"os_locale":"en-US","platform":"windows","repository":"https://github.com/Zeruh31/openwraith","safety_dir":{"path":"C:\\Users\\you\\AppData\\Local\\OpenWraith\\safety-backups","state":"ok"},"sim":true,"tested_firmware":["3.22.07"],"version":"0.1.0"},
+  "app_info": {"os_locale":"en-US","platform":"windows","repository":"https://github.com/Zeruh31/openwraith","safety_dir":{"path":"C:\\Users\\you\\AppData\\Local\\OpenWraith\\safety-backups","state":"ok"},"sim":true,"tested_firmware":["3.22.07"],"version":"0.2.0"},
   "calls": [],
   "events": [],
   "id": "searching",
   "initial_snapshot": null,
-  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"state":"searching"},"device":null,"firmware_tested":null,"generation":0,"interrupted":null,"revision":1,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"travel":{"marker_left":false,"state":"closed","stray_reports":0},"write_gate":{"allowed":false,"reasons":["not_connected"]}},
+  "initial_status": {"active_profile":null,"automation":{"enabled":false,"holding":null,"paused":null,"waiting":null},"busy":null,"close_requested":false,"connection":{"state":"searching"},"device":null,"firmware_tested":null,"generation":0,"interrupted":null,"paused_for_cli":false,"recovery":{"firmware_changed":false,"reset_reported":false,"reset_suspected":[]},"revision":1,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"travel":{"marker_left":false,"state":"closed","stray_reports":0},"write_gate":{"allowed":false,"reasons":["not_connected"]}},
   "safety_backups": [],
   "settings": {"language":"system","theme":"system"},
 };

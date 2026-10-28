@@ -13,7 +13,10 @@ export type Lang = "en" | "tr";
  * - `keysAssign`, `keysMacros`, `keysAdvanced`: the Keys tabs' own texts;
  * - `actuation` (trigger, dead band, SOCD, key depth, presets), `lighting`
  *   (effect, key colours), `backupRestore` (backup, restore, share a profile):
- *   one area per page.
+ *   one area per page;
+ * - `native`: the texts the desktop app shows outside its window (tray menu,
+ *   Windows notifications). GENERATED from `app/src-tauri/src/texts.rs`;
+ *   registered here only so that the parity tests cover them.
  */
 export type Namespace =
   | "common"
@@ -28,7 +31,8 @@ export type Namespace =
   | "keys"
   | "keysAssign"
   | "keysMacros"
-  | "keysAdvanced";
+  | "keysAdvanced"
+  | "native";
 
 /**
  * The shape of a dictionary: string literals widen to `string`, message

@@ -9,7 +9,7 @@ members = [
 ]
 # `cargo build` / `cargo build --release` without `-p` builds the CLI and
 # the libraries only: the desktop app needs the Tauri prerequisites, Rust
-# 1.90 and a built frontend (`npm --prefix app run tauri build`).
+# 1.95 and a built frontend (`npm --prefix app run tauri build`).
 # `--workspace` commands still cover every member.
 default-members = [
     "crates/openwraith-protocol",
@@ -19,11 +19,14 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Zeruh31/openwraith"
-rust-version = "1.85"
+# 1.89: `std::fs::File::try_lock` / `try_lock_shared` for the device lock
+# shared by the CLI and the desktop app (`openwraith_hid::coordination`).
+# The desktop app crate (app/src-tauri) needs a newer Rust of its own.
+rust-version = "1.89"
 
 [workspace.dependencies]
 openwraith-protocol = { path = "crates/openwraith-protocol" }

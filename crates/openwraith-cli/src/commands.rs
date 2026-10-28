@@ -370,10 +370,11 @@ impl OutputTarget {
     pub fn check(output: Option<&Path>, force: bool) -> anyhow::Result<Self> {
         let dir = output.filter(|p| p.is_dir()).map(Path::to_path_buf);
         let file = output.filter(|p| !p.is_dir()).map(Path::to_path_buf);
-        if let Some(path) = &file {
-            if !force && path.exists() {
-                return Err(BackupError::AlreadyExists { path: path.clone() }.into());
-            }
+        if let Some(path) = &file
+            && !force
+            && path.exists()
+        {
+            return Err(BackupError::AlreadyExists { path: path.clone() }.into());
         }
         Ok(OutputTarget { file, dir })
     }
@@ -605,16 +606,16 @@ fn restore_dry_run<C: Connector>(
             true,
             args.packets,
         ))?;
-        if let Some(import) = &options.import {
-            if plan.original_profile != Some(import.into.get()) {
-                ui.print(&format!(
-                    "Profile {into} is not active: a dry run cannot read it without switching \
+        if let Some(import) = &options.import
+            && plan.original_profile != Some(import.into.get())
+        {
+            ui.print(&format!(
+                "Profile {into} is not active: a dry run cannot read it without switching \
                      profiles. Select it first (`openwraith profile select {into}`), or run \
                      without --dry-run (the plan is shown and you are asked before anything is \
                      written).\n",
-                    into = import.into
-                ))?;
-            }
+                into = import.into
+            ))?;
         }
     }
     Ok(Exit::Success)

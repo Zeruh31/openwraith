@@ -12,6 +12,12 @@ import type {
   AllProfilesPreview,
   AppEvent,
   AppInfo,
+  AutoBackupsView,
+  AutoProfileRulesIntent,
+  AutoProfileStateView,
+  BackgroundSettingsApplied,
+  BackgroundSettingsIntent,
+  BackgroundSettingsView,
   BackupFileSummary,
   BackupKind,
   BackupSaved,
@@ -49,9 +55,14 @@ import type {
   PlanToken,
   PresetEditIntent,
   PresetsView,
+  ProfileNamesIntent,
+  ProfileNamesView,
   ProfileSwitchPreview,
   ProfileSwitchReport,
+  ProgramView,
   ProgressEvent,
+  RecoveryIntent,
+  RecoveryView,
   RestoreIntent,
   RestorePreview,
   RestoreReportView,
@@ -66,6 +77,7 @@ import type {
   TravelCloseReport,
   TriggerEditIntent,
   TriggerEditPreview,
+  UiStateReport,
   UserPresetIntent,
 } from "./bindings";
 import { toAppError } from "./errors";
@@ -135,6 +147,22 @@ export const COMMAND_NAMES = [
   "get_hints_shown",
   "mark_hint_shown",
   "reset_hints_shown",
+  "list_auto_backups",
+  "pin_auto_backup",
+  "get_recovery",
+  "keep_current_settings",
+  "prepare_recovery",
+  "get_background_settings",
+  "set_background_settings",
+  "get_profile_names",
+  "set_profile_names",
+  "get_auto_profile_state",
+  "set_auto_profile_rules",
+  "pause_auto_profile",
+  "list_running_programs",
+  "pick_game_program",
+  "detect_next_program",
+  "report_ui_state",
 ] as const;
 
 /** The developer simulator's commands (`command_names.rs`: `DEV_COMMANDS`). */
@@ -211,6 +239,22 @@ export type Args = {
   get_hints_shown: Record<string, never>;
   mark_hint_shown: { hint: string };
   reset_hints_shown: Record<string, never>;
+  list_auto_backups: Record<string, never>;
+  pin_auto_backup: { file: FileToken; pinned: boolean };
+  get_recovery: Record<string, never>;
+  keep_current_settings: { profiles: number[] };
+  prepare_recovery: { intent: RecoveryIntent };
+  get_background_settings: Record<string, never>;
+  set_background_settings: { settings: BackgroundSettingsIntent };
+  get_profile_names: Record<string, never>;
+  set_profile_names: { names: ProfileNamesIntent };
+  get_auto_profile_state: Record<string, never>;
+  set_auto_profile_rules: { rules: AutoProfileRulesIntent };
+  pause_auto_profile: { paused: boolean };
+  list_running_programs: Record<string, never>;
+  pick_game_program: { dialog: DialogText };
+  detect_next_program: Record<string, never>;
+  report_ui_state: { state: UiStateReport };
   dev_sim_action: { action: SimAction };
   dev_sim_info: Record<string, never>;
 };
@@ -280,6 +324,22 @@ export type Results = {
   get_hints_shown: string[];
   mark_hint_shown: string[];
   reset_hints_shown: string[];
+  list_auto_backups: AutoBackupsView;
+  pin_auto_backup: AutoBackupsView;
+  get_recovery: RecoveryView;
+  keep_current_settings: RecoveryView;
+  prepare_recovery: RestorePreview;
+  get_background_settings: BackgroundSettingsView;
+  set_background_settings: BackgroundSettingsApplied;
+  get_profile_names: ProfileNamesView;
+  set_profile_names: ProfileNamesView;
+  get_auto_profile_state: AutoProfileStateView;
+  set_auto_profile_rules: AutoProfileStateView;
+  pause_auto_profile: AutoProfileStateView;
+  list_running_programs: ProgramView[];
+  pick_game_program: ProgramView | null;
+  detect_next_program: ProgramView | null;
+  report_ui_state: null;
   dev_sim_action: SimInfo;
   dev_sim_info: SimInfo;
 };
@@ -300,7 +360,8 @@ export type ProgressCommand =
   | "apply_socd_edit"
   | "export_profile"
   | "prepare_import"
-  | "apply_import";
+  | "apply_import"
+  | "prepare_recovery";
 
 /** A progress listener. */
 export type OnProgress = (event: ProgressEvent) => void;
@@ -425,6 +486,36 @@ export const api = {
   getHintsShown: () => call("get_hints_shown", {}),
   markHintShown: (hint: string) => call("mark_hint_shown", { hint }),
   resetHintsShown: () => call("reset_hints_shown", {}),
+  /** The automatic backups of the keyboard read last (else every keyboard's), newest first. */
+  listAutoBackups: () => call("list_auto_backups", {}),
+  /** Keeps (`pinned`) or no longer keeps an automatic backup; a pinned one is never deleted. */
+  pinAutoBackup: (file: FileToken, pinned: boolean) => call("pin_auto_backup", { file, pinned }),
+  /** The Recovery card (no keyboard traffic); refetch on `reset_suspected`, `firmware_changed` and status changes. */
+  getRecovery: () => call("get_recovery", {}),
+  /** "It's fine, keep them": the held reads become the automatic backups (every held profile when empty). */
+  keepCurrentSettings: (profiles: number[]) => call("keep_current_settings", { profiles }),
+  /** Compares automatic backups with the keyboard (one per profile; several are composed); `applyRestore` writes the plan. */
+  prepareRecovery: (intent: RecoveryIntent, onProgress: OnProgress) =>
+    callWithChannel("prepare_recovery", { intent }, "progress", onProgress),
+  getBackgroundSettings: () => call("get_background_settings", {}),
+  /** Saves the background settings; the result says what the shell changed (tray, start with Windows). */
+  setBackgroundSettings: (settings: BackgroundSettingsIntent) => call("set_background_settings", { settings }),
+  getProfileNames: () => call("get_profile_names", {}),
+  setProfileNames: (names: ProfileNamesIntent) => call("set_profile_names", { names }),
+  /** Settings > Games: the rules, the live status line and the recent activity (no keyboard traffic). */
+  getAutoProfileState: () => call("get_auto_profile_state", {}),
+  /** Replaces the per-game rules (programs by token, by typed file name, or kept from the rule with the same id). */
+  setAutoProfileRules: (rules: AutoProfileRulesIntent) => call("set_auto_profile_rules", { rules }),
+  /** Pauses (`true`) or resumes the automatic profiles for this run. */
+  pauseAutoProfile: (paused: boolean) => call("pause_auto_profile", { paused }),
+  /** The running programs, each with a token for a rule. */
+  listRunningPrograms: () => call("list_running_programs", {}),
+  /** The open dialog for a program (`*.exe`); `null` when cancelled. */
+  pickGameProgram: (dialog: DialogText) => call("pick_game_program", { dialog }),
+  /** Resolves with the next program that comes to the front within 30 s, else `null`. */
+  detectNextProgram: () => call("detect_next_program", {}),
+  /** Tells the backend about drafts and this run's vendor-site acknowledgement (send on every change; reset by `subscribe`). */
+  reportUiState: (state: UiStateReport) => call("report_ui_state", { state }),
 };
 
 /**

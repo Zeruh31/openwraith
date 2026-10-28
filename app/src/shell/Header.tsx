@@ -1,6 +1,7 @@
 // The header: app name, the connection pill (with a details popover), the
-// "Live" pill of the key-depth view, the busy indicator and the profile
-// switcher.
+// "Live" pill of the key-depth view, the "Auto" chip of a game rule, the
+// busy indicator and the profile switcher (with the local profile names,
+// "Profile 2 · FPS").
 
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -19,12 +20,14 @@ import { hasTabs, href, navigate, tabTarget } from "../routes";
 import { useAppInfo } from "../state/appInfo";
 import { useDraftEntries, type DraftInfo } from "../state/drafts";
 import { isLocked, useOperationLock } from "../state/operation";
+import { profileLabel, useProfileNames } from "../state/profileNames";
 import { useStatus } from "../state/status";
 import { toast } from "../state/toasts";
 import { readAgain, reconnect, release } from "./actions";
 import { toggleDevSimPanel, useDevSimPanelOpen } from "./DevSimPanel";
 import { tabLabel } from "./PageTabs";
 import { canConnect, connectionSummary } from "./statusText";
+import { useReadBlockedReason } from "../state/operation";
 
 /** OpenWraith's mark (original artwork: a keycap with an open ring). */
 export function AppLogo({ size = 28 }: { size?: number | undefined }) {
@@ -62,6 +65,8 @@ export function DeviceStatusPill() {
   const format = useFormat();
   const status = useStatus();
   const lock = useOperationLock();
+  const readBlocked = useReadBlockedReason();
+  const names = useProfileNames();
   const [open, setOpen] = useState(false);
   const popoverId = useId();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -107,7 +112,9 @@ export function DeviceStatusPill() {
     key: "profile",
     label: dict.shell.popover.activeProfile,
     value:
-      status.active_profile === null ? dict.common.profileUnknown : dict.common.profile({ n: status.active_profile }),
+      status.active_profile === null
+        ? dict.common.profileUnknown
+        : profileLabel(dict, status.active_profile, names[status.active_profile - 1] ?? null),
   });
 
   const ready = status.connection.state === "ready";
@@ -136,6 +143,7 @@ export function DeviceStatusPill() {
                 size="sm"
                 icon="refresh"
                 disabled={lock.busy}
+                disabledReason={readBlocked}
                 onClick={() => {
                   setOpen(false);
                   readAgain();
@@ -201,10 +209,44 @@ export function LivePill() {
   const status = useStatus();
   if (!depthViewLive(status)) return null;
   return (
-    <a className="ow-live-pill" href={href(tabTarget("actuation", "depth"))} title={dict.shell.header.liveTitle}>
+    <a className="ow-live-pill" href={href(tabTarget("actuation", "depth"))}>
       <span className="ow-live-pill__dot" aria-hidden="true" />
       <span>{dict.shell.header.live}</span>
       <span className="sr-only">{dict.shell.header.liveTitle}</span>
+    </a>
+  );
+}
+
+/**
+ * "Auto" while a game rule holds the active profile, "Auto paused" while the
+ * game profiles are paused; both lead to Settings > Games.
+ */
+export function AutoChip() {
+  const dict = useDict();
+  const status = useStatus();
+  const names = useProfileNames();
+  const automation = status.automation;
+  const target = href(tabTarget("settings", "games"));
+  if (!automation.enabled) return null;
+  if (automation.paused !== null) {
+    return (
+      <a className="ow-auto-chip ow-auto-chip--paused" href={target}>
+        <span>{dict.shell.header.autoPaused}</span>
+        <span className="sr-only">{dict.shell.header.autoPausedTitle}</span>
+      </a>
+    );
+  }
+  const holding = automation.holding;
+  if (holding === null || (status.active_profile !== null && status.active_profile !== holding.profile)) return null;
+  const title = dict.shell.header.autoTitle({
+    label: holding.label,
+    profile: profileLabel(dict, holding.profile, names[holding.profile - 1] ?? null),
+  });
+  // The explanation is the link's name (read once); no tooltip repeats it.
+  return (
+    <a className="ow-auto-chip" href={target}>
+      <span>{dict.shell.header.auto}</span>
+      <span className="sr-only">{title}</span>
     </a>
   );
 }
@@ -230,6 +272,7 @@ export function BusyIndicator() {
 function switcherBlock(status: DeviceStatus, busy: boolean, dict: Dict): string | null {
   const blocked = dict.shell.header.switcherBlocked;
   if (busy) return blocked.busy;
+  if (status.paused_for_cli) return blocked.pausedForCli;
   switch (status.connection.state) {
     case "ready":
       return status.write_gate.allowed ? null : blocked.blocked;
@@ -259,6 +302,7 @@ export function ProfileSwitcher() {
   const status = useStatus();
   const lock = useOperationLock();
   const drafts = useDraftEntries();
+  const names = useProfileNames();
   const reasonId = useId();
   const [target, setTarget] = useState<number | null>(null);
   const opening = useRef(false);
@@ -281,12 +325,30 @@ export function ProfileSwitcher() {
         value={status.active_profile}
         disabled={(blocked !== null || lock.local) && target === null}
         describedBy={blocked === null ? undefined : reasonId}
-        options={[1, 2, 3, 4].map((n) => ({ value: n, label: <span className="ow-num">{n}</span> }))}
+        options={[1, 2, 3, 4].map((n) => {
+          const name = names[n - 1] ?? null;
+          return {
+            value: n,
+            label:
+              name === null ? (
+                <span className="ow-num">{n}</span>
+              ) : (
+                <>
+                  <span className="ow-num" aria-hidden="true">
+                    {n}
+                  </span>
+                  <span className="sr-only">{dict.shell.header.profileOptionNamed({ n, name })}</span>
+                </>
+              ),
+          };
+        })}
         onChange={open}
       />
       <span className="ow-switcher__label" id={reasonId}>
         {blocked ??
-          (status.active_profile === null ? dict.common.profileUnknown : dict.common.profile({ n: status.active_profile }))}
+          (status.active_profile === null
+            ? dict.common.profileUnknown
+            : profileLabel(dict, status.active_profile, names[status.active_profile - 1] ?? null))}
       </span>
       {target === null ? null : (
         <WriteFlow<ProfileSwitchPreview, ProfileSwitchReport>
@@ -299,6 +361,14 @@ export function ProfileSwitcher() {
           review={(plan) => (
             <div className="ow-stack">
               <p>{dict.shell.switcher.body}</p>
+              {status.automation.holding === null ? null : (
+                <p>
+                  {dict.shell.switcher.autoHolds({
+                    label: status.automation.holding.label,
+                    n: status.automation.holding.profile,
+                  })}
+                </p>
+              )}
               {plan.save_wait_ms > 0 ? (
                 <p>{dict.shell.switcher.saveWait({ seconds: format.seconds(plan.save_wait_ms) })}</p>
               ) : null}
@@ -373,6 +443,7 @@ export function Header() {
       <DeviceStatusPill />
       <div className="ow-header__spacer" />
       <LivePill />
+      <AutoChip />
       <BusyIndicator />
       <ProfileSwitcher />
     </header>

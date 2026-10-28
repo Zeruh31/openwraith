@@ -69,6 +69,11 @@ export function useVendorTick(): VendorTick {
   return { required: !state.vendorAcknowledged, episode: state.episode, acknowledge: acknowledgeVendor };
 }
 
+/** Calls `listener` after every change of the acknowledgement; returns the unsubscribe function. */
+export function subscribeSession(listener: () => void): () => void {
+  return sessionStore.subscribe(listener);
+}
+
 /** Whether the next write needs the vendor tick (outside React, at call time). */
 export function vendorTickRequired(): boolean {
   return !sessionStore.get().vendorAcknowledged;

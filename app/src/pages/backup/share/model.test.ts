@@ -6,19 +6,22 @@ import { describe, expect, it } from "vitest";
 
 import { DICTIONARIES } from "../../../i18n";
 import { makeFormat } from "../../../i18n/format";
-import type { ImportSummaryView, RestoreReportView } from "../../../ipc/bindings";
+import type { AutoBackupEntry, ImportSummaryView, RestoreReportView } from "../../../ipc/bindings";
 import { FIXTURES } from "../../../preview/registry";
 import { tallyReport } from "../model";
 import { restoreHeadline, skipReasonText } from "../texts";
 import { criticalTexts } from "./ImportFlow";
 import {
+  automaticOptionText,
   buildExportIntent,
   buildImportIntent,
   builtinOf,
   chosenParts,
+  defaultExportInclude,
   defaultFrom,
   defaultInto,
   editProblemText,
+  exportFileProfile,
   exportLabel,
   exportNeedsSwitch,
   importSwitches,
@@ -68,7 +71,7 @@ describe("parts", () => {
   it("lists the parts in words, in list order", () => {
     const parts = chosenParts({ ...noParts(), socd: true, triggers: true });
     expect(parts).toEqual(["triggers", "socd"]);
-    expect(partsText(parts, en)).toBe("Actuation and Rapid Trigger; SOCD key pairs");
+    expect(partsText(parts, en)).toBe("Actuation & Rapid Trigger; SOCD key pairs");
     expect(partsText(parts, tr)).toBe("Aktivasyon ve Rapid Trigger; SOCD tuş çiftleri");
   });
 });
@@ -128,16 +131,80 @@ describe("intents", () => {
     expect(other).toMatchObject({ from: 3, allowed_critical_keys: [24, 116], confirmed_switches: [] });
   });
 
-  it("builds the export intent from the keyboard, with a trimmed name or none", () => {
-    expect(buildExportIntent({ profile: 3, name: "  Tournament ", destination: "f-2", confirmedSwitch: true })).toEqual({
+  it("builds the export intent from the keyboard, with a trimmed name or none and the chosen parts", () => {
+    const include = defaultExportInclude();
+    const intent = buildExportIntent({
+      profile: 3,
+      name: "  Tournament ",
+      destination: "f-2",
+      confirmedSwitch: true,
+      file: null,
+      include,
+    });
+    expect(intent).toEqual({
       source: { source: "keyboard" },
       profile: 3,
       label: "Tournament",
       destination: "f-2",
       confirmed_switch: true,
+      include: { triggers: true, lighting: true, keys: true, dead_band: false, socd: false },
     });
+    expect(intent.include).not.toBe(include);
     expect(exportLabel("   ")).toBeNull();
     expect(exportLabel("")).toBeNull();
+  });
+
+  it("starts an export with everything but the dead band and the SOCD key pairs", () => {
+    expect(chosenParts(defaultExportInclude())).toEqual(["triggers", "lighting", "keys"]);
+    // A fresh object every time (the page's state starts from it).
+    expect(defaultExportInclude()).not.toBe(defaultExportInclude());
+  });
+
+  it("takes the profile from a backup file without the keyboard, and never with a switch consent", () => {
+    const intent = buildExportIntent({
+      profile: 2,
+      name: "",
+      destination: "f-3",
+      confirmedSwitch: true,
+      file: "f-auto",
+      include: withPart(noParts(), "socd", true),
+    });
+    expect(intent).toEqual({
+      source: { source: "file", file: "f-auto" },
+      profile: 2,
+      label: null,
+      destination: "f-3",
+      confirmed_switch: false,
+      include: { triggers: false, lighting: false, keys: false, dead_band: false, socd: true },
+    });
+  });
+
+  it("offers a backup file's active profile first, else its first", () => {
+    expect(exportFileProfile({ profiles: [1, 2, 3, 4], active_profile: 3 })).toBe(3);
+    expect(exportFileProfile({ profiles: [4, 2], active_profile: 1 })).toBe(2);
+    expect(exportFileProfile({ profiles: [2], active_profile: null })).toBe(2);
+    expect(exportFileProfile({ profiles: [], active_profile: 1 })).toBeNull();
+  });
+
+  it("names an automatic backup by profile, time and reason", () => {
+    const entry: AutoBackupEntry = {
+      file: { token: "f-1", file_name: "x.owbackup.json", display_path: "C:/x.owbackup.json" },
+      profile: 2,
+      product: "W75HEARGB",
+      created_at: "2026-10-24T07:30:05Z",
+      reason: "changed_elsewhere",
+      pinned: false,
+    };
+    const text = automaticOptionText(entry, en, fmtEn);
+    expect(text).toBe(
+      en.backupRestore.share.export.automaticOption({
+        n: 2,
+        date: fmtEn.dateTimeSeconds("2026-10-24T07:30:05Z"),
+        reason: en.backupRestore.autoBackups.reasons.changed_elsewhere,
+      }),
+    );
+    expect(text).toContain("Profile 2");
+    expect(automaticOptionText(entry, tr, fmtTr)).toContain(tr.backupRestore.autoBackups.reasons.changed_elsewhere);
   });
 });
 
@@ -203,6 +270,18 @@ describe("texts", () => {
     const reason = { code: "keymap_group_blocked", cause: { code: "critical_fn_override", index: 24 } } as const;
     expect(skipReasonText(reason, en, fmtEn, "import")).toMatch(/^Key assignments, macros and advanced keys can only be imported together/u);
     expect(skipReasonText(reason, en, fmtEn)).toMatch(/can only be restored together/u);
+    // "Not imported" names every replaced shortcut by name, not the first by number.
+    const keys = [
+      { index: 24, name: "2" },
+      { index: 116, name: "Space" },
+    ];
+    const both = skipReasonText(reason, en, fmtEn, "import", keys);
+    expect(both).toContain("Fn + 2 and Fn + Space");
+    expect(both).not.toMatch(/key number|24|116/u);
+    expect(skipReasonText(reason, tr, fmtTr, "import", keys)).toContain("Fn + 2 ve Fn + Boşluk");
+    // Without the review's list, the cause's own key is still named.
+    expect(skipReasonText(reason, en, fmtEn, "import")).toContain("Fn + 2");
+    expect(skipReasonText(reason, en, fmtEn, "import")).not.toContain("key number");
     const report = recordedImportReport();
     const tally = tallyReport(report);
     expect(restoreHeadline(report, tally, en, "import")).toBe(en.backupRestore.share.result.headline.done({ n: tally.total }));

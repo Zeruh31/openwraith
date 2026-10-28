@@ -5,7 +5,9 @@ them opens a HID device. The commands that write have therefore only been
 checked against the simulator. This checklist is run **by hand** on a real
 Wraith W75, in order: H0-H11 for the Phase 2 writes, H12-H25 for the v0.2
 editors of the CLI, H26-H27 for the fixes made after them, A1-A10 for the
-desktop app, A11-A22 for its v0.2 editors. Record the full output of every command (add `--verbose` for
+desktop app, A11-A22 for its v0.2 editors, A23-A35 for what runs in the
+background (tray, notifications, automatic backups, recovery, game
+profiles, the device lock shared with the CLI). Record the full output of every command (add `--verbose` for
 session statistics) and keep every file it writes.
 
 File names below are examples; use your own. `openwraith` is
@@ -876,9 +878,11 @@ the SOCD push. So far these screens have run only against the simulator and
 recorded fixtures. The tests are ordered from the lowest risk up.
 
 Build with `pwsh tools/release-build.ps1`, then install
-`target\release\bundle\nsis\OpenWraith_0.1.0_x64-setup.exe` (it replaces
-the A1 install; the version number is still 0.1.0, the new build is the one
-with a **Keys** page) or run `target\release\openwraith-app.exe`. Same
+`target\release\bundle\nsis\OpenWraith_0.2.0_x64-setup.exe` (it replaces
+the A1 install; Settings > About shows 0.2.0, the build with the **Keys**
+page) or run `target\release\openwraith-app.exe`. A11-A35 run on this same
+0.2.0 install; older installers (0.1.0) may still be in
+`target\release\bundle\nsis`, do not take one of them. Same
 preconditions as above (vendor site closed, cable, one keyboard); never run
 the CLI while the app is open. To see every screen of this section first
 without the keyboard, run the preview (`npm --prefix app run dev:preview`,
@@ -1106,6 +1110,512 @@ misbehaves, close it and run `openwraith restore a11-start.owbackup.json`.
   sentence is read after a change) and Key depth with "Announce the depth"
   (at most four times a second). Write nothing; **Discard** the drafts.
   Record what Narrator reads and anything it skips.
+
+## Background agent, recovery and game profiles (A23-A35, Phase 5b-2)
+
+Version 0.2.0 adds what runs around the editors: the notification-area
+(tray) icon, close to tray, start with Windows, Windows notifications,
+automatic backups with reset detection and the Recovery card, profiles
+that follow the game in front, local profile names, and the device lock
+with which the app and the CLI take turns. None of it adds a write: a
+recovery is the standard restore with its review, an automatic switch is
+the profile select (`21/12`) followed by reads, and automatic backups
+reuse the reads the app makes anyway. So far all of it ran only on the
+simulator, with recorded fixtures and in unit tests of its Windows parts;
+the icon, the notifications, the Run entry, the foreground watcher and the
+lock against a real CLI have never run. The tests go from the lowest risk
+up; the deliberate factory reset (A35) comes last.
+
+Build with `pwsh tools/release-build.ps1` (the installer
+`target\release\bundle\nsis\OpenWraith_0.2.0_x64-setup.exe`) and
+`cargo build --release` (the CLI). `openwraith --version` must print
+0.2.0: an older CLI does not know the device lock, and A29, A32 and A33
+run CLI commands while the app is open **on purpose**. Everywhere else the
+rule of A1-A22 stays: run the CLI only with the app closed, and close it
+with **Quit** in the icon's menu (once the icon is on, closing the window
+only hides it). A23 installs 0.2.0 over 0.1.0 (and says how to get back
+to 0.1.0 first when A11 already installed 0.2.0); the 0.1.0 installer in
+`target\release\bundle\nsis` serves only as the starting point of that
+upgrade. Same preconditions as above (vendor site closed, cable, one
+keyboard), except A33, which opens the site on purpose.
+
+Profile 4 is the spare profile (the edits, the game rule's profile),
+profile 1 the default profile the game rule returns to, profile 3 the
+manual choice of A30; profiles 1-3 are only switched to, except one key
+on profile 1 in A30 (step 4, undone at once).
+Every write opens its review (tick "Every wraith.software tab is closed",
+the write button arms after half a second, Enter never writes) and its
+report has **Undo…**. The rollback point of the whole section is
+`before-a23.owbackup.json` (A23); A35 takes its own backup right before the
+reset.
+
+Where to look (`%LOCALAPPDATA%` = `C:\Users\<you>\AppData\Local`,
+`%APPDATA%` = `C:\Users\<you>\AppData\Roaming`):
+
+| What | Where |
+|---|---|
+| The installed app | `%LOCALAPPDATA%\OpenWraith\openwraith-app.exe` |
+| Settings | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` |
+| Automatic backups | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good\unidentified\profile-N\`, with `pinned.json`; `known-good\unidentified\recovery\` holds the backups composed for "Restore all profiles". `unidentified`: the W75 reports no USB serial number, so every W75 on this PC shares the folder |
+| Automation log | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\automation.log` |
+| Device lock | `%LOCALAPPDATA%\OpenWraith\device.lock`; `device.lock.json` next to it while a program holds it |
+| Safety backups | `%LOCALAPPDATA%\OpenWraith\safety-backups` (never deleted) |
+| Start with Windows | `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v OpenWraith` |
+
+Windows notifications: turn Do not disturb off for this section. OpenWraith
+shows at most one notification of each kind every 10 minutes; Recent
+activity on Settings > Games, the in-app toasts (while the window is open)
+and the banners show every event. A click counts only while the
+notification is on screen; from the notification centre it may only bring
+the window up (record what it does). Each test below that shows a
+notification clicks it once; where a click must lead:
+
+| Notification | A click opens |
+|---|---|
+| "OpenWraith is still running" (the first close to the icon) | the window |
+| "Profile N is active" (a game switched; only with "Tell me when a game switches the profile") | Settings > Games |
+| "A profile switch is waiting", "A profile switch was skipped", "Game profiles paused" | Settings > Games |
+| "The keyboard was reset" | the Keyboard page, with the reset banner |
+| "Profile N looks reset", "The keyboard's firmware changed" | Backup & profiles, Recovery card |
+| "Automatic backup failed" | Backup & profiles, at Automatic backups |
+
+- **A23. Install 0.2.0 over 0.1.0; defaults and the first automatic
+  backups (nothing written).** Start from 0.1.0: either the A1 install,
+  or, when A11 already installed 0.2.0, **Quit** it, uninstall it
+  (Windows Settings > Apps; leave **Delete the application data**
+  unticked), rename `%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good`
+  to `known-good-a11` (so that A23 starts without automatic backups) and
+  install `target\release\bundle\nsis\OpenWraith_0.1.0_x64-setup.exe`. In
+  0.1.0 set the theme (or the language) to a value you will recognise, a
+  setting the upgrade must keep, then close it. Copy `settings.json` aside
+  as `settings-0.1.0.json`. Then:
+
+  ```text
+  openwraith backup --all-profiles -o before-a23.owbackup.json
+  ```
+
+  1. Run `OpenWraith_0.2.0_x64-setup.exe`. When it reports an older
+     version, keep its default **Uninstall before installing**; in the old
+     version's uninstaller that opens, leave **Delete the application
+     data** unticked (it would delete the settings and, from 0.2.0 on, the
+     automatic backups). Pass: Windows Settings > Apps lists one
+     OpenWraith, 0.2.0; the Start menu has one OpenWraith shortcut;
+     `%LOCALAPPDATA%\OpenWraith\` holds `openwraith-app.exe` and the
+     `safety-backups` folder with every file it had; `settings.json` is
+     still there.
+  2. Start OpenWraith from the Start menu. Pass: Settings > About shows
+     0.2.0; the theme (or language) you set is kept (the old file was
+     read, its new fields took their defaults): no "settings file" toast
+     and no `settings.invalid-*.json` next to `settings.json`. Settings >
+     Background: "Keep OpenWraith running in the notification area" off,
+     "Start OpenWraith with Windows" off and disabled ("Turn on the
+     notification-area icon first…"), "Tell me when the keyboard looks
+     reset…" on, "Tell me when a game switches the profile" off, "Back up
+     each profile automatically" on with 10 kept. Settings > Games: off.
+     No OpenWraith icon by the clock; the `reg query` above finds no
+     `OpenWraith` value.
+  3. Backup & profiles > Automatic backups lists one backup of the active
+     profile, reason "First read", and says that the keyboard reports no
+     serial number; **Show the folder** opens `known-good\unidentified`.
+     Switch to profiles 2, 3 and 4 in the header and back to 1. Pass: each
+     profile gets one "First read" backup; **Read again** (Keyboard page)
+     without a change adds no backup. Click **Pin** on profile 4's
+     backup: it shows "Pinned" and `profile-4\pinned.json` names its
+     file. No Recovery card and no Recovery banner anywhere.
+
+  Roll back: nothing was written to the keyboard. To go back to 0.1.0,
+  uninstall 0.2.0 (leave "Delete the application data" unticked), install
+  the 0.1.0 installer and put `settings-0.1.0.json` back as
+  `settings.json`.
+- **A24. A second start and profile names (nothing sent).**
+  1. With the app open, start it again from the Start menu, then run
+     `& "$env:LOCALAPPDATA\OpenWraith\openwraith-app.exe" --tray` in
+     PowerShell. Pass: both times the open window comes to the front; no
+     second window, no second `openwraith-app.exe` in Task Manager, and the
+     first app keeps its connection (no "Checking that no other program…"
+     again).
+  2. Settings > Profile names: "Work" for 1, "FPS" for 2, nothing for 3,
+     "Spare" for 4; **Save names**. Pass: "The names were saved."; the
+     header reads "Profile 1 · Work"; the connection popover and the
+     Keyboard page use the names; Profile 3 has none. The names are in
+     `settings.json` (`profile_names`), not on the keyboard: no safety
+     backup appeared.
+
+  Roll back: empty the four fields and **Save names** (the clean-up after
+  A35 does it).
+- **A25. The notification-area icon, close to tray and Quit.** Settings >
+  Background: turn on "Keep OpenWraith running in the notification area".
+  Pass: the OpenWraith icon appears by the clock (or under the arrow of
+  hidden icons); its tooltip reads "OpenWraith · Wraith W75 · Profile 1
+  (Work)"; "Start OpenWraith with Windows" can now be turned on.
+  1. Close the window (X). Pass: the window goes, the icon and the process
+     stay, and a notification "OpenWraith is still running … To quit,
+     choose Quit in the tray icon's menu." appears. Click it: the window
+     comes back. Close the window again: no second notification;
+     `settings.json` now has `"close_to_tray_explained": true`.
+  2. Left-click the icon. Pass: the window comes back on the page it
+     showed.
+  3. Backup & profiles > **Back up all four profiles…**, save
+     `a25.owbackup.json`, and while the lighting goes through the profiles
+     right-click the icon and choose **Quit**. Pass: the app does not quit;
+     the window comes to the front with the close guard; **Keep open** lets
+     the backup finish (back on profile 1, the file saved).
+  4. With the app idle, **Quit**. Pass: the icon and the process are gone.
+
+  Roll back: nothing was written (the backup only switched profiles and
+  back).
+- **A26. Start with Windows: the hidden start and the removal of the Run
+  value.** Start OpenWraith (the icon comes back: the setting is kept).
+  1. Settings > Background: turn on "Start OpenWraith with Windows". Pass:
+     no error under the switch; `reg query` shows `OpenWraith REG_SZ` with
+     the path of `openwraith-app.exe` followed by `--tray` (record it as it
+     is: the start entry library writes the path without quotes); Task
+     Manager > Startup apps lists OpenWraith as Enabled.
+  2. Sign out and sign in again. Pass: no window opens; the icon is there
+     and its tooltip names the keyboard and the profile (it connected and
+     read the keyboard while hidden); opening the window shows the
+     keyboard ready. Wait three minutes, then `reg query` again: the value
+     is still there (a start from the Run entry checks the entry only
+     after two minutes and never removes one the settings want).
+  3. Settings > Background: turn the notification-area icon off. Pass:
+     "Start OpenWraith with Windows" turns off and is disabled with its
+     reason; `reg query` finds no `OpenWraith` value; the icon goes; the
+     window stays open. Turn the icon on again (start with Windows stays
+     off) for the next tests.
+  4. Optional: turn start with Windows on, disable OpenWraith in Task
+     Manager > Startup apps, then turn start with Windows off and on again
+     in OpenWraith. Record what Task Manager shows afterwards (the start
+     entry library marks its own entry Enabled again when it is turned on)
+     and whether OpenWraith shows "Saved, but Windows didn't take the
+     change". Turn it off again.
+
+  Roll back: `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+  /v OpenWraith /f` removes a value left behind.
+- **A27. The icon's menu.** Quit and start the app again (a new run: the
+  vendor box was not ticked yet in this run). Right-click the icon. Pass: a
+  disabled first line "OpenWraith · Wraith W75 · Profile 1 (Work)",
+  Profile 1 (Work), Profile 2 (FPS), Profile 3, Profile 4 (Spare) with a
+  check on the active one, **Back up now**, **Open OpenWraith**, **Quit**;
+  no "Pause game profiles" (game profiles are off).
+  1. Choose **Profile 4**. Pass: the window opens on the Keyboard page
+     instead and the profile stays 1. Confirm the vendor site for this
+     run: Actuation > Key depth, tick the vendor box, **Start**, **Stop**
+     (nothing is stored). Close the window, choose **Profile 4**, then
+     **Profile 1**, then **Profile 4** in the icon's menu. Pass: the
+     keyboard switches each time (the lighting changes), the check mark and
+     the first line follow, and no safety backup appears (a switch changes
+     no setting).
+  2. Open Actuation, change W's actuation in the editor without writing
+     (a draft), close the window, choose **Profile 1**. Pass: the window
+     opens on the Keyboard page and the profile stays 4. **Discard** the
+     draft.
+  3. Choose **Back up now**. Pass: no switch; Automatic backups shows a new
+     backup of profile 4 with the reason "“Back up now” in the
+     notification area", or none when nothing changed since the newest one
+     (that one is kept).
+
+  Roll back: nothing was written.
+- **A28. Automatic backups after an edit, rotation, pinning, and export of
+  chosen parts (profile 4).** Settings > Background: set "Automatic
+  backups kept per profile" to **2**, **Save**. Profile 4 is active;
+  write down W's actuation (Actuation).
+  1. Set W to 1.20 mm, review and write, then **Read again** (Keyboard
+     page). Pass: Automatic backups shows "After a change made in
+     OpenWraith" for profile 4. Repeat with 1.30 mm and 1.40 mm (**Read
+     again** after each). Pass: profile 4 keeps its two newest unpinned
+     automatic backups plus the pinned "First read" of A23 (the list and
+     the folder agree); the safety-backups folder holds all three safety
+     backups of these writes besides every older one; nothing says
+     "looks reset".
+  2. Settings > Background > **Show automatic backups**. Pass: Backup &
+     profiles opens at the Automatic backups section.
+  3. Share a profile > Export: "Read the profile from" **The keyboard
+     now**, Profile 4, the default parts (Actuation & Rapid Trigger,
+     Lighting and key colours, Key assignments… ticked; Dead band and SOCD
+     key pairs unticked), name "A28", **Export profile 4…**, save
+     `a28-keyboard.owprofile.json`. Pass: no switch, "Profile file saved";
+     in Notepad the file's `note` ends with "Parts: triggers, lighting,
+     keys. Label: A28" and `"usb": null`.
+  4. Export again with **An automatic backup**: profile 4's pinned "First
+     read"; tick **Dead band**, untick **Key assignments, macros and
+     advanced keys**; save `a28-auto.owprofile.json`. Pass: the keyboard is
+     not touched (no lighting change, no consent); the note says "Parts:
+     triggers, lighting, dead band."; with every part unticked the export
+     button is disabled.
+  5. Import > **Open a profile file…** `a28-auto.owprofile.json`. Pass:
+     "What the file holds" says "Not in the file:" with the key
+     assignments and the SOCD key pairs. Close it without importing.
+
+  Roll back: Automatic backups, profile 4's pinned "First read" >
+  **Restore…**. Pass: the standard restore review (W 1.40 mm → the value
+  you wrote down); **Restore 1 change**: written, verified, kept. Set the
+  number kept back to **10**, **Save**.
+- **A29. The CLI and the app take turns (no game profiles yet).** The app
+  is open on the Keyboard page, idle, profile 4 active; run the commands in
+  a terminal next to it.
+  1. `openwraith monitor --duration 20s`. Pass: within about a second the
+     window shows the banner "An OpenWraith command is using the keyboard"
+     with "Command: monitor"; the header switcher says "An OpenWraith
+     command is running"; **Read again** is disabled with the reason; the
+     profiles in the icon's menu are disabled or open the window instead
+     of switching.
+     When the command has ended: the banner goes, the header shows
+     "Checking that no other program…" for about 2 s, then ready. No
+     "Another program is using the keyboard" banner at any point.
+  2. `openwraith profile select 1`, then `openwraith profile select 4`.
+     Pass: both run; after each the header and the icon's check mark show
+     the profile the CLI selected; no automatic backup is added (nothing
+     changed).
+  3. `openwraith set trigger W --actuation 1.20` (profile 4) and, while it
+     runs (or waits for your confirmation), look at the window: "Command:
+     set trigger". Pass: after the command, Actuation shows W at
+     1.20 mm; Automatic backups shows "Changed outside OpenWraith" for
+     profile 4; nothing looks reset.
+  4. A CLI command while the app writes: Backup & profiles > Safety backups,
+     the newest one (the CLI's, made before step 3) > **Restore…**, tick
+     the vendor box. Type `openwraith show triggers` in the terminal
+     without Enter, click **Restore 1 change**, then press Enter in the
+     terminal at once. Pass: the CLI stops at once with "the
+     OpenWraith app is writing; try again" and exit code 1, before opening
+     the keyboard; the restore finishes normally (kept after a profile
+     switch, no "another program" note); afterwards there is no
+     `device.lock.json` next to `device.lock`.
+
+  A command refused although the app was idle means it met the app's
+  once-a-second check of the lock: run it again and record how often that
+  happens. Roll back: step 4 undoes step 3; check W's value against A28.
+- **A30. A game rule with Notepad (profile 4).** Settings > Games: turn on
+  "Switch profiles automatically for games". Pass: the explanation dialog
+  opens with **Cancel** focused, **Turn on** stays disabled until "I
+  understand…" is ticked, and Enter does nothing. Tick it, **Turn on**.
+  Start Notepad, then **Add a game…** > **Choose a running program**:
+  Notepad is listed (Windows 11's Notepad as `notepad.exe` in its
+  `WindowsApps` folder); name it "Notepad", Profile 4, **Add game**. Set
+  "When a game closes" to go back to profile 1. In Settings > Background
+  turn on "Tell me when a game switches the profile". Close Notepad,
+  switch to profile 1 in the header and close the window.
+  1. Start Notepad (Windows + R, `notepad`) and keep it in front. Pass:
+     about 1.5 s later the keyboard switches to profile 4; a notification
+     "Profile 4 is active — Notepad is in front, so OpenWraith switched to
+     its profile." (click it: Settings > Games); the header shows the
+     **Auto** chip; Settings > Games says "Notepad is in front, with
+     Profile 4 …" and Recent activity lists the switch; `automation.log`
+     has a line with the rule's `rule_id`. Alt-tab away and back: no
+     second switch.
+  2. With Notepad in front, press Fn + 3. Pass: profile 3 stays; the Auto
+     chip goes; the line says you chose another profile and OpenWraith
+     leaves it until the game closes. Alt-tab away and back: still
+     profile 3. Close Notepad. Pass: profile 3 stays (your choice is never
+     switched away).
+  3. Start Notepad again (a new run of it): profile 4 after about 1.5 s.
+     Close Notepad. Pass: about 3 s later the keyboard is back on profile
+     1; Recent activity says "A game closed: back to Profile 1 …". (The
+     Windows notification for it appears only if the one of step 1 is
+     more than 10 minutes old.)
+  4. A write, then the game within a second: with Notepad closed and
+     profile 1 active, set Q's actuation 0.10 mm away from its value
+     (Actuation), **Review and write…**, tick the vendor box, click
+     **Write to keyboard** and at once press Windows + R, `notepad`, Enter.
+     Pass: the switch to profile 4 comes only after the write's report
+     ("OpenWraith waited 2 s for the keyboard to save.") and a further
+     2 s settle; Recent activity may first say the switch waited because
+     another operation was running. Close Notepad (back to profile 1). Pass: Q has the new
+     value after **Read again** (the write was kept). **Undo…** it.
+  5. Optional, a program run as administrator: start Registry Editor
+     (`regedit`; change nothing), add it with **Choose a running program**
+     to profile 4. Pass: with it in front for two seconds the keyboard is
+     on profile 4. If you have a game with a kernel anti-cheat, add it and
+     record the line of Settings > Games while it is in front ("Watching
+     for your games." means it could not be identified) and that nothing
+     else happened. Remove these rules afterwards.
+
+  Roll back: switches only, and the Undo of step 4. Keep the Notepad rule
+  for A31-A33.
+- **A31. Switches that wait: unwritten changes, an open review, the key
+  depth view, the pause.** Notepad closed, profile 1 active, the window
+  open.
+  1. Unwritten changes: on Actuation change W in the editor (a draft), do
+     not write, start Notepad. Pass: no switch; a notification "A profile
+     switch is waiting — Notepad uses profile 4, but OpenWraith has
+     unwritten changes…"; Settings > Games says the switch waits because
+     there are unwritten changes. Back in OpenWraith, **Discard** the
+     draft within 30 s, then click into Notepad: the switch happens. Close
+     Notepad (profile 1 again). Repeat, but leave the draft for 30 s
+     instead. Pass: "A profile switch was skipped" (in the app; as a
+     Windows notification only if none was shown in the last 10 minutes)
+     and no switch until Notepad is closed and started again. Discard the
+     draft, close Notepad.
+  2. An open review: change W again, **Review and write…**, leave the
+     review open and start Notepad. Pass: no switch; Recent activity says
+     the switch waited because a change is open for review (no Windows
+     notification for this reason). Within 30 s click into OpenWraith,
+     **Cancel** the review, **Discard** the draft and click into Notepad:
+     the switch happens. Close Notepad.
+  3. The key-depth view: Actuation > Key depth, tick the vendor box,
+     **Start**; leave the window as it is (not minimised) and start
+     Notepad. Pass: no switch while **Live** shows; Recent activity says
+     the key-depth view is running. Within 30 s click into OpenWraith,
+     **Stop**, click into Notepad: the switch happens. Close Notepad.
+  4. The pause: in the icon's menu (now with "Pause game profiles"),
+     choose it. Pass: it is checked; the header shows "Auto paused" (no
+     banner); Notepad started now does not switch. Close Notepad, choose
+     the item again (unchecked), start Notepad: it switches. Close
+     Notepad.
+
+  Roll back: nothing was written (every draft discarded).
+- **A32. A CLI command while the app is in the notification area.** The
+  Notepad rule is on, profile 1 active, Notepad closed, the window closed.
+  1. In a terminal run `openwraith monitor --duration 10s` and at once
+     start Notepad (Windows + R). Pass: no switch while the command runs
+     (open the window: the CLI banner; Recent activity: the switch waits
+     because an OpenWraith command is using the keyboard). A few seconds
+     after the command has ended the keyboard switches to profile 4: the
+     app re-armed by itself (no "check again", no two-minute wait after
+     its own CLI). Close Notepad (back to profile 1).
+  2. Start Notepad (profile 4), click into the terminal and run
+     `openwraith profile select 2`. Pass: after the command the header
+     shows profile 2 and the Auto chip is gone (the CLI's choice counts as
+     yours). Close Notepad. Pass: profile 2 stays. Switch to profile 1 in
+     the header.
+
+  Roll back: switches only.
+- **A33. The vendor site in a background tab.** This test opens
+  wraith.software on purpose; do nothing on the site but connect. The
+  Notepad rule is on, the icon on, profile 1 active, Notepad closed.
+  1. Open wraith.software, connect the keyboard there, then switch the
+     browser to another tab (the site's tab stays open). Pass: OpenWraith
+     shows "Another program is using the keyboard"; the icon turns to its
+     attention look with "Another program was using the keyboard — check
+     again" in its menu. Start Notepad and keep it in front for a minute.
+     Pass: no switch; after 30 s "A profile switch was skipped …: another
+     program was using the keyboard." (in the app, and as a Windows
+     notification unless one was shown in the last 10 minutes). Close
+     Notepad.
+  2. Close the site's tab and the browser window. In OpenWraith choose "I
+     closed it, check again" and note the time. Start Notepad at once.
+     Pass: no switch while the site was heard less than 2 minutes ago
+     (the line says another program used the keyboard less than 2 minutes
+     ago); skipped after 30 s. Close Notepad, wait until 2 minutes have
+     passed since you closed the site, start Notepad again: the switch to
+     profile 4 happens. Close Notepad (profile 1).
+  3. The automatic re-arm (icon on): connect the site again, close its tab
+     and the browser window, but do **not** choose "check again"; close
+     OpenWraith's window and leave the keyboard untouched for 3 minutes.
+     Then start Notepad (with the mouse). Pass: the switch to profile 4
+     happens (game profiles re-arm after 180 s of silence); the window
+     still shows
+     "Another program is using the keyboard" and a write is still refused
+     until "I closed it, check again". Close Notepad (back to profile 1).
+     Then choose "Another program was using the keyboard — check again"
+     in the icon's menu: the app checks again and is ready.
+
+  Roll back: switches only; the site was not used to change anything (A8
+  showed that a connected, untouched site writes nothing). The final
+  compare after A35 covers it.
+- **A34 (optional). Narrator on Settings > Games.** With Narrator on:
+  the switch and its explanation dialog (Cancel focused, the tick, "Turn
+  on"), the live line (read when it changes; start Notepad), the table at
+  full width and as cards (make the window as narrow as it goes), the
+  profile menus and switches of the rows, **Add a game…** (the running
+  programs, the typed name, "Detect the next program I open" with its
+  countdown and "Stop waiting"), Recent activity and "How it works". Record
+  what is read and anything skipped. Write nothing.
+- **A35. Recovery after a deliberate factory reset (Fn + Space).** The
+  highest risk of the section: what the reset clears beyond the active
+  profile is open (Q4), so all four profiles are backed up first and the
+  app must only **offer** a restore. Settings > Games: turn game profiles
+  off.
+  1. Preparation. On profile 4 make two visible changes so that it
+     differs from the factory settings: W to 1.00 mm with Rapid Trigger
+     0.30 mm, and the effect to Static (write both), then **Read again**.
+     Switch to profiles 1, 2 and 3 in the header and back to 4: every
+     profile's newest automatic backup now matches the keyboard (nothing
+     says "looks reset"). **Quit**, then
+
+     ```text
+     openwraith backup --all-profiles -o before-a35.owbackup.json
+     ```
+
+     and start OpenWraith again (it reads profile 4: no new automatic
+     backup, nothing reset).
+  2. The reset. On profile 4 hold Fn + Space for 5 s. Pass: at once the
+     header and a banner say "The keyboard reset itself", writing is
+     paused; the icon turns to its attention look with "Keyboard reset —
+     review…"; a notification "The keyboard was reset — It reported a
+     reset (Fn + Space held). OpenWraith never restores anything without
+     asking." Click it: the window opens on the Keyboard page with the
+     banner "Read the keyboard again" / "Restore a backup…". Record the
+     keyboard's lighting and active profile now.
+  3. Nothing by itself: leave the app alone for two minutes. Pass: no
+     review opens, no safety backup appears in the folder, no automatic
+     backup is added, the keyboard stays as the reset left it.
+  4. **Restore a backup…** (or "Keyboard reset — review…" in the icon's
+     menu). Pass: Backup & profiles with the Recovery card focused: the
+     reset report with its time, "OpenWraith never restores anything
+     without asking.", the note that the keyboard reports no serial
+     number, and **It's fine, keep them** disabled ("Reconnect and compare
+     first."). Optional: the Narrator pass of the card now (the title,
+     the evidence list, the profile rows, the disabled button's reason).
+  5. **Reconnect and compare**. Pass: the active profile is read and,
+     when the reset changed it, the card says "Profile N looks reset"
+     with why (the reset report; Actuation and Rapid Trigger back to the
+     factory settings, …), "At the factory settings now: …", the
+     automatic backup it was compared with and its age; a notification
+     "Profile N looks reset" (click it: the Recovery card); the Recovery
+     banner on the other pages. Still nothing written: no safety backup.
+  6. Switch in the header to each other profile (the card says which were
+     not compared yet). Pass: each one is compared when read; record which
+     profiles look reset and which match their automatic backup (this
+     answers Q4).
+  7. **Restore all profiles…** > tick the vendor box > **Switch and
+     compare**. Pass: the review "Restore profiles 1, 2, 3 and 4 from their
+     automatic backups?" lists, per profile, only what the reset changed
+     (on profile 4, for example, W from its factory 1.70 mm back to
+     1.00 mm with Rapid Trigger 0.30 mm, and the effect back to Static;
+     profiles that match have nothing to write; the SOCD power at most
+     once); **Restore N changes** is armed after half a second and Enter
+     does nothing. Click it. Pass: every item written,
+     verified and kept after a profile switch; the keyboard back on the
+     profile it was on; the card no longer lists a profile that looks
+     reset, and once every profile with automatic backups was compared,
+     the banner and the icon's attention go by themselves;
+     `known-good\unidentified\recovery\` holds the composed backup.
+  8. Final compare. **Quit**, then
+
+     ```text
+     openwraith backup --all-profiles -o after-a35.owbackup.json
+     openwraith restore before-a35.owbackup.json --dry-run --against after-a35.owbackup.json
+     ```
+
+     Pass: nothing to write in any of the four profiles (the keyboard-wide
+     SOCD power included).
+
+  Roll back: if the dry run lists anything, or a step above failed,
+  `openwraith restore before-a35.owbackup.json` and record the report.
+  Variant, only if time allows: reset again, compare, and choose **It's
+  fine, keep them**. Pass: "OpenWraith keeps the current settings as they
+  are.", "Kept after a possible reset" backups appear, nothing is written;
+  then `openwraith restore before-a35.owbackup.json` with the app closed.
+
+Clean-up after A35 (app open): Settings > Games off and every rule
+removed; Settings > Profile names emptied (**Save names**); Settings >
+Background: the icon off (start with Windows goes with it; `reg query`
+finds nothing). **Quit**, then
+
+```text
+openwraith backup --all-profiles -o after-a23.owbackup.json
+openwraith restore before-a23.owbackup.json --dry-run --against after-a23.owbackup.json
+openwraith restore before-a23.owbackup.json
+```
+
+Pass: the dry run lists only the edits of A35's preparation on profile 4
+(W and the effect), and the last restore brings them back with a clean
+final check. Optional uninstall check: turn the icon and start with
+Windows on, **Quit**, uninstall OpenWraith (Windows Settings > Apps)
+without turning them off and leave "Delete the application data"
+unticked. Pass: the uninstaller leaves the `OpenWraith` Run value (as the
+README says), the safety backups and the automatic backups; delete the Run
+value by hand (Task Manager > Startup apps, or the `reg delete` of A26).
 
 ## Reporting
 

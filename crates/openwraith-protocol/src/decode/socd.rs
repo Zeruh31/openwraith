@@ -84,7 +84,7 @@ impl FromResponse for SocdPairs {
         let bytes = response.table_bytes("SOCD pairs")?;
         need(&bytes, "SOCD pairs", 80)?;
         let entries = (0u8..)
-            .zip(bytes.chunks_exact(4))
+            .zip(bytes.as_chunks::<4>().0.iter())
             .map(|(index, e)| SocdEntry {
                 index,
                 active: at(e, 0) == 1,

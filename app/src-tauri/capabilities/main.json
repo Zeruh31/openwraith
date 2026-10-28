@@ -68,6 +68,22 @@
     "allow-apply-import",
     "allow-get-hints-shown",
     "allow-mark-hint-shown",
-    "allow-reset-hints-shown"
+    "allow-reset-hints-shown",
+    "allow-list-auto-backups",
+    "allow-pin-auto-backup",
+    "allow-get-recovery",
+    "allow-keep-current-settings",
+    "allow-prepare-recovery",
+    "allow-get-background-settings",
+    "allow-set-background-settings",
+    "allow-get-profile-names",
+    "allow-set-profile-names",
+    "allow-get-auto-profile-state",
+    "allow-set-auto-profile-rules",
+    "allow-pause-auto-profile",
+    "allow-list-running-programs",
+    "allow-pick-game-program",
+    "allow-detect-next-program",
+    "allow-report-ui-state"
   ]
 }

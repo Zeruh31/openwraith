@@ -1,5 +1,7 @@
 // The root component: start-up (app facts, settings, event subscription),
-// then the app shell.
+// then the app shell. Route events (a click on a Windows notification or a
+// tray item) are followed from the start, so one sent while the app starts
+// opens its page once the shell is shown.
 
 import { useEffect, type ReactNode } from "react";
 
@@ -10,6 +12,7 @@ import { useDict } from "./i18n";
 import { restoreLastRoute } from "./routes";
 import { AppLogo } from "./shell/Header";
 import { AppShell } from "./shell/AppShell";
+import { startRouteEvents } from "./shell/routeEvents";
 import { boot, retryBoot, useBoot } from "./state/boot";
 
 /** Props of {@link App}. */
@@ -27,6 +30,8 @@ export function App({ devtools }: AppProps) {
     restoreLastRoute();
     void boot();
   }, []);
+
+  useEffect(() => startRouteEvents(), []);
 
   if (state.phase === "ready") {
     return <AppShell devtools={devtools} />;

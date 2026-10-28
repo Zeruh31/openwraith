@@ -26,6 +26,9 @@ pub(crate) enum FileKind {
     Safety,
     /// A destination the user chose for a new backup.
     Destination,
+    /// An automatic backup (the known-good store) or a composed recovery
+    /// backup.
+    Auto,
 }
 
 /// A known file.
@@ -67,12 +70,11 @@ impl FileRegistry {
             .entries
             .iter()
             .position(|(_, f)| f.path == path && f.kind == kind)
+            && let Some(entry) = self.entries.remove(pos)
         {
-            if let Some(entry) = self.entries.remove(pos) {
-                let reference = file_ref(entry.0.clone(), &entry.1.path);
-                self.entries.push_back(entry);
-                return reference;
-            }
+            let reference = file_ref(entry.0.clone(), &entry.1.path);
+            self.entries.push_back(entry);
+            return reference;
         }
         let token = mint.file();
         let reference = file_ref(token.clone(), &path);
@@ -193,6 +195,24 @@ pub(crate) fn safety_entry(
         reason: safety_reason(&name.reason),
         modified_at: modified.map(rfc3339_utc),
     }
+}
+
+/// The final path of a chosen program file (links, junctions and SUBST
+/// drives resolved, as Windows reports a running program's image), without
+/// the `\\?\` prefix; `path` itself when it cannot be resolved.
+pub(crate) fn canonical_program_path(path: &std::path::Path) -> std::path::PathBuf {
+    let Ok(resolved) = std::fs::canonicalize(path) else {
+        return path.to_path_buf();
+    };
+    let text = resolved.to_string_lossy();
+    let plain = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text.into_owned()
+    };
+    std::path::PathBuf::from(plain)
 }
 
 #[cfg(test)]

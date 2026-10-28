@@ -44,29 +44,53 @@ export interface SwitchProps {
   onChange: (checked: boolean) => void;
   label: ReactNode;
   disabled?: boolean | undefined;
+  /**
+   * Help under the label (the switch's accessible description), e.g. why it
+   * is disabled.
+   */
+  description?: ReactNode | undefined;
 }
 
 /** An on/off switch (`role=switch`). */
-export function Switch({ checked, onChange, label, disabled = false }: SwitchProps) {
+export function Switch({ checked, onChange, label, disabled = false, description }: SwitchProps) {
   const id = useId();
+  const button = (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      aria-describedby={description === undefined ? undefined : `${id}-d`}
+      className="ow-switch"
+      onClick={() => {
+        onChange(!checked);
+      }}
+    >
+      <span className="ow-switch__thumb" />
+    </button>
+  );
+  if (description === undefined) {
+    return (
+      <div className="ow-switch-row">
+        {button}
+        <label htmlFor={id} className="ow-switch__label">
+          {label}
+        </label>
+      </div>
+    );
+  }
   return (
-    <div className="ow-switch-row">
-      <button
-        id={id}
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        disabled={disabled}
-        className="ow-switch"
-        onClick={() => {
-          onChange(!checked);
-        }}
-      >
-        <span className="ow-switch__thumb" />
-      </button>
-      <label htmlFor={id} className="ow-switch__label">
-        {label}
-      </label>
+    <div className={`ow-switch-row ow-switch-row--described${disabled ? " ow-switch-row--disabled" : ""}`}>
+      {button}
+      <div>
+        <label htmlFor={id} className="ow-switch__label">
+          {label}
+        </label>
+        <p id={`${id}-d`} className="ow-muted ow-small">
+          {description}
+        </p>
+      </div>
     </div>
   );
 }

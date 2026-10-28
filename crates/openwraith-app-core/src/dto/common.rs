@@ -267,6 +267,9 @@ pub enum BackupKind {
 pub enum RevealTarget {
     /// The safety-backup folder.
     SafetyDir,
+    /// The automatic backups of the keyboard read last (else the whole
+    /// known-good store).
+    AutoBackupDir,
     /// The license files shipped with the app (`LICENSE.txt` and
     /// `THIRD-PARTY-NOTICES.txt` in its installation folder).
     LegalNotices,

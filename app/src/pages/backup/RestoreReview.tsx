@@ -42,6 +42,7 @@ import {
   skipReasonText,
   tableGroupName,
   triggerText,
+  type CriticalKey,
   type ReviewVariant,
 } from "./texts";
 
@@ -50,6 +51,9 @@ const LIST_LIMIT = 12;
 
 /** The flow the review belongs to (its sections read it for their words). */
 const VariantContext = createContext<ReviewVariant>("restore");
+
+/** The Fn shortcuts an import replaces (its "Not imported" row names every one). */
+const CriticalKeysContext = createContext<readonly CriticalKey[]>([]);
 
 /** The review's words that differ between a restore and an import. */
 function useReviewWords() {
@@ -304,13 +308,14 @@ function SkipRow({ item }: { item: SkipItem }) {
   const dict = useDict();
   const format = useFormat();
   const words = useReviewWords();
+  const criticalKeys = useContext(CriticalKeysContext);
   const cause = item.reason.code === "keymap_group_blocked" ? blockCauseTechnical(item.reason.cause) : null;
   return (
     <li className="br-item">
       <p className="br-item__title">
         <ItemName table={item.table} keyRef={item.key} />
       </p>
-      <p>{skipReasonText(item.reason, dict, format, words.variant)}</p>
+      <p>{skipReasonText(item.reason, dict, format, words.variant, criticalKeys)}</p>
       <TechnicalDetails>{cause === null ? item.message : `${item.message}\n${cause}`}</TechnicalDetails>
     </li>
   );
@@ -433,13 +438,19 @@ export interface RestoreReviewProps {
   preview: RestorePreview;
   /** An import of a profile file uses import words (default: a restore). */
   variant?: ReviewVariant | undefined;
+  /** The Fn shortcuts an import replaces, so that "Not imported" names every one. */
+  criticalKeys?: readonly CriticalKey[] | undefined;
 }
 
+const NO_KEYS: readonly CriticalKey[] = [];
+
 /** The restore review: what will change in each profile, and what won't. */
-export function RestoreReview({ preview, variant = "restore" }: RestoreReviewProps) {
+export function RestoreReview({ preview, variant = "restore", criticalKeys = NO_KEYS }: RestoreReviewProps) {
   return (
     <VariantContext value={variant}>
-      <ReviewBody preview={preview} />
+      <CriticalKeysContext value={criticalKeys}>
+        <ReviewBody preview={preview} />
+      </CriticalKeysContext>
     </VariantContext>
   );
 }
@@ -485,10 +496,12 @@ function ReviewBody({ preview }: { preview: RestorePreview }) {
 }
 
 /** "Nothing to write", with the warnings and what can't be restored. */
-export function RestoreNothing({ preview, variant = "restore" }: RestoreReviewProps) {
+export function RestoreNothing({ preview, variant = "restore", criticalKeys = NO_KEYS }: RestoreReviewProps) {
   return (
     <VariantContext value={variant}>
-      <NothingBody preview={preview} />
+      <CriticalKeysContext value={criticalKeys}>
+        <NothingBody preview={preview} />
+      </CriticalKeysContext>
     </VariantContext>
   );
 }

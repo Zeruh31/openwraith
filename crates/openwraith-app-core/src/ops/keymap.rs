@@ -733,6 +733,11 @@ impl<B: DeviceBackend> Worker<B> {
                     |p| progress.write(p),
                 );
                 w.remove_journal();
+                w.own_write_done(super::recovery::completed_cleanly(
+                    report.outcome,
+                    report.lost(),
+                    report.maybe_lost(),
+                ));
                 w.active_profile = report.active_profile_now;
                 // No read of the result after a reset, a lost connection or
                 // when another program was heard (it acts on our replies).

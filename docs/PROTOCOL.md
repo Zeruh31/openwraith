@@ -664,7 +664,7 @@ Commands: `0x0A`, `0x02`, `0x07`, `0x08`, `0x09`, `0x17`. No other lighting opco
 
 Captured records:
 
-- Main light at first connect (c01 +1135): `02 04 03 ff ff ff 00 00 00 00 01 00` = Wave, brightness 4, speed 3, white, bg black, direction 0, fullColor 1, power on. CONFIRMED. (Whether this is the factory state is not shown.)
+- Main light at first connect (c01 +1135): `02 04 03 ff ff ff 00 00 00 00 01 00` = Wave, brightness 4, speed 3, white, bg black, direction 0, fullColor 1, power on. CONFIRMED. (Whether the whole record is the factory state is not shown. Its first three bytes `02 04 03` are what c07 read right after the Fn + Space reset, the colour kept; reset detection uses only those three bytes as the factory form, section 6.12.)
 - Session 3 (CONFIRMED): connect read c14 #141 `0a 04 03 ff 30 97 00 00 00 00 01 00` (Custom, fg `ff3097`). Both `07 00` writes of the c17 colour edits (#2239 +342193, #2280 +354446) were `07 00 00 00 0e | 0a 04 03 00 00 ff 00 00 00 00 01 00 00 00`: mode `0x0A`, brightness 4, speed 3, **fg `0000ff` = the clicked swatch**, bg black, direction 0, fullColor 1, power on, 2 pad bytes. No reply. OpenWraith's later read returned exactly these 12 bytes. The site reads fg from its foreground label (`wmIndex.js:4928-4931`), which a colour pick repaints only while the Foreground radio is selected (`wmIndex.js:5363-5365`; with Background selected bg would change instead). So in Custom mode every picked colour also overwrites the effect's foreground. GUESS: in mode `0x0A` the keyboard shows the per-key table and ignores fg (not checked directly).
 - User change (c02 +137943): `0a 04 03 ff 00 00 00 00 00 00 01 00 00 00` = **mode `0x0A` = Custom (per-key)**, foreground red (the site's per-mode default colour), power on. The earlier draft called this "static red"; it is Custom mode showing a red per-key table (section 4.7.6).
 - Side record (c01 +1138): `02 04 03 ff 00 00 00 00 00 00 01 00`. The W75 answers `08 01` although it reports no side modes.
@@ -989,7 +989,7 @@ If min travel is 0 the site substitutes a unit-dependent value (CODE-ONLY). Read
 | 15 | row | echo of request byte 6 | OBSERVED (246/246) |
 | 16 | col | echo of request byte 7 | OBSERVED (246/246) |
 
-- As read on the W75: RT off, actuation 1.70 mm, sensitivity 0.02/0.02 mm on all 82 positions. Nothing shows that these are factory defaults.
+- As read on the W75: RT off, actuation 1.70 mm, sensitivity 0.02/0.02 mm on all 82 positions. c07 reads the same record (payload 1-9 `00 55 55 01 01 00 00 00 00`) on every key right after the Fn + Space reset, so this is the record the keyboard's reset leaves (OBSERVED); reset detection uses it as the factory form (section 6.12). Whether a keyboard leaves the factory with it is not shown.
 - The site sends one request per layout key and assigns replies **by arrival order** (one lost reply shifts every later key). Our app must match on the row/col echo.
 - The site's default for a fresh local profile differs: mode 0, travel floor(max/2) = 85, sensitivity 5/5 (`wmIndex.js:1055-1063, 4851-4861`).
 
@@ -1526,6 +1526,29 @@ Everything else is read from the keyboard: keymaps, bound macros, advanced keys,
 ### 6.11 Profile import/export
 
 None in v1 (CODE-ONLY): the only `JSON.parse` is the mirror loader; the only downloads are the music-rhythm plugin and the firmware tool. There is no site file format to stay compatible with.
+
+### 6.12 Factory forms (reset detection)
+
+OpenWraith's reset detection (`openwraith_hid::known_good`, design part B, B6) compares a fresh read of a profile with the last good read of the same profile and calls a changed table "changed to factory" only when the table now has one of the forms below and the good read did not. Every form is the keyboard's own read-back in a capture; none comes from the site's code or from a guess. A table without such evidence can only be "changed" (never "changed to factory").
+
+| Table (read) | Factory form | Evidence |
+|---|---|---|
+| Triggers (`21/05`, every key but the knob, index 15) | payload bytes 1-9 `00 55 55 01 01 00 00 00 00`: RT off, 1.70 mm, 0.02 / 0.02 mm (section 4.11) | c07: every key after the Fn + Space reset (row d of section 6.1); c11 (Reset Trigger, row 34 of section 3); c01 reads the same everywhere |
+| Main light (`07 01`) | payload bytes 0-2 `02 04 03` (Wave, brightness 4, speed 3); the colour and the later bytes are not part of the form | c07: `02 04 03 ff 00 00` after the reset, the colour kept (row d of section 6.1); c08 profiles 2-4 `02 04 03 ff 00 00 00 00 00 00 01 00` |
+| Custom colours 1 (`09 80`) | `ff0000` at slots 46, 68, 69, 70, 103, 124, 125, 126, `000000` at the other 124 slots | c01, before any change (section 4.7.6, "Observed contents") |
+| Base and Fn keymap (`18 80`, `18 82`) | all 528 bytes `00` | every capture up to c08 (section 4.8; c07's keyboard typed with all-zero tables) |
+| Macros (`19 80`-`19 89`) | every slot all `FF` (an all-`00` slot is the same empty slot to the keyboard and to a restore, but it is what the site writes, not the factory form) | every capture up to c09 (section 4.9) |
+| Advanced keys (`22 80`) | all 1600 bytes `00` | c01 +1008; profile 2 in c16 (section 4.14) |
+| Dead band (`26 00`) | all 264 bytes `00` | c01 +1736 (section 4.12) |
+| SOCD pairs (`24 01`) | all 80 bytes `00` | c16 #878/#879 and #1363/#1364 (section 4.15) |
+| SOCD power (`24 02` byte 0) | `00` (off) | every `24 02` read of c01-c16 (section 4.15) |
+
+Rules that come with the forms:
+
+- On firmware V3.22.07 every table survives a reconnect and a USB power loss (c05, c06, H22, section 7.5), so a reconnect is never a reset signal. The confirmed reset is Fn + Space held 3-5 s, which pushes `14 00 00 00 01 01` (c07, section 4.6.3); a short tap does nothing.
+- What a reset clears is still open (Q4): c07 shows the triggers and the main light of the active profile after it; the other forms are those of a keyboard as shipped. Detection therefore needs more than one table: a profile looks reset when its triggers changed to the factory form, or at least two tables of its keymap group (base keymap, Fn keymap, macros, advanced keys) did. A light change, the dead band or SOCD alone never count.
+- The SOCD power is one setting of the whole keyboard (section 4.15): it is compared once, never as part of a profile.
+- The trigger form leaves out the knob (index 15), which has no writable trigger settings.
 
 ---
 

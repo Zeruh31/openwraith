@@ -247,6 +247,76 @@ impl Default for ImportSelection {
 }
 
 impl ImportSelection {
+    /// No category.
+    pub const NONE: ImportSelection = ImportSelection {
+        triggers: false,
+        lighting: false,
+        keymap_group: false,
+        dead_band: false,
+        socd: false,
+    };
+
+    /// Every category.
+    pub const ALL: ImportSelection = ImportSelection {
+        triggers: true,
+        lighting: true,
+        keymap_group: true,
+        dead_band: true,
+        socd: true,
+    };
+
+    /// Whether the reply to `request` belongs to a chosen category, for an
+    /// export of chosen parts ([`Backup::export_profile_parts`]): the
+    /// per-key triggers (`21/05`); the lighting (`07 01`, `08 01`, `09 20`,
+    /// `09 80`, `09 81`); the keymap group (`18 80`, `18 82`, `19 8n`,
+    /// `22 80`); the dead band (`26 00`); SOCD (`24 01`, `24 02`). Every
+    /// other reply (device info, status, active profile, the device
+    /// constants, switch types, polling rate) is always kept.
+    pub fn includes_request(&self, request: ReadRequest) -> bool {
+        match request {
+            ReadRequest::KeyTrigger(_) => self.triggers,
+            ReadRequest::MainLight
+            | ReadRequest::SideLight
+            | ReadRequest::ActiveCustomTable
+            | ReadRequest::CustomColors(_) => self.lighting,
+            ReadRequest::Keymap(_) | ReadRequest::Macro(_) | ReadRequest::AdvancedKeys => {
+                self.keymap_group
+            }
+            ReadRequest::DeadBand => self.dead_band,
+            ReadRequest::SocdPairs | ReadRequest::SocdSettings => self.socd,
+            ReadRequest::DeviceInfo
+            | ReadRequest::Status
+            | ReadRequest::FnLockedKeys
+            | ReadRequest::MainLightModes
+            | ReadRequest::SideLightModes
+            | ReadRequest::SwitchTypeList
+            | ReadRequest::SwitchTypes
+            | ReadRequest::TriggerGlobal
+            | ReadRequest::PollRate
+            | ReadRequest::ActiveProfile => true,
+        }
+    }
+
+    /// Whether no category is chosen.
+    pub fn is_empty(&self) -> bool {
+        !(self.triggers || self.lighting || self.keymap_group || self.dead_band || self.socd)
+    }
+
+    /// The chosen categories in plain words (`triggers`, `lighting`,
+    /// `keys`, `dead band`, `SOCD`), in that order.
+    pub fn labels(&self) -> Vec<&'static str> {
+        [
+            (self.triggers, "triggers"),
+            (self.lighting, "lighting"),
+            (self.keymap_group, "keys"),
+            (self.dead_band, "dead band"),
+            (self.socd, "SOCD"),
+        ]
+        .into_iter()
+        .filter_map(|(on, label)| on.then_some(label))
+        .collect()
+    }
+
     /// Whether `table` belongs to a chosen category (tables without a write
     /// command are compared as always).
     pub fn includes(&self, table: TableId) -> bool {
@@ -1414,10 +1484,11 @@ pub fn execute_restore<T: WriteTransport>(
 
     // Prove that the keyboard saved what was written: a read-back right
     // after a write reads its working copy (spec 4.5.3).
-    if report.outcome == Outcome::Completed && !writer.is_poisoned() {
-        if let Err(error) = run.persistence_check(&mut writer, original, &mut report) {
-            report.fail(error);
-        }
+    if report.outcome == Outcome::Completed
+        && !writer.is_poisoned()
+        && let Err(error) = run.persistence_check(&mut writer, original, &mut report)
+    {
+        report.fail(error);
     }
 
     // Back to the original profile, unless nothing may be sent any more
@@ -1464,10 +1535,10 @@ pub fn execute_restore<T: WriteTransport>(
     // The last profile's writes were verified in the keyboard's working copy
     // only: after a profile change or a lost connection before the save they
     // may be gone.
-    if writer.commit_interrupted() {
-        if let Some(profile) = writer.session().last_write_profile() {
-            report.mark_maybe_lost(profile);
-        }
+    if writer.commit_interrupted()
+        && let Some(profile) = writer.session().last_write_profile()
+    {
+        report.mark_maybe_lost(profile);
     }
     report.foreign_activity = writer.foreign_activity_seen();
     if !report.is_success() {
@@ -2723,10 +2794,10 @@ fn place_socd_power(profiles: &mut [ProfilePlan], current: &Backup, power: Optio
         .iter()
         .find(|(_, item)| matches!(item.action, PlanAction::Write(_)))
         .or_else(|| built.first());
-    if let Some((i, item)) = chosen {
-        if let Some(at) = socd_index(&profiles[*i]) {
-            profiles[*i].items[at] = item.clone();
-        }
+    if let Some((i, item)) = chosen
+        && let Some(at) = socd_index(&profiles[*i])
+    {
+        profiles[*i].items[at] = item.clone();
     }
 }
 
@@ -2794,20 +2865,20 @@ fn constant_warnings(target: SnapshotView<'_>, current: SnapshotView<'_>) -> Vec
         ReadRequest::TriggerGlobal,
         ReadRequest::SwitchTypeList,
     ] {
-        if let (Some(t), Some(c)) = (target.response(request), current.response(request)) {
-            if t.payload() != c.payload() {
-                warnings.push(PlanWarning::ConstantDiffers { request });
-            }
+        if let (Some(t), Some(c)) = (target.response(request), current.response(request))
+            && t.payload() != c.payload()
+        {
+            warnings.push(PlanWarning::ConstantDiffers { request });
         }
     }
     let flags = |s: SnapshotView<'_>| {
         s.response(ReadRequest::Status)
             .map(|r| r.payload().get(12..14).map(<[u8]>::to_vec))
     };
-    if let (Some(t), Some(c)) = (flags(target), flags(current)) {
-        if t != c {
-            warnings.push(PlanWarning::CapabilityFlagsDiffer);
-        }
+    if let (Some(t), Some(c)) = (flags(target), flags(current))
+        && t != c
+    {
+        warnings.push(PlanWarning::CapabilityFlagsDiffer);
     }
     warnings
 }

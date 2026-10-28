@@ -35,6 +35,8 @@ export const common = {
   showMore: (p: { n: number }) => `Show ${p.n} more`,
   andMore: (p: { n: number }) => `+${p.n} more`,
   profile: (p: { n: number }) => `Profile ${p.n}`,
+  /** A profile with its local name ("Profile 2 · FPS"). */
+  profileNamed: (p: { n: number; name: string }) => `Profile ${p.n} · ${p.name}`,
   profileUnknown: "Profile ?",
   profiles: (p: { list: string }) => `Profiles ${p.list}`,
   /** The three markers (one `Badge` component): text plus tooltip. */

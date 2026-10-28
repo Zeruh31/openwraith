@@ -60,19 +60,21 @@ pub fn export<C: Connector, U: Ui>(
             }
         },
     };
-    let exported = backup.export_profile(profile, args.label.as_deref())?;
+    let selection = args.selection();
+    let exported = backup.export_profile_parts(profile, args.label.as_deref(), selection)?;
     exported.save(&args.output, args.force)?;
     let device = &exported.device;
     ui.print(&format!(
         "Profile {profile} exported to {}\n  Keyboard  {} ({}), firmware {}\n  Contents  {} \
-         replies of profile {profile}; no USB serial number\nImport it with `openwraith profile \
-         import {} --into N` (triggers and lighting by default; --include keys,deadband,socd \
-         for more).\n",
+         replies of profile {profile} ({}); no USB serial number\nImport it with `openwraith \
+         profile import {} --into N` (triggers and lighting by default; --include \
+         keys,deadband,socd for more).\n",
         args.output.display(),
         device.model.as_deref().unwrap_or("unknown model"),
         device.product.as_deref().unwrap_or("?"),
         device.firmware.as_deref().unwrap_or("?"),
         exported.entries.len(),
+        selection.labels().join(", "),
         args.output.display()
     ))?;
     Ok(Exit::Success)
@@ -240,12 +242,12 @@ pub fn import<C: Connector, U: Ui>(
         args.file.display(),
         parts.join(", ")
     ));
-    if args.include.contains(&ImportPart::Keys) {
-        if let Some(text) = macros_text(&file, from) {
-            ui.note(&format!(
-                "Macros in the file (written to the same slots where they differ):\n{text}"
-            ));
-        }
+    if args.include.contains(&ImportPart::Keys)
+        && let Some(text) = macros_text(&file, from)
+    {
+        ui.note(&format!(
+            "Macros in the file (written to the same slots where they differ):\n{text}"
+        ));
     }
     let options = RestoreOptions {
         profiles: Some(ProfileSet::only(into)),

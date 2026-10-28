@@ -36,6 +36,12 @@ pub struct CoreConfig {
     /// The settings file (`settings.json`), which also holds the user's
     /// trigger presets and the hints shown; `None`: presets cannot be saved.
     pub settings_path: Option<PathBuf>,
+    /// The folder of the device lock shared with the CLI
+    /// (`openwraith_hid::coordination`, `%LOCALAPPDATA%\OpenWraith`): the
+    /// app holds it exclusively around its writes and automatic switches and
+    /// pauses while the CLI holds it. `None`: no coordination (tests; the
+    /// developer simulator uses its own folder).
+    pub lock_dir: Option<PathBuf>,
 }
 
 /// The third-party notices shipped with the app (next to `LICENSE.txt`).
@@ -58,6 +64,7 @@ impl CoreConfig {
             token_seed: None,
             legal_dir: None,
             settings_path: None,
+            lock_dir: openwraith_hid::coordination::default_dir().ok(),
         }
     }
 
@@ -103,6 +110,17 @@ impl CoreConfig {
     /// use [`journal_path`](Self::journal_path), never touch it).
     pub(crate) fn interrupted_path(&self) -> PathBuf {
         self.state_dir.join("interrupted-operation.json")
+    }
+
+    /// The known-good store (the automatic backups):
+    /// `<app local data>/known-good`, next to the state folder (the
+    /// simulator's under its own folder).
+    pub(crate) fn known_good_dir(&self) -> PathBuf {
+        self.state_dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(&self.state_dir)
+            .join(crate::autobackup::STORE_DIR)
     }
 
     /// The marker of an open live key-depth view: written before the test

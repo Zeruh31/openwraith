@@ -60,6 +60,13 @@ export const shell = {
         effect: "Effect",
         colors: "Key colours",
       },
+      settings: {
+        general: "General",
+        background: "Background",
+        games: "Games",
+        profiles: "Profile names",
+        about: "About",
+      },
     },
   },
   /** Sections of pages without tabs. */
@@ -85,7 +92,15 @@ export const shell = {
       busy: "Busy",
       notReady: "Not connected",
       blocked: "Writing is paused",
+      pausedForCli: "An OpenWraith command is running",
     },
+    /** A profile in the switcher, for screen readers ("Profile 2, FPS"). */
+    profileOptionNamed: (p: { n: number; name: string }) => `Profile ${p.n}, ${p.name}`,
+    auto: "Auto",
+    autoTitle: (p: { label: string; profile: string }) =>
+      `${p.label} switched the keyboard to ${p.profile}. Choosing a profile yourself keeps your choice until the game closes. Open Settings > Games.`,
+    autoPaused: "Auto paused",
+    autoPausedTitle: "Automatic game profiles are paused. Open Settings > Games to resume them.",
     statusButton: "Keyboard connection details",
     live: "Live",
     liveTitle: "The key-depth view is running. Open Actuation > Key depth to stop it.",
@@ -157,6 +172,32 @@ export const shell = {
     strayTravelBody:
       "An earlier key-depth view may not have been stopped (OpenWraith closed, or the keyboard was disconnected). Typing keeps working; stop it on the Key depth tab.",
     strayTravelOpen: "Go to Key depth",
+    recoveryTitle: "Your keyboard's settings may have been reset",
+    recoveryProfiles: (p: { list: string; count: number }) =>
+      p.count === 1
+        ? `Profile ${p.list} now looks like factory settings, unlike its last automatic backup.`
+        : `Profiles ${p.list} now look like factory settings, unlike their last automatic backups.`,
+    recoveryReported: "The keyboard reported a factory reset (Fn + Space held).",
+    recoveryNothingChanged: (p: { count: number }) =>
+      p.count === 1
+        ? "OpenWraith changed nothing and paused its automatic backups of this profile. Compare it with your automatic backups and restore what you need."
+        : "OpenWraith changed nothing and paused its automatic backups of these profiles. Compare them with your automatic backups and restore what you need.",
+    recoveryNever: "OpenWraith never restores anything without asking.",
+    recoveryReview: "Review and restore…",
+    firmwareTitle: "The keyboard's firmware changed",
+    firmwareBody:
+      "A firmware update usually resets the keyboard's settings. Compare it with the automatic backups made before the update.",
+    pausedForCliTitle: "An OpenWraith command is using the keyboard",
+    pausedForCliBody:
+      "The command-line tool is running. OpenWraith sends nothing until it has finished, then reads the keyboard again. Writing and game profiles wait until then.",
+    pausedForCliPurpose: "Command",
+    autoPausedTitle: "Game profiles are paused",
+    autoPausedRateLimit:
+      "Game rules switched profiles more than 30 times in an hour, so OpenWraith paused them. They stay paused until you resume them or restart OpenWraith.",
+    autoPausedFailed:
+      "A game rule's profile switch didn't work, so OpenWraith paused the game profiles. They stay paused until you resume them or restart OpenWraith.",
+    autoResume: "Resume",
+    autoOpenSettings: "Open Settings > Games",
     untestedTitle: "Firmware not tested yet",
     untestedBody: (p: { firmware: string; tested: string }) =>
       `This keyboard runs firmware ${p.firmware}; OpenWraith was tested with ${p.tested}. Reading is safe. Check the result after every change.`,
@@ -177,6 +218,8 @@ export const shell = {
     drafts: "These unwritten changes will be discarded:",
     confirm: (p: { n: number }) => `Switch to profile ${p.n}`,
     already: (p: { n: number }) => `The keyboard is already on profile ${p.n}.`,
+    autoHolds: (p: { label: string; n: number }) =>
+      `A game rule (${p.label}) chose profile ${p.n}. If you switch now, OpenWraith keeps your choice until the game closes.`,
   },
   notices: {
     profileChanged: (p: { to: number }) => `The keyboard switched to profile ${p.to}`,
@@ -187,6 +230,50 @@ export const shell = {
     socdToggled: (p: { on: boolean }) =>
       p.on ? "SOCD turned on on the keyboard (Fn + Right Shift)." : "SOCD turned off on the keyboard (Fn + Right Shift).",
     switchWarnings: "The keyboard answered unusually; see the technical details.",
+    autoSwitched: (p: { label: string; n: number }) => `${p.label}: profile ${p.n} is active`,
+    autoSwitchedBack: (p: { n: number }) => `The game closed: profile ${p.n} is active again`,
+    autoWaiting: (p: { label: string; n: number }) => `${p.label}: the switch to profile ${p.n} waits`,
+    autoWaitingBack: (p: { n: number }) => `The switch back to profile ${p.n} waits`,
+    autoWaitingBody: (p: { reason: string }) => `It waits because ${p.reason}. It is skipped after 30 seconds.`,
+    autoSkipped: (p: { label: string; n: number }) => `${p.label}: profile ${p.n} wasn't switched`,
+    autoSkippedBack: (p: { n: number }) => `The switch back to profile ${p.n} was skipped`,
+    autoSkippedBody: (p: { reason: string }) =>
+      `OpenWraith waited 30 seconds because ${p.reason}. Switch by hand if you need that profile.`,
+    autoPaused: "Game profiles are paused",
+    autoPausedRateLimit: "More than 30 automatic switches in an hour.",
+    autoPausedFailed: "A profile switch didn't work.",
+    resetSuspected: (p: { n: number }) => `Profile ${p.n} looks reset`,
+    resetSuspectedBody: "OpenWraith changed nothing. Review it on Backup & profiles.",
+    firmwareChanged: (p: { known: string; current: string }) =>
+      `The keyboard's firmware changed from ${p.known} to ${p.current}`,
+    firmwareChangedBody: "Firmware updates usually reset the settings. Compare it with your automatic backups.",
+    settingsInvalid: "OpenWraith's settings file couldn't be read",
+    settingsInvalidKept: (p: { file: string }) =>
+      `OpenWraith started with the default settings and kept the old file as ${p.file}.`,
+    settingsInvalidLost: "OpenWraith started with the default settings.",
+    autoBackupFailed: (p: { n: number }) => `The automatic backup of profile ${p.n} failed`,
+    autoBackupFailedBody: "Your settings on the keyboard are unchanged. OpenWraith tries again at the next read.",
+  },
+  /** Per-game automatic profiles, in the shell and on Settings > Games. */
+  automation: {
+    /** Why an automatic switch waits; completes "It waits because …". */
+    waitReasons: {
+      not_connected: "the keyboard isn't connected",
+      connecting: "OpenWraith is still connecting to the keyboard",
+      busy: "another operation is running",
+      plan_pending: "a change is open for review",
+      drafts: "there are unwritten changes",
+      depth_view: "the key-depth view is running",
+      travel_test: "a key-depth test may still be on in the keyboard",
+      other_program: "another program is using the keyboard",
+      paused_for_cli: "an OpenWraith command is using the keyboard",
+      reset_seen: "the keyboard reset itself",
+      released: "the keyboard is released",
+      fault: "OpenWraith stopped after an internal error",
+      recent_foreign_activity: "another program used the keyboard less than 2 minutes ago",
+      keymap_unsaved: "a key assignment is still being saved",
+      profile_changing: "the profile is changing",
+    },
   },
   devSim: {
     title: "Simulator controls",

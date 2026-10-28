@@ -1,13 +1,18 @@
 // The Backup & profiles page (owned by the backup-restore page agent): backing
 // up, the restore wizard, the plan review, the restore report, sharing a
-// profile (export and import) and the list of safety backups. Every backend
-// code has a text (typed records below).
+// profile (export and import), the Recovery card, the automatic backups and
+// the list of safety backups. Every backend code has a text (typed records
+// below).
 
 import type {
+  AutoBackupReason,
   BackupFileKind,
   BlockCauseView,
+  KnownGoodTableView,
   LayerView,
   PlanWarningView,
+  RecoveryProfileState,
+  ResetEvidenceView,
   SafetyReason,
   ShareSelectionView,
   SkipReasonView,
@@ -20,6 +25,7 @@ export const backupRestore = {
   reasons: {
     notConnected: "Connect the keyboard and wait until it has been read.",
     busy: "Wait until the current operation has finished.",
+    pausedForCli: "An OpenWraith command is using the keyboard. Wait until it has finished.",
     otherProgram: "Another program is using the keyboard. Close every wraith.software tab, then check again.",
     resetSeen: "The keyboard reset itself. Read it again first.",
     noProfile: "Choose at least one profile.",
@@ -79,11 +85,12 @@ export const backupRestore = {
     step3: "Compare with the keyboard",
     openFile: "Open file…",
     openOther: "Open another file…",
-    orSafety: "You can also restore one of the safety backups listed below.",
+    orSafety: "You can also restore one of the automatic or safety backups listed below.",
     opening: "Opening the backup…",
     kinds: {
       user: "Backup file",
       safety: "Safety backup",
+      automatic: "Automatic backup",
     } satisfies Record<BackupFileKind, string>,
     facts: {
       made: "Made",
@@ -131,6 +138,11 @@ export const backupRestore = {
       p.count === 1
         ? `This puts the whole profile back as it was then; later changes to profile ${p.list} are undone too.`
         : `This puts these profiles back as they were then; later changes to profiles ${p.list} are undone too.`,
+    /** The review of an automatic backup (from the list of automatic backups). */
+    autoTitle: (p: { list: string; count: number; date: string }) =>
+      p.count === 1
+        ? `Restore profile ${p.list} as it was on ${p.date}?`
+        : `Restore profiles ${p.list} as they were on ${p.date}?`,
     facts: {
       file: "Backup",
       backupMade: "Backup made",
@@ -302,6 +314,140 @@ export const backupRestore = {
     showFolder: "Show the folder",
     count: (p: { shown: number; total: number }) => `Showing ${p.shown} of ${p.total}`,
   },
+  /** The automatic backups (the newest copies of each profile OpenWraith made when it read the keyboard). */
+  autoBackups: {
+    title: "Automatic backups",
+    intro: (p: { keep: number }) =>
+      `When OpenWraith reads the keyboard and a profile has changed, it saves a copy of that profile here. It keeps the newest ${p.keep} of each profile; pinned ones and safety backups are never deleted.`,
+    off: "Automatic backups are off: OpenWraith makes no new ones and doesn't check the keyboard for a reset. The ones listed here can still be restored.",
+    openSettings: "Open the background settings",
+    everyKeyboard:
+      "No keyboard has been read yet, so these are the automatic backups of every keyboard OpenWraith has read.",
+    empty: "No automatic backups yet. OpenWraith makes the first one when it reads the keyboard.",
+    loadFailed: "The list of automatic backups couldn't be read.",
+    unidentified:
+      "This keyboard reports no serial number: automatic backups of another W75 on this PC would be mixed with these.",
+    columns: {
+      made: "Made",
+      profile: "Profile",
+      reason: "Reason",
+      actions: "Actions",
+    },
+    reasons: {
+      first_read: "First read",
+      after_write: "After a change made in OpenWraith",
+      changed_elsewhere: "Changed outside OpenWraith",
+      kept_current: "Kept after a possible reset",
+      manual: "“Back up now” in the notification area",
+    } satisfies Record<AutoBackupReason, string>,
+    /** A pinned backup (never deleted). */
+    kept: "Pinned",
+    keep: "Pin",
+    keepRow: (p: { n: number; date: string }) => `Pin the automatic backup of profile ${p.n} from ${p.date}`,
+    keepHint: "A pinned backup is never deleted and doesn't count towards the newest ones.",
+    restore: "Restore…",
+    restoreRow: (p: { n: number; date: string }) => `Restore the automatic backup of profile ${p.n} from ${p.date}`,
+    showRow: (p: { n: number; date: string }) =>
+      `Show the automatic backup of profile ${p.n} from ${p.date} in its folder`,
+    refresh: "Refresh the list",
+    showFolder: "Show the folder",
+    count: (p: { shown: number; total: number }) => `Showing ${p.shown} of ${p.total}`,
+  },
+  /** The Recovery card: settings that look reset, compared with the automatic backups. */
+  recovery: {
+    title: "Recovery",
+    never: "OpenWraith never restores anything without asking.",
+    loadFailed: "OpenWraith couldn't read what it knows about a reset.",
+    attentionTitle: "The keyboard's settings may have been reset",
+    fineTitle: "Nothing looks reset",
+    fineBody: "Every profile OpenWraith has compared matches its newest automatic backup.",
+    resetReported: (p: { time: string }) =>
+      `The keyboard reported a reset (at ${p.time}). Holding Fn + Space puts the keyboard back to its factory settings.`,
+    resetReportedNoTime:
+      "The keyboard reported a reset. Holding Fn + Space puts the keyboard back to its factory settings.",
+    firmwareChanged: (p: { known: string; current: string }) =>
+      `The keyboard's firmware changed from ${p.known} to ${p.current}. A firmware update usually resets the settings.`,
+    heldProfiles: (p: { list: string; count: number }) =>
+      p.count === 1
+        ? `Profile ${p.list} looks reset: it differs from its automatic backup.`
+        : `Profiles ${p.list} look reset: they differ from their automatic backups.`,
+    reconnectHint:
+      "Reconnect so that OpenWraith reads the keyboard again and compares it with its automatic backups. Nothing is written.",
+    reconnect: "Reconnect and compare",
+    keep: "It's fine, keep them",
+    keepHint:
+      "If you reset the keyboard on purpose or changed these settings yourself: OpenWraith saves the current settings as the newest automatic backups and stops warning. Nothing is sent to the keyboard. The older automatic backups stay in the list until newer ones replace them; pin one to keep it.",
+    keepFirst: "Reconnect and compare first.",
+    keepCompareFirst: "Switch to the profiles not compared yet first; OpenWraith compares each one when it reads it.",
+    unidentified:
+      "This keyboard reports no serial number, so OpenWraith can't tell it from another W75: settings that look reset may also mean that another keyboard of this model was connected. Check the date of the automatic backup before you restore it.",
+    kept: "OpenWraith keeps the current settings as they are.",
+    autoOff: "Automatic backups are off, so OpenWraith doesn't compare the keyboard with them.",
+    openSettings: "Open the background settings",
+    profiles: "Profiles",
+    profileNamed: (p: { n: number; name: string }) => `Profile ${p.n} · ${p.name}`,
+    states: {
+      no_known_good: "No automatic backup yet",
+      not_checked: "Not compared yet",
+      fine: "Matches its automatic backup",
+      reset_suspected: "Looks reset",
+    } satisfies Record<RecoveryProfileState, string>,
+    notes: {
+      no_known_good: "OpenWraith makes the first automatic backup the next time it reads this profile.",
+      not_checked: "OpenWraith compares it the next time it reads this profile, for example when you switch to it.",
+      fine: (p: { date: string }) => `Read on ${p.date}; it matched its automatic backup.`,
+    },
+    evidenceTitle: "Why it looks reset",
+    evidence: {
+      reset_seen: "The keyboard reported a reset before this profile was read.",
+      firmware_changed: (p: { known: string; current: string }) =>
+        `The automatic backup was made with firmware ${p.known}; the keyboard now has ${p.current}.`,
+      triggers_to_factory: "Actuation and Rapid Trigger are back to the factory settings, unlike in the automatic backup.",
+      keymap_group_to_factory: (p: { list: string }) =>
+        `Back to the factory settings, unlike in the automatic backup: ${p.list}.`,
+    } satisfies Record<ResetEvidenceView["evidence"], unknown>,
+    factoryNow: (p: { list: string }) => `At the factory settings now: ${p.list}.`,
+    changed: (p: { list: string }) => `Also different from the automatic backup: ${p.list}.`,
+    comparedWith: (p: { date: string; age: string }) =>
+      `Compared with the automatic backup from ${p.date}, made ${p.age} before the comparison.`,
+    comparedWithDate: (p: { date: string }) => `Compared with the automatic backup from ${p.date}.`,
+    /** The settings compared with the automatic backups. */
+    tables: {
+      triggers: "Actuation & Rapid Trigger",
+      main_light: "Lighting",
+      custom_colors1: "Key colours",
+      base_keymap: "Key assignments",
+      fn_keymap: "Fn layer key assignments",
+      macros: "Macros",
+      advanced_keys: "Advanced keys",
+      dead_band: "Dead band",
+      socd_pairs: "SOCD key pairs",
+    } satisfies Record<KnownGoodTableView, string>,
+    /** How old a backup was when it was compared. */
+    age: {
+      underMinute: "less than a minute",
+      minutes: (p: { n: number }) => (p.n === 1 ? "1 minute" : `${p.n} minutes`),
+      hours: (p: { n: number }) => (p.n === 1 ? "1 hour" : `${p.n} hours`),
+      days: (p: { n: number }) => (p.n === 1 ? "1 day" : `${p.n} days`),
+    },
+    restoreFrom: (p: { n: number }) => `Automatic backup for profile ${p.n}`,
+    backupOption: (p: { date: string; reason: string; kept: boolean }) =>
+      p.kept ? `${p.date} · ${p.reason} · pinned` : `${p.date} · ${p.reason}`,
+    restore: (p: { n: number }) => `Restore profile ${p.n}…`,
+    noBackups: "There is no automatic backup of this profile to restore from.",
+    restoreAll: "Restore all profiles…",
+    restoreAllHint: (p: { list: string }) =>
+      `Restores profiles ${p.list} from their newest automatic backups, in one review.`,
+    compareHint: "OpenWraith first compares and shows what would change; nothing is written until you confirm.",
+    notCheckedNote: "Profiles that weren't read since then are compared the next time OpenWraith reads them.",
+    firmwareTitle: "The automatic backups were made with other firmware",
+    firmwareBody: (p: { backup: string; keyboard: string }) =>
+      `Automatic backups: firmware ${p.backup}. Keyboard: firmware ${p.keyboard}. Restoring after a firmware update is the usual case, but the format of some settings may have changed between versions.`,
+    reviewTitle: (p: { list: string; count: number }) =>
+      p.count === 1
+        ? `Restore profile ${p.list} from its automatic backup?`
+        : `Restore profiles ${p.list} from their automatic backups?`,
+  },
   /** Why a differing table isn't restored. */
   skipReasons: {
     unconfirmed_command:
@@ -337,8 +483,11 @@ export const backupRestore = {
     incomplete: (p: { table: string }) => `this part wasn't read completely: ${p.table}.`,
     fn_keymap_not_writable:
       "the Fn layer key assignments can't be written, so the keyboard wouldn't save the key assignments.",
-    critical_fn_override: (p: { index: number }) =>
-      `the imported Fn layer replaces one of the keyboard's own shortcuts (a profile switch or the reset, key number ${p.index}), and that wasn't allowed.`,
+    /** `keys`: every replaced shortcut by name ("Fn + 2 and Fn + Space"). */
+    critical_fn_override: (p: { keys: string; count: number }) =>
+      p.count === 1
+        ? `the imported Fn layer replaces one of the keyboard's own shortcuts, ${p.keys}, and that wasn't allowed.`
+        : `the imported Fn layer replaces the keyboard's own shortcuts ${p.keys}, and that wasn't allowed.`,
     unwritable_imported_entry: (p: { layer: string; index: number }) =>
       `${p.layer} in the file have an entry OpenWraith doesn't write (key number ${p.index}). Only keys, media keys, mouse buttons, key combinations, macros and advanced keys are imported.`,
   } satisfies Record<BlockCauseView["code"], unknown>,
@@ -395,11 +544,12 @@ export const backupRestore = {
       saveFilter: "OpenWraith profile files",
       open: "Choose a profile file to import",
       openFilter: "OpenWraith profile files and backups",
+      openBackup: "Choose the backup to export a profile from",
     },
     profileOption: (p: { n: number; active: boolean }) => (p.active ? `Profile ${p.n} (active)` : `Profile ${p.n}`),
     /** The parts of a profile, as the import offers them. */
     parts: {
-      triggers: "Actuation and Rapid Trigger",
+      triggers: "Actuation & Rapid Trigger",
       lighting: "Lighting and key colours",
       keys: "Key assignments, macros and advanced keys",
       dead_band: "Dead band",
@@ -407,13 +557,42 @@ export const backupRestore = {
     } satisfies Record<keyof ShareSelectionView, string>,
     export: {
       title: "Export a profile",
-      intro: "OpenWraith reads the profile from the keyboard now and saves it as a profile file (.owprofile.json).",
+      intro:
+        "Save one profile as a profile file (.owprofile.json): read from the keyboard now, or taken from a backup file or an automatic backup.",
+      /** Where the profile is read from. */
+      source: "Read the profile from",
+      sources: {
+        keyboard: "The keyboard now",
+        file: "A backup file",
+        automatic: "An automatic backup",
+      },
+      sourceHints: {
+        keyboard: "OpenWraith reads the profile from the connected keyboard.",
+        file: "A backup you saved, or a safety backup. The keyboard isn't used.",
+        automatic: "A copy OpenWraith made when it read the keyboard. The keyboard isn't used.",
+      },
       profile: "Profile",
+      chooseFile: "Choose a backup…",
+      chooseOther: "Choose another backup…",
+      fileProfile: "Profile of the backup",
+      fileMade: (p: { date: string; firmware: string }) => `Made on ${p.date} · firmware ${p.firmware}`,
+      automatic: "Automatic backup",
+      automaticOption: (p: { n: number; date: string; reason: string }) => `Profile ${p.n} · ${p.date} · ${p.reason}`,
+      noAutomatic: "No automatic backups yet: OpenWraith makes them when it reads the keyboard.",
+      automaticFailed: "The automatic backups couldn't be listed.",
       name: "Name (optional)",
       nameHint: "Saved in the file, for example “Tournament”. You choose the file name next.",
-      holds:
-        "The file holds the whole profile: actuation and Rapid Trigger, lighting and key colours, key assignments with macros and advanced keys, dead band and SOCD key pairs. Whoever imports it chooses which parts to use; only actuation and lighting are chosen by default.",
+      parts: "What the file holds",
+      partsHint:
+        "Dead band and SOCD key pairs are left out unless you tick them: the dead band is usually tuned to one keyboard, and some games forbid SOCD.",
+      holds: "Whoever imports the file chooses again which of these parts to use.",
       macrosNote: "Macros are saved as the keys they press, so anyone you give the file to can read them.",
+      /** Why the export can't start yet (shown under the button). */
+      reasons: {
+        noPart: "Choose at least one part to export.",
+        noFile: "Choose a backup file first.",
+        noAutomatic: "Choose an automatic backup first.",
+      },
       switchNote: (p: { n: number }) =>
         `Reading profile ${p.n} switches the keyboard to it and back (the lighting changes briefly). No setting is changed.`,
       button: (p: { n: number }) => `Export profile ${p.n}…`,
