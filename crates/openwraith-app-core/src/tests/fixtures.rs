@@ -2445,15 +2445,43 @@ fn recovery() -> Vec<Rec> {
     out
 }
 
-/// A shell that cannot change the Run entry.
+/// A shell that cannot change the Run entry (so Windows has none).
 struct FailingShell;
 
 impl crate::sink::ShellHook for FailingShell {
     fn apply(&self, _changes: &crate::dto::ShellChanges) -> Result<(), AppError> {
         Err(AppError::new(
             crate::dto::AppErrorKind::Io,
-            "cannot change the Windows start entry: access denied",
+            "cannot write the Windows start entry: access denied",
         ))
+    }
+
+    fn windows_start(&self, wanted: bool) -> crate::dto::WindowsStartState {
+        if wanted {
+            crate::dto::WindowsStartState::EntryMissing
+        } else {
+            crate::dto::WindowsStartState::Off
+        }
+    }
+}
+
+/// A shell whose Run entry follows the switch; with `task_manager_off`
+/// the user turned OpenWraith off in Task Manager > Startup apps.
+struct WindowsShell {
+    task_manager_off: bool,
+}
+
+impl crate::sink::ShellHook for WindowsShell {
+    fn apply(&self, _changes: &crate::dto::ShellChanges) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    fn windows_start(&self, wanted: bool) -> crate::dto::WindowsStartState {
+        match (wanted, self.task_manager_off) {
+            (false, _) => crate::dto::WindowsStartState::Off,
+            (true, false) => crate::dto::WindowsStartState::On,
+            (true, true) => crate::dto::WindowsStartState::OffInTaskManager,
+        }
     }
 }
 
@@ -2462,6 +2490,9 @@ fn background() -> Vec<Rec> {
     let mut out = Vec::new();
 
     let mut r = Rec::ready("settings_background");
+    Rec::handle(&r.h).set_shell_hook(std::sync::Arc::new(WindowsShell {
+        task_manager_off: false,
+    }));
     r.call("get_background_settings", json!({}), |h, _| {
         Ok(Rec::handle(h).background_settings())
     })
@@ -2539,6 +2570,39 @@ fn background() -> Vec<Rec> {
         )
         .unwrap();
     assert!(applied.shell_error.is_some());
+    assert_eq!(
+        applied.settings.windows_start,
+        crate::dto::WindowsStartState::EntryMissing
+    );
+    out.push(r);
+
+    // Start with Windows is on, but turned off in Task Manager > Startup
+    // apps: the view says so every time it is read.
+    let h = Harness::ready();
+    let path = h.worker.config.settings_path.clone().unwrap();
+    crate::settings::set_background(
+        &path,
+        &crate::dto::BackgroundSettingsIntent {
+            tray_enabled: true,
+            start_with_windows: true,
+            notifications: crate::dto::NotificationSettings::default(),
+            auto_backup: crate::dto::AutoBackupSettings::default(),
+        },
+    )
+    .unwrap();
+    let mut r = Rec::new("settings_background_task_manager", h);
+    Rec::handle(&r.h).set_shell_hook(std::sync::Arc::new(WindowsShell {
+        task_manager_off: true,
+    }));
+    let view = r
+        .call("get_background_settings", json!({}), |h, _| {
+            Ok(Rec::handle(h).background_settings())
+        })
+        .unwrap();
+    assert_eq!(
+        view.windows_start,
+        crate::dto::WindowsStartState::OffInTaskManager
+    );
     out.push(r);
 
     // The settings file could not be read at start: kept aside, told once.

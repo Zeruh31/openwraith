@@ -305,6 +305,142 @@ fn argument_names_match_the_rust_commands() {
 }
 
 #[test]
+fn the_nsis_uninstaller_removes_the_start_entry() {
+    let conf: serde_json::Value =
+        serde_json::from_str(&read("app/src-tauri/tauri.conf.json")).unwrap();
+    let nsis = &conf["bundle"]["windows"]["nsis"];
+    // Per user: the uninstaller runs as the user, so HKCU is that user's.
+    assert_eq!(nsis["installMode"], serde_json::json!("currentUser"));
+    assert_eq!(
+        nsis["installerHooks"],
+        serde_json::json!("./windows/hooks.nsh")
+    );
+    let hook = read("app/src-tauri/windows/hooks.nsh");
+    let lines: Vec<&str> = hook
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default().trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let code = lines.join("\n");
+    // The same key paths and value name as the app's `autostart.rs`.
+    let autostart = read("app/src-tauri/src/autostart.rs");
+    let run = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    let approved = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    assert!(autostart.contains(&format!("pub const RUN_KEY: &str = r\"{run}\";")));
+    assert!(autostart.contains(&format!("r\"{approved}\";")));
+    assert!(autostart.contains("pub const VALUE_NAME: &str = \"OpenWraith\";"));
+    let start = lines
+        .iter()
+        .position(|line| *line == "!macro NSIS_HOOK_POSTUNINSTALL")
+        .expect("hooks.nsh defines NSIS_HOOK_POSTUNINSTALL");
+    assert_eq!(
+        lines[start + 1],
+        "!if \"${INSTALLMODE}\" != \"currentUser\""
+    );
+    // Each deletion with the conditions it runs under (`${If}` blocks).
+    let mut open: Vec<Vec<String>> = Vec::new();
+    let mut deletes = Vec::new();
+    let mut ended = false;
+    for line in &lines[start + 1..] {
+        if *line == "!macroend" {
+            ended = true;
+            break;
+        }
+        if let Some(condition) = line.strip_prefix("${If} ") {
+            open.push(vec![condition.to_string()]);
+        } else if let Some(condition) = line.strip_prefix("${AndIf} ") {
+            open.last_mut()
+                .expect("${AndIf} in an ${If}")
+                .push(condition.to_string());
+        } else if *line == "${EndIf}" {
+            open.pop().expect("${EndIf} of an ${If}");
+        } else if line.starts_with("${") {
+            panic!("hooks.nsh: {line} (only ${{If}}, ${{AndIf}} and ${{EndIf}} are checked)");
+        } else if line.starts_with("DeleteReg") {
+            deletes.push((line.to_string(), open.concat()));
+        }
+    }
+    assert!(
+        ended && open.is_empty(),
+        "hooks.nsh: the macro's blocks end"
+    );
+    // The Run value on every uninstall but an update's. Task Manager's
+    // choice only with the settings ("Delete the application data"): a
+    // newer setup program uninstalls the old version first without
+    // `/UPDATE` and keeps the settings, and the new version writes the Run
+    // value again, which must not turn a start the user disabled back on.
+    let update = "$UpdateMode <> 1".to_string();
+    let app_data = "$DeleteAppDataCheckboxState = 1".to_string();
+    assert_eq!(
+        deletes,
+        [
+            (
+                format!("DeleteRegValue HKCU \"{run}\" \"OpenWraith\""),
+                vec![update.clone()]
+            ),
+            (
+                format!("DeleteRegValue HKCU \"{approved}\" \"OpenWraith\""),
+                vec![update, app_data]
+            ),
+        ]
+    );
+    // Nothing else is deleted or written, and no other hive is touched.
+    assert_eq!(code.matches("DeleteReg").count(), 2);
+    for token in ["WriteReg", "HKLM", "SHCTX", "HKEY_", "DeleteRegKey", "Exec"] {
+        assert!(!code.contains(token), "hooks.nsh uses {token}");
+    }
+}
+
+#[test]
+fn the_nsis_hook_reads_the_variables_of_tauris_template() {
+    // The installer template is inside the Tauri CLI that npm installed
+    // (`@tauri-apps/cli-<platform>`); a Rust-only checkout has none.
+    let cli = repo_root().join("app/node_modules/@tauri-apps");
+    let binaries: Vec<_> = std::fs::read_dir(&cli)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|dir| dir.file_name().to_string_lossy().starts_with("cli-"))
+        .filter_map(|dir| std::fs::read_dir(dir.path()).ok())
+        .flatten()
+        .flatten()
+        .map(|file| file.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "node"))
+        .collect();
+    if cli.join("cli").exists() {
+        assert!(!binaries.is_empty(), "the Tauri CLI's platform package");
+    }
+    for binary in binaries {
+        let bytes = std::fs::read(&binary).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let at = text
+            .find("Section Uninstall")
+            .unwrap_or_else(|| panic!("{}: no NSIS template", binary.display()));
+        let from = text[..at].rfind('\0').map_or(0, |i| i + 1);
+        let to = text[at..].find('\0').map_or(text.len(), |i| at + i);
+        let template = &text[from..to];
+        let uninit = &template[template.find("Function un.onInit").unwrap()..];
+        let uninit = &uninit[..uninit.find("FunctionEnd").unwrap()];
+        assert!(uninit.contains("${GetOptions} $CMDLINE \"/UPDATE\" $UpdateMode"));
+        assert!(template.contains("Var DeleteAppDataCheckboxState"));
+        assert!(template.contains("BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState"));
+        // Tauri deletes the app data (the settings) under the condition the
+        // hook adds to the StartupApproved deletion, and runs the hook after.
+        let section = &template[template.find("Section Uninstall").unwrap()..];
+        let section = &section[..section.find("SectionEnd").unwrap()];
+        let compact: String = section.split_whitespace().collect::<Vec<_>>().join(" ");
+        let app_data = compact
+            .find("${If} $DeleteAppDataCheckboxState = 1 ${AndIf} $UpdateMode <> 1")
+            .expect("Tauri's deletion of the app data");
+        assert!(compact[app_data..].contains("RmDir /r \"$APPDATA\\${BUNDLEID}\""));
+        let hook = compact
+            .find("!insertmacro NSIS_HOOK_POSTUNINSTALL")
+            .expect("the hook");
+        assert!(app_data < hook);
+    }
+}
+
+#[test]
 fn the_installers_name_the_project_and_ship_the_licenses() {
     let conf: serde_json::Value =
         serde_json::from_str(&read("app/src-tauri/tauri.conf.json")).unwrap();

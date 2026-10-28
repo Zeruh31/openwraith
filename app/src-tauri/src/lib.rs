@@ -13,7 +13,8 @@
 //! running window to the front: the single-instance plugin ends it before
 //! `setup`, so it never opens the keyboard.
 
-#![forbid(unsafe_code)]
+// `unsafe` only in `winproc.rs` (its own `allow`; the source rules check it).
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(
     not(test),
@@ -36,6 +37,7 @@ mod sinks;
 mod texts;
 mod tray;
 mod window;
+mod winproc;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -175,22 +177,28 @@ fn setup<R: Runtime>(app: &mut App<R>) -> Result<(), Box<dyn std::error::Error>>
     if let Ok(feed) = foreground::start(Arc::clone(&worker)) {
         app.manage(feed);
     }
-    let wanted = background.tray_enabled && background.start_with_windows;
-    match autostart::reconcile_when(std::env::args(), wanted) {
-        autostart::ReconcileWhen::Never => {}
-        autostart::ReconcileWhen::Now => autostart::reconcile(&handle, wanted),
+    // The settings are read under the lock the switch changes the entry
+    // under (a switch turned meanwhile has the last word).
+    match autostart::reconcile_when(std::env::args()) {
+        autostart::ReconcileWhen::Now => {
+            autostart::reconcile(|| {
+                let now = worker.background_settings();
+                now.tray_enabled && now.start_with_windows
+            });
+        }
         autostart::ReconcileWhen::Later => {
             // Started from the Run entry at logon: no write to the Run key
             // while Windows processes it; the settings are read again then
-            // (the user may have turned the option on meanwhile).
-            let later = handle.clone();
+            // (the user may have changed the option meanwhile).
             let settings = Arc::clone(&worker);
             let _ = std::thread::Builder::new()
                 .name("openwraith-autostart-check".to_string())
                 .spawn(move || {
                     std::thread::sleep(autostart::LOGON_DELAY);
-                    let now = settings.background_settings();
-                    autostart::reconcile(&later, now.tray_enabled && now.start_with_windows);
+                    autostart::reconcile(|| {
+                        let now = settings.background_settings();
+                        now.tray_enabled && now.start_with_windows
+                    });
                 });
         }
     }
@@ -212,8 +220,6 @@ pub fn run() -> Result<(), String> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init());
-    #[cfg(not(feature = "sim"))]
-    let builder = builder.plugin(autostart::plugin());
     let builder = builder
         .setup(setup)
         .on_window_event(window::on_window_event);

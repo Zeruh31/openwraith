@@ -1,8 +1,12 @@
 // Settings > Background on the mocked IPC, answered with the settings the
-// core's tests recorded (settings_background): the defaults, start with
-// Windows only with the notification-area icon (disabled with its reason),
-// each switch saved at once with the whole intent, "keep N" checked before
-// it is sent (1-100), a shell error kept on screen, and the worker's refusal.
+// core's tests recorded (settings_background, settings_background_task_manager):
+// the defaults, start with Windows only with the notification-area icon
+// (disabled with its reason), each switch saved at once with the whole
+// intent, "keep N" checked before it is sent (1-100), a shell error kept on
+// screen, the worker's refusal, and the lasting callout while Windows won't
+// do what the switch says (Task Manager, a missing entry, an unreadable one,
+// one left behind with or without the icon), read again on "Check again" and
+// when the window gets the focus back.
 
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -19,18 +23,23 @@ import { FIXTURES } from "../../preview/registry";
 import { backgroundStore, resetBackgroundStore } from "../../state/background";
 import { INITIAL_STATUS, statusStore } from "../../state/status";
 import { clearToasts, getToasts } from "../../state/toasts";
-import { parseKeep } from "./BackgroundTab";
+import { parseKeep, windowsStartProblem } from "./BackgroundTab";
 import SettingsPage from "./index";
 
 const en = DICTIONARIES.en;
 const t = en.settings.background;
 
 let sent: BackgroundSettingsIntent[] = [];
+let reads = 0;
 
-function recordedDefaults(): BackgroundSettingsView {
-  const call = FIXTURES["settings_background"]?.calls.find((c) => c.command === "get_background_settings");
+function recordedView(fixture = "settings_background"): BackgroundSettingsView {
+  const call = FIXTURES[fixture]?.calls.find((c) => c.command === "get_background_settings");
   if (call?.command !== "get_background_settings" || call.ok === null) throw new Error("no recorded settings");
   return structuredClone(call.ok);
+}
+
+function recordedDefaults(): BackgroundSettingsView {
+  return recordedView();
 }
 
 function recordedRefusal(): AppError {
@@ -39,10 +48,18 @@ function recordedRefusal(): AppError {
   return structuredClone(call.err);
 }
 
-/** The worker's rules for the answer: start with Windows only with the tray; the shell gets what changed. */
-function applied(before: BackgroundSettingsView, intent: BackgroundSettingsIntent): BackgroundSettingsApplied {
+/**
+ * The worker's rules for the answer: start with Windows only with the tray; the shell gets what
+ * changed and says what Windows will do (a Task Manager "off" stays: OpenWraith never changes it).
+ */
+function applied(
+  before: BackgroundSettingsView,
+  intent: BackgroundSettingsIntent,
+  taskManagerOff = false,
+): BackgroundSettingsApplied {
   const start = intent.tray_enabled && intent.start_with_windows;
-  const settings: BackgroundSettingsView = { ...before, ...intent, start_with_windows: start };
+  const windowsStart = !start ? "off" : taskManagerOff ? "off_in_task_manager" : "on";
+  const settings: BackgroundSettingsView = { ...before, ...intent, start_with_windows: start, windows_start: windowsStart };
   return {
     settings,
     shell: {
@@ -53,18 +70,24 @@ function applied(before: BackgroundSettingsView, intent: BackgroundSettingsInten
   };
 }
 
-function install(options: { shellError?: AppError; refuse?: AppError } = {}): void {
-  let view = recordedDefaults();
+/** What the backend answers now (tests change what Windows does between reads). */
+const backend: { view: BackgroundSettingsView } = { view: recordedDefaults() };
+
+function install(
+  options: { shellError?: AppError; refuse?: AppError; view?: BackgroundSettingsView; taskManagerOff?: boolean } = {},
+): void {
+  backend.view = options.view ?? recordedDefaults();
   mockIPC((command, args) => {
     switch (command) {
       case "get_background_settings":
-        return view;
+        reads += 1;
+        return backend.view;
       case "set_background_settings": {
         const intent = (args as { settings: BackgroundSettingsIntent }).settings;
         sent.push(intent);
         if (options.refuse !== undefined) throw options.refuse;
-        const answer = applied(view, intent);
-        view = answer.settings;
+        const answer = applied(backend.view, intent, options.taskManagerOff ?? false);
+        backend.view = answer.settings;
         return { ...answer, shell_error: options.shellError ?? null };
       }
       default:
@@ -86,6 +109,7 @@ function toggle(name: string): HTMLButtonElement {
 beforeEach(() => {
   setLang("en");
   sent = [];
+  reads = 0;
   clearToasts();
   resetBackgroundStore();
   statusStore.set({ ...INITIAL_STATUS, connection: { state: "ready" } });
@@ -190,6 +214,122 @@ describe("Settings > Background", () => {
     });
     // The saved settings stay as they were.
     expect(toggle(t.tray).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("says lastingly when Task Manager keeps OpenWraith off, and checks again", async () => {
+    const recorded = recordedView("settings_background_task_manager");
+    expect(recorded).toMatchObject({ tray_enabled: true, start_with_windows: true, windows_start: "off_in_task_manager" });
+    install({ view: recorded, taskManagerOff: true });
+    await open();
+    const tm = t.windowsStart;
+    expect(screen.getByText(tm.offInTaskManagerTitle)).toBeTruthy();
+    expect(screen.getByText(tm.offInTaskManagerBody)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain(tm.offInTaskManagerTitle);
+    // Turning the switch off and on doesn't change Task Manager's choice: the callout comes back.
+    fireEvent.click(toggle(t.startWithWindows));
+    await waitFor(() => {
+      expect(screen.queryByText(tm.offInTaskManagerTitle)).toBeNull();
+    });
+    fireEvent.click(toggle(t.startWithWindows));
+    expect(await screen.findByText(tm.offInTaskManagerTitle)).toBeTruthy();
+    expect(sent.map((intent) => intent.start_with_windows)).toEqual([false, true]);
+    // Turned on in Task Manager meanwhile: "Check again" reads the state anew.
+    backend.view = { ...backend.view, windows_start: "on" };
+    const before = reads;
+    fireEvent.click(screen.getByRole("button", { name: tm.recheck }));
+    await waitFor(() => {
+      expect(screen.queryByText(tm.offInTaskManagerTitle)).toBeNull();
+    });
+    expect(reads).toBe(before + 1);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("reads the state again when the window gets the focus back", async () => {
+    install({ view: { ...recordedView("settings_background_task_manager"), windows_start: "entry_missing" } });
+    await open();
+    expect(screen.getByText(t.windowsStart.entryMissingTitle)).toBeTruthy();
+    expect(screen.getByText(t.windowsStart.entryMissingBody)).toBeTruthy();
+    backend.view = { ...backend.view, windows_start: "on" };
+    const before = reads;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(t.windowsStart.entryMissingTitle)).toBeNull();
+    });
+    expect(reads).toBe(before + 1);
+  });
+
+  it("shows an entry left behind while the switch is off, and nothing while all is as wanted", async () => {
+    install({ view: { ...recordedDefaults(), tray_enabled: true, windows_start: "still_on" } });
+    await open();
+    expect(toggle(t.startWithWindows).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText(t.windowsStart.stillOnTitle)).toBeTruthy();
+    expect(screen.getByText(t.windowsStart.stillOnBody)).toBeTruthy();
+    cleanup();
+    clearMocks();
+    resetBackgroundStore();
+    // Left behind when the icon was turned off: the switch is disabled then, so the callout
+    // doesn't point to it.
+    install({ view: { ...recordedDefaults(), tray_enabled: false, start_with_windows: false, windows_start: "still_on" } });
+    await open();
+    expect(toggle(t.startWithWindows).disabled).toBe(true);
+    expect(screen.getByText(t.windowsStart.stillOnTitle)).toBeTruthy();
+    expect(screen.getByText(t.windowsStart.stillOnNoTrayBody)).toBeTruthy();
+    expect(screen.queryByText(t.windowsStart.stillOnBody)).toBeNull();
+    cleanup();
+    clearMocks();
+    resetBackgroundStore();
+    install();
+    await open();
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(toggle(t.tray));
+    await waitFor(() => {
+      expect(toggle(t.startWithWindows).disabled).toBe(false);
+    });
+    fireEvent.click(toggle(t.startWithWindows));
+    await waitFor(() => {
+      expect(backgroundStore.get()?.windows_start).toBe("on");
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("maps every state to its callout only when it differs from the switch", () => {
+    const tm = t.windowsStart;
+    const on = { ...recordedDefaults(), tray_enabled: true, start_with_windows: true };
+    const off = { ...recordedDefaults(), tray_enabled: true, start_with_windows: false };
+    expect(windowsStartProblem({ ...on, windows_start: "on" }, tm)).toBeNull();
+    expect(windowsStartProblem({ ...on, windows_start: "off_in_task_manager" }, tm)?.title).toBe(tm.offInTaskManagerTitle);
+    expect(windowsStartProblem({ ...on, windows_start: "entry_missing" }, tm)?.title).toBe(tm.entryMissingTitle);
+    expect(windowsStartProblem({ ...on, windows_start: "unavailable" }, tm)?.title).toBe(tm.unavailableTitle);
+    // A simulator build never has an entry: nothing to fix, so no callout.
+    expect(windowsStartProblem({ ...on, windows_start: "unavailable" }, tm, true)).toBeNull();
+    expect(windowsStartProblem({ ...on, windows_start: "off_in_task_manager" }, tm, true)?.title).toBe(
+      tm.offInTaskManagerTitle,
+    );
+    expect(windowsStartProblem({ ...on, windows_start: "still_on" }, tm)).toBeNull();
+    expect(windowsStartProblem({ ...off, windows_start: "off" }, tm)).toBeNull();
+    expect(windowsStartProblem({ ...off, windows_start: "unavailable" }, tm)).toBeNull();
+    expect(windowsStartProblem({ ...off, windows_start: "off_in_task_manager" }, tm)).toBeNull();
+    expect(windowsStartProblem({ ...off, windows_start: "still_on" }, tm)?.body).toBe(tm.stillOnBody);
+    // Without the icon there is no start with Windows, whatever was saved.
+    expect(windowsStartProblem({ ...on, tray_enabled: false, windows_start: "unavailable" }, tm)).toBeNull();
+    // An entry left behind without the icon: its own text, which doesn't ask for the switch (disabled
+    // then); whatever was saved.
+    for (const start of [false, true]) {
+      const left = windowsStartProblem({ ...off, tray_enabled: false, start_with_windows: start, windows_start: "still_on" }, tm);
+      expect(left).toEqual({ title: tm.stillOnTitle, body: tm.stillOnNoTrayBody });
+    }
+    expect(tm.stillOnNoTrayBody).not.toMatch(/switch/i);
+    // The Turkish texts are there too.
+    const tr = DICTIONARIES.tr.settings.background.windowsStart;
+    expect(windowsStartProblem({ ...on, windows_start: "off_in_task_manager" }, tr)?.body).toBe(tr.offInTaskManagerBody);
+    expect(windowsStartProblem({ ...off, tray_enabled: false, windows_start: "still_on" }, tr)?.body).toBe(tr.stillOnNoTrayBody);
+    expect(tr.stillOnNoTrayBody).not.toMatch(/anahtar/i);
+    // A failed save shows next to these callouts: it gives no advice of its own that could point
+    // the other way (Task Manager's choice is never a save error).
+    expect(t.shellErrorBody).not.toMatch(/Task Manager/);
+    expect(DICTIONARIES.tr.settings.background.shellErrorBody).not.toMatch(/Görev Yöneticisi/);
   });
 
   it("leads to the automatic backups", async () => {

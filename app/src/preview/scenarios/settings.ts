@@ -19,6 +19,12 @@ export const scenarios: PreviewScenario[] = [
     fixture: "settings_background_shell_error",
     route: "#/settings?tab=background",
   },
+  // Start with Windows is on, but turned off in Task Manager: the lasting callout.
+  {
+    id: "settings_background_task_manager",
+    fixture: "settings_background_task_manager",
+    route: "#/settings?tab=background",
+  },
   // The settings file could not be read: the notice, then the defaults.
   { id: "settings_invalid", fixture: "settings_invalid", route: "#/settings?tab=background" },
   { id: "settings_profile_names", fixture: "settings_background", route: "#/settings?tab=profiles" },

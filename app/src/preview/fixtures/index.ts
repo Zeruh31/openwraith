@@ -104,6 +104,7 @@ import { fixture as safety_list } from "./safety_list";
 import { fixture as searching } from "./searching";
 import { fixture as settings_background } from "./settings_background";
 import { fixture as settings_background_shell_error } from "./settings_background_shell_error";
+import { fixture as settings_background_task_manager } from "./settings_background_task_manager";
 import { fixture as settings_invalid } from "./settings_invalid";
 import { fixture as several_keyboards } from "./several_keyboards";
 import { fixture as socd_apply_ok } from "./socd_apply_ok";
@@ -228,6 +229,7 @@ export const fixtures: Record<string, Fixture> = {
   searching,
   settings_background,
   settings_background_shell_error,
+  settings_background_task_manager,
   settings_invalid,
   several_keyboards,
   socd_apply_ok,

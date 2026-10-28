@@ -9,7 +9,7 @@ members = [
 ]
 # `cargo build` / `cargo build --release` without `-p` builds the CLI and
 # the libraries only: the desktop app needs the Tauri prerequisites, Rust
-# 1.95 and a built frontend (`npm --prefix app run tauri build`).
+# 1.90 and a built frontend (`npm --prefix app run tauri build`).
 # `--workspace` commands still cover every member.
 default-members = [
     "crates/openwraith-protocol",

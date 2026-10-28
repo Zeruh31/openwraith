@@ -52,7 +52,24 @@ export const settings: Messages<typeof en> = {
     startWithWindowsHelp: "Bildirim alanında gizli olarak başlar.",
     startNeedsTray: "Önce bildirim alanı simgesini açın: OpenWraith Windows ile yalnızca orada başlar.",
     startUninstall:
-      "Simgeyi kapatmak, OpenWraith'i Windows ile başlayan programlardan da çıkarır. OpenWraith'i kaldırmak bu kaydı silmez; bu yüzden kaldırmadan önce bu seçeneği kapatın.",
+      "Simgeyi kapatmak, OpenWraith'i Windows ile başlayan programlardan da çıkarır. OpenWraith'i kurulum programıyla (.exe) kurduysanız kaldırma işlemi bu kaydı da siler; .msi paketiyle kurduysanız kaldırmadan önce bu seçeneği kapatın.",
+    windowsStart: {
+      offInTaskManagerTitle: "Windows OpenWraith'i başlatmayacak: Görev Yöneticisi'nde kapatılmış",
+      offInTaskManagerBody:
+        "OpenWraith, Görev Yöneticisi > Başlangıç uygulamaları bölümünde kapatılmış. OpenWraith bu seçimi hiçbir zaman değiştirmez; anahtarı kapatıp açmak da değiştirmez: OpenWraith'i orada (ya da Windows Ayarlar > Uygulamalar > Başlangıç bölümünde) açın.",
+      entryMissingTitle: "Windows OpenWraith'i başlatmayacak: başlangıç kaydı yok",
+      entryMissingBody:
+        "Windows'ta OpenWraith'in bu kopyası için bir başlangıç kaydı yok: kayıt silinmiş ya da başka bir kopyayı başlatıyor. Kaydı yeniden yazmak için anahtarı kapatıp yeniden açın.",
+      stillOnTitle: "Windows OpenWraith'i hâlâ başlatıyor",
+      stillOnBody:
+        "Anahtar kapalı, ancak OpenWraith'in başlangıç kaydı silinemedi. Anahtarı açıp yeniden kapatın ya da OpenWraith'i Görev Yöneticisi > Başlangıç uygulamaları bölümünden kapatın.",
+      stillOnNoTrayBody:
+        "Bildirim alanı simgesi kapalı, ancak OpenWraith'in başlangıç kaydı silinemedi. OpenWraith'i Görev Yöneticisi > Başlangıç uygulamaları bölümünden kapatın ya da OpenWraith'i kapatıp yeniden başlatın: açılırken kaydı siler.",
+      unavailableTitle: "OpenWraith, Windows'un onu başlatıp başlatmayacağını bilemiyor",
+      unavailableBody:
+        "Başlangıç kaydı okunamadı ya da OpenWraith'in bu kopyası için kayıt yazılamıyor (örneğin klasör yolu çok uzun). OpenWraith'i Görev Yöneticisi > Başlangıç uygulamaları bölümünde denetleyin ya da anahtarı kapatıp yeniden açın: bir ileti neyin yanlış gittiğini söyler.",
+      recheck: "Yeniden denetle",
+    },
     notificationsTitle: "Bildirimler",
     notifyReset: "Klavye sıfırlanmış göründüğünde ya da firmware sürümü değiştiğinde bana haber ver",
     notifyResetHelp: "Otomatik yedek alınamadığında da.",
@@ -75,7 +92,7 @@ export const settings: Messages<typeof en> = {
     loadFailed: "Arka plan ayarları okunamadı.",
     shellErrorTitle: "Kaydedildi, ancak Windows değişikliği uygulamadı",
     shellErrorBody:
-      "OpenWraith bildirim alanı simgesini ya da Windows ile başlama kaydını güncelleyemedi. Kaydı yeniden yazmak için anahtarı kapatıp yeniden açın ya da OpenWraith'i Görev Yöneticisi > Başlangıç uygulamaları bölümünden açın.",
+      "OpenWraith bildirim alanı simgesini ya da Windows ile başlama kaydını güncelleyemedi; ayrıntılar aşağıda. Windows anahtarın dediğini yapmayacaksa, anahtarın altındaki not bunun nasıl düzeltileceğini söyler.",
   },
   games: {
     toggle: "Oyunlar için profili otomatik değiştir",

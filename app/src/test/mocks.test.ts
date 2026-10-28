@@ -11,6 +11,7 @@ import { createMockBackend } from "../preview/mockBackend";
 import { FIXTURES, findScenario, routeForFixture } from "../preview/registry";
 import { readPreviewParams } from "../preview/installMocks";
 import type { Fixture } from "../preview/types";
+import { backgroundIntent } from "../state/background";
 
 afterEach(() => {
   clearMocks();
@@ -226,10 +227,13 @@ describe("mock backend", () => {
       auto_backup: { enabled: true, keep: 20 },
     });
     expect(applied.shell).toEqual({ tray: true, start_with_windows: true });
+    // The mock's start entry follows the switch.
+    expect(applied.settings.windows_start).toBe("on");
     expect(await api.getBackgroundSettings()).toMatchObject({ tray_enabled: true, start_with_windows: true });
     // Without the tray, no start with Windows; keep is 1-100.
     const off = await api.setBackgroundSettings({ ...applied.settings, tray_enabled: false });
     expect(off.settings.start_with_windows).toBe(false);
+    expect(off.settings.windows_start).toBe("off");
     expect(off.shell).toEqual({ tray: false, start_with_windows: false });
     await expect(
       api.setBackgroundSettings({ ...off.settings, auto_backup: { enabled: true, keep: 0 } }),
@@ -278,6 +282,24 @@ describe("mock backend", () => {
       ["r-1", "cs2.exe"],
       ["r-2", program.exe],
     ]);
+  });
+
+  it("keeps a Task Manager 'off' the recording shows when the switch is turned off and on", async () => {
+    const backend = createMockBackend(fixture("settings_background_task_manager"), {
+      speed: 0,
+      replayEvents: false,
+      fallback: true,
+      library: FIXTURES,
+    });
+    mockIPC((command, args) => backend.handle(command, args));
+    await api.subscribe(() => undefined);
+    const before = await api.getBackgroundSettings();
+    expect(before).toMatchObject({ start_with_windows: true, windows_start: "off_in_task_manager" });
+    const intent = backgroundIntent(before);
+    const off = await api.setBackgroundSettings({ ...intent, start_with_windows: false });
+    expect(off.settings.windows_start).toBe("off");
+    const on = await api.setBackgroundSettings({ ...intent, start_with_windows: true });
+    expect(on.settings.windows_start).toBe("off_in_task_manager");
   });
 
   it("pins automatic backups and keeps the current settings without the keyboard", async () => {

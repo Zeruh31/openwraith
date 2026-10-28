@@ -48,6 +48,32 @@ impl Default for AutoBackupSettings {
     }
 }
 
+/// What Windows will do at the next sign-in, as the shell read it from the
+/// per-user Run entry and the Task Manager choice (read again every time
+/// the background settings are read or saved; nothing here is stored).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsStartState {
+    /// The switch is off and Windows does not start OpenWraith.
+    Off,
+    /// The switch is on and Windows starts this OpenWraith at sign-in.
+    On,
+    /// The switch is on, but OpenWraith is turned off in Task Manager >
+    /// Startup apps (OpenWraith never changes that choice).
+    OffInTaskManager,
+    /// The switch is on, but Windows has no entry that starts this
+    /// OpenWraith (it was removed, or it starts another copy).
+    EntryMissing,
+    /// The switch is off, but an entry is left and Windows still starts
+    /// OpenWraith (its removal failed).
+    StillOn,
+    /// Not known: a simulator build, no shell, or the registry could not be
+    /// read.
+    #[default]
+    Unavailable,
+}
+
 /// The background settings as stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -56,6 +82,10 @@ pub struct BackgroundSettingsView {
     pub tray_enabled: bool,
     /// Start with Windows, hidden in the notification area (needs the tray).
     pub start_with_windows: bool,
+    /// What Windows will do at the next sign-in (not stored: the shell
+    /// reads it each time through the core's shell hook; `unavailable`
+    /// without one).
+    pub windows_start: WindowsStartState,
     /// The first close to the tray was explained (a notification once).
     pub close_to_tray_explained: bool,
     /// Notifications.

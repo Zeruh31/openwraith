@@ -20,7 +20,7 @@ use crate::dto::{
     ExportIntent, ExportSource, FileToken, Headline, KnownGoodTableView, Notice,
     NotificationSettings, OpKind, PresetEditIntent, PresetRef, ProfileNamesIntent, ProgressStep,
     RecoveryIntent, RecoveryProfileState, RecoveryStatusView, ResetEvidenceView,
-    ShareSelectionView, ShellChanges, SimAction,
+    ShareSelectionView, ShellChanges, SimAction, WindowsStartState,
 };
 use crate::handle::WorkerHandle;
 use crate::sink::ShellHook;
@@ -626,7 +626,7 @@ fn exports_take_the_chosen_parts_and_automatic_backups_as_a_source() {
     assert_eq!(h.packets(), packets);
 }
 
-/// Records what the shell was asked to change.
+/// Records what the shell was asked to change; a failing one has no entry.
 #[derive(Default)]
 struct Shell(Mutex<Vec<ShellChanges>>, bool);
 
@@ -637,6 +637,14 @@ impl ShellHook for Shell {
             Err(crate::dto::AppError::new(AppErrorKind::Io, "no Run key"))
         } else {
             Ok(())
+        }
+    }
+
+    fn windows_start(&self, wanted: bool) -> WindowsStartState {
+        match (wanted, self.1) {
+            (false, _) => WindowsStartState::Off,
+            (true, false) => WindowsStartState::On,
+            (true, true) => WindowsStartState::EntryMissing,
         }
     }
 }
@@ -660,14 +668,26 @@ fn background_settings_are_validated_saved_and_handed_to_the_shell() {
     assert!(defaults.notifications.reset && !defaults.notifications.auto_switch);
     assert!(defaults.auto_backup.enabled);
     assert_eq!(defaults.auto_backup.keep, 10);
+    // Without a shell nobody can tell what Windows will do.
+    assert_eq!(defaults.windows_start, WindowsStartState::Unavailable);
     let shell = Arc::new(Shell::default());
     handle.set_shell_hook(shell.clone());
+    assert_eq!(
+        handle.background_settings().windows_start,
+        WindowsStartState::Off
+    );
     let mut intent = auto_backup_settings(true, 5);
     intent.tray_enabled = true;
     intent.start_with_windows = true;
     let applied = handle.set_background_settings(&intent).unwrap();
     assert!(applied.settings.tray_enabled && applied.settings.start_with_windows);
     assert_eq!(applied.settings.auto_backup.keep, 5);
+    // Read after the change, and again with every read of the settings.
+    assert_eq!(applied.settings.windows_start, WindowsStartState::On);
+    assert_eq!(
+        handle.background_settings().windows_start,
+        WindowsStartState::On
+    );
     assert_eq!(
         applied.shell,
         ShellChanges {
@@ -680,6 +700,7 @@ fn background_settings_are_validated_saved_and_handed_to_the_shell() {
     intent.tray_enabled = false;
     let applied = handle.set_background_settings(&intent).unwrap();
     assert!(!applied.settings.start_with_windows);
+    assert_eq!(applied.settings.windows_start, WindowsStartState::Off);
     assert_eq!(
         applied.shell,
         ShellChanges {
@@ -702,6 +723,11 @@ fn background_settings_are_validated_saved_and_handed_to_the_shell() {
     intent.tray_enabled = true;
     let applied = handle.set_background_settings(&intent).unwrap();
     assert!(applied.shell_error.is_some());
+    // The lasting state says so too.
+    assert_eq!(
+        applied.settings.windows_start,
+        WindowsStartState::EntryMissing
+    );
     assert!(handle.background_settings().tray_enabled);
     handle.mark_close_to_tray_explained().unwrap();
     assert!(handle.background_settings().close_to_tray_explained);

@@ -51,7 +51,24 @@ export const settings = {
     startWithWindowsHelp: "It starts hidden in the notification area.",
     startNeedsTray: "Turn on the notification-area icon first: OpenWraith starts with Windows only there.",
     startUninstall:
-      "Turning the icon off also removes OpenWraith from the programs that start with Windows. Uninstalling OpenWraith doesn't remove that entry, so turn it off before you uninstall.",
+      "Turning the icon off also removes OpenWraith from the programs that start with Windows. Uninstalling removes that entry too if you installed OpenWraith with its setup program (.exe); after an installation from the .msi package, turn it off before you uninstall.",
+    windowsStart: {
+      offInTaskManagerTitle: "Windows won't start OpenWraith: it is turned off in Task Manager",
+      offInTaskManagerBody:
+        "OpenWraith is turned off in Task Manager > Startup apps. OpenWraith never changes that choice, and turning the switch off and on doesn't either: turn OpenWraith on there (or in Windows Settings > Apps > Startup).",
+      entryMissingTitle: "Windows won't start OpenWraith: its start entry is missing",
+      entryMissingBody:
+        "Windows has no start entry for this copy of OpenWraith: it was removed, or it starts another copy. Turn the switch off and on again to write it anew.",
+      stillOnTitle: "Windows still starts OpenWraith",
+      stillOnBody:
+        "The switch is off, but OpenWraith's start entry couldn't be removed. Turn the switch on and off again, or turn OpenWraith off in Task Manager > Startup apps.",
+      stillOnNoTrayBody:
+        "The notification-area icon is off, but OpenWraith's start entry couldn't be removed. Turn OpenWraith off in Task Manager > Startup apps, or close OpenWraith and start it again: it removes the entry when it starts.",
+      unavailableTitle: "OpenWraith can't tell whether Windows starts it",
+      unavailableBody:
+        "Its start entry couldn't be read, or this copy of OpenWraith can't have one (for example, its folder path is too long). Check OpenWraith in Task Manager > Startup apps, or turn the switch off and on again: a message then says what went wrong.",
+      recheck: "Check again",
+    },
     notificationsTitle: "Notifications",
     notifyReset: "Tell me when the keyboard looks reset or its firmware changed",
     notifyResetHelp: "Also when an automatic backup fails.",
@@ -74,7 +91,7 @@ export const settings = {
     loadFailed: "The background settings couldn't be read.",
     shellErrorTitle: "Saved, but Windows didn't take the change",
     shellErrorBody:
-      "OpenWraith couldn't update its notification-area icon or its start with Windows entry. Turn the switch off and on again to write the entry anew, or turn OpenWraith on in Task Manager > Startup apps.",
+      "OpenWraith couldn't update its notification-area icon or its start with Windows entry; the details are below. When Windows won't do what the switch says, the note under the switch says how to fix it.",
   },
   games: {
     toggle: "Switch profiles automatically for games",

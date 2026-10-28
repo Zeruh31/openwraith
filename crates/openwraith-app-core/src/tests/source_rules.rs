@@ -1,32 +1,45 @@
 //! Fitness tests on the source: the app writes only through the library's
 //! entry points, with its consent built in one place and used only by the
-//! apply steps.
+//! apply steps; `unsafe` lives in one file, which opens processes with the
+//! limited query right only.
 
 use std::path::{Path, PathBuf};
 
 use super::generated::repo_root;
 
-/// Every `.rs` file of the core (tests excluded) and of the app crate, with
-/// its path relative to the repository and its code without comments.
+/// Where the scanned `.rs` files are: the core's code and the whole Tauri
+/// crate (its `src`, its build script and any other Rust file in it).
+const SCANNED_DIRS: [&str; 2] = ["crates/openwraith-app-core/src", "app/src-tauri"];
+
+/// Whether the rules scan the file `rel` (relative to the repository, with
+/// `/`) found under [`SCANNED_DIRS`]: all but the core's own tests. The
+/// core forbids `unsafe_code`, which no module can allow again; the Tauri
+/// crate only denies it (so that `winproc.rs` can allow it), which any of
+/// its modules could allow, so its tests are scanned like the rest.
+fn scanned(rel: &str) -> bool {
+    !rel.starts_with("crates/openwraith-app-core/src/tests/")
+}
+
+/// Every scanned `.rs` file ([`scanned`]), with its path relative to the
+/// repository and its code without comments.
 fn sources() -> Vec<(String, String)> {
     let root = repo_root();
     let mut files = Vec::new();
-    for dir in ["crates/openwraith-app-core/src", "app/src-tauri/src"] {
+    for dir in SCANNED_DIRS {
         collect(&root.join(dir), &mut files);
     }
     files
         .into_iter()
-        .filter(|p| {
-            !p.to_string_lossy()
-                .replace('\\', "/")
-                .contains("/src/tests/")
-        })
         .map(|p| {
             let rel = p
                 .strip_prefix(&root)
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .replace('\\', "/");
+            (rel, p)
+        })
+        .filter(|(rel, _)| scanned(rel))
+        .map(|(rel, p)| {
             let text = std::fs::read_to_string(&p).unwrap();
             let code: String = text
                 .lines()
@@ -41,11 +54,14 @@ fn sources() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `.rs` files under `dir` (not in a build output folder `target`).
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect(&path, out);
+            if entry.file_name() != "target" {
+                collect(&path, out);
+            }
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
@@ -54,16 +70,28 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Whether `token` occurs in `code` as a whole word.
 fn has_word(code: &str, token: &str) -> bool {
-    let word = |c: char| c.is_alphanumeric() || c == '_';
-    code.match_indices(token).any(|(at, _)| {
-        let before = code[..at].chars().next_back().is_none_or(|c| !word(c));
-        let after = code[at + token.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !word(c));
-        before && after
-    })
+    !word_positions(code, token).is_empty()
 }
+
+/// Where `token` occurs in `code` as a whole word.
+fn word_positions(code: &str, token: &str) -> Vec<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices(token)
+        .filter(|(at, _)| {
+            let before = code[..*at].chars().next_back().is_none_or(|c| !word(c));
+            let after = code[at + token.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !word(c));
+            before && after
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// The one file of the app that may use `unsafe`: the limited process
+/// access of the per-game profiles' feed.
+const UNSAFE_FILE: &str = "app/src-tauri/src/winproc.rs";
 
 #[test]
 fn the_sources_are_scanned() {
@@ -74,7 +102,27 @@ fn the_sources_are_scanned() {
             .iter()
             .any(|(p, _)| p.ends_with("app/src-tauri/src/commands.rs"))
     );
-    assert!(!files.iter().any(|(p, _)| p.contains("/src/tests/")));
+    assert!(files.iter().any(|(p, _)| p == "app/src-tauri/build.rs"));
+    // Only the core's own tests are left out: the core forbids
+    // `unsafe_code`; the Tauri crate only denies it, so a test module of it
+    // could allow it and is scanned.
+    assert!(
+        !files
+            .iter()
+            .any(|(p, _)| p.starts_with("crates/openwraith-app-core/src/tests/"))
+    );
+    assert!(!scanned(
+        "crates/openwraith-app-core/src/tests/source_rules.rs"
+    ));
+    for file in [
+        "app/src-tauri/src/tests/mod.rs",
+        "app/src-tauri/src/tray/tests/menu.rs",
+        "app/src-tauri/tests/winproc.rs",
+        "app/src-tauri/build.rs",
+        "crates/openwraith-app-core/src/ops/tests.rs",
+    ] {
+        assert!(scanned(file), "{file} is scanned");
+    }
 }
 
 #[test]
@@ -97,7 +145,6 @@ fn no_raw_or_unguarded_write_api_is_used() {
         ("with_options", false),
         ("writer_with", false),
         ("HidTransport", false),
-        ("unsafe", false),
     ];
     for (path, code) in sources() {
         for (token, sim_may) in forbidden {
@@ -112,6 +159,244 @@ fn no_raw_or_unguarded_write_api_is_used() {
         );
         assert!(!code.contains("#[ts(export"), "{path} exports bindings");
     }
+}
+
+#[test]
+fn unsafe_code_lives_only_in_the_limited_process_access() {
+    let mut seen = false;
+    for (path, code) in sources() {
+        if path == UNSAFE_FILE {
+            seen = true;
+            continue;
+        }
+        assert!(!has_word(&code, "unsafe"), "{path} uses unsafe");
+        assert!(
+            !code.contains("allow(unsafe_code)"),
+            "{path} allows unsafe code"
+        );
+    }
+    assert!(seen, "{UNSAFE_FILE} is scanned");
+    // The core forbids it; the Tauri crate denies it, so that only that
+    // file can allow it, with its own lints for the unsafe blocks.
+    assert!(code_of("crates/openwraith-app-core/src/lib.rs").contains("#![forbid(unsafe_code)]"));
+    assert!(code_of("app/src-tauri/src/lib.rs").contains("#![deny(unsafe_code)]"));
+    let code = code_of(UNSAFE_FILE);
+    for lint in [
+        "#![allow(unsafe_code)]",
+        "#![deny(unsafe_op_in_unsafe_fn)]",
+        "#![deny(clippy::undocumented_unsafe_blocks)]",
+    ] {
+        assert!(code.contains(lint), "{UNSAFE_FILE} lacks {lint}");
+    }
+    // Every unsafe block has its `// SAFETY:` comment (clippy checks where).
+    let text = std::fs::read_to_string(repo_root().join(UNSAFE_FILE)).unwrap();
+    let blocks = word_positions(&code, "unsafe").len();
+    assert!(blocks > 0);
+    assert_eq!(
+        text.matches("// SAFETY: ").count(),
+        blocks,
+        "{UNSAFE_FILE}: a SAFETY comment per unsafe block"
+    );
+}
+
+#[test]
+fn processes_are_opened_with_the_limited_query_right_only() {
+    // Design B7: no memory read and no full query right on any process (a
+    // game's anti-cheat driver sees the handles), so `PROCESS_VM_READ`,
+    // `PROCESS_QUERY_INFORMATION` (as a word: not inside
+    // `PROCESS_QUERY_LIMITED_INFORMATION`) and the like never appear.
+    let mut calls = Vec::new();
+    for (path, code) in sources() {
+        for token in [
+            "PROCESS_VM_READ",
+            "PROCESS_QUERY_INFORMATION",
+            "PROCESS_ALL_ACCESS",
+            "NtOpenProcess",
+        ] {
+            assert!(!has_word(&code, token), "{path} uses {token}");
+        }
+        assert!(!code.contains("PROCESS_VM_"), "{path} uses a memory right");
+        for at in word_positions(&code, "OpenProcess") {
+            assert_eq!(path, UNSAFE_FILE, "{path} opens a process");
+            // An import (in a `use` list) or a call; never renamed.
+            let rest: String = code[at + "OpenProcess".len()..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .take(40)
+                .collect();
+            if rest.starts_with('(') {
+                assert!(
+                    rest.starts_with("(PROCESS_QUERY_LIMITED_INFORMATION,"),
+                    "{path}: OpenProcess{rest}"
+                );
+                calls.push(path.clone());
+            } else {
+                assert!(
+                    rest.starts_with(',') || rest.starts_with('}'),
+                    "{path}: OpenProcess{rest}"
+                );
+            }
+        }
+    }
+    assert_eq!(calls, [UNSAFE_FILE], "the only OpenProcess call");
+    // No process library of its own (sysinfo 0.39 opened every listed
+    // process with `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ`).
+    let manifest = std::fs::read_to_string(repo_root().join("app/src-tauri/Cargo.toml")).unwrap();
+    for line in manifest
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+    {
+        assert!(
+            !line.contains("sysinfo"),
+            "app/src-tauri/Cargo.toml: {line}"
+        );
+    }
+}
+
+/// The one file of the app that uses the registry: start with Windows.
+const REGISTRY_FILE: &str = "app/src-tauri/src/autostart.rs";
+
+#[test]
+fn the_registry_is_written_only_at_the_per_user_run_value() {
+    // Start with Windows (`autostart.rs`): the per-user Run value only,
+    // never `HKLM` (also not as administrator), and Task Manager's
+    // `StartupApproved` choice read, never written.
+    for (path, code) in sources() {
+        for token in ["windows_registry", "RegSetValueExW", "RegDeleteValueW"] {
+            assert!(
+                path == REGISTRY_FILE || !has_word(&code, token),
+                "{path} uses {token}"
+            );
+        }
+        for token in [
+            "LOCAL_MACHINE",
+            "HKEY_LOCAL_MACHINE",
+            "CLASSES_ROOT",
+            "CURRENT_CONFIG",
+        ] {
+            assert!(!has_word(&code, token), "{path} uses {token}");
+        }
+    }
+    // Its code without its tests (which write only under their own key).
+    let code = code_of(REGISTRY_FILE);
+    let code = &code[..code.find("\nmod tests {").expect("autostart.rs has tests")];
+    assert!(!has_word(code, "USERS"), "{REGISTRY_FILE} uses HKEY_USERS");
+    // One write and one delete, both of OpenWraith's Run value.
+    for (call, count) in [
+        ("set_string(VALUE_NAME,", 1),
+        ("remove_value(VALUE_NAME)", 1),
+    ] {
+        assert_eq!(code.matches(call).count(), count, "{REGISTRY_FILE}: {call}");
+    }
+    for token in [
+        "set_string",
+        "remove_value",
+        "set_bytes",
+        "set_value",
+        "set_u32",
+        "set_u64",
+        "set_hstring",
+        "set_expand_string",
+        "set_expand_hstring",
+        "set_multi_string",
+        "remove_tree",
+        "rename",
+        "transaction",
+        "raw_set_bytes",
+    ] {
+        let allowed = usize::from(matches!(token, "set_string" | "remove_value"));
+        assert_eq!(
+            word_positions(code, token).len(),
+            allowed,
+            "{REGISTRY_FILE}: {token}"
+        );
+    }
+    // Every key opened for writing is the Run key; the StartupApproved key
+    // is only ever opened for reading.
+    let writes = code.match_indices(".write()").count();
+    assert_eq!(writes, 2, "{REGISTRY_FILE}: the write and the delete");
+    for (at, _) in code.match_indices(".write()") {
+        let rest: String = code[at + ".write()".len()..]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(40)
+            .collect();
+        assert!(
+            rest.starts_with(".open(&self.run_key)")
+                || rest.starts_with(".create().open(&self.run_key)"),
+            "{REGISTRY_FILE}: .write(){rest}"
+        );
+    }
+    assert!(!code.contains(".create(&self.approved_key)"));
+    let opened: Vec<_> = code.match_indices("&self.approved_key").collect();
+    assert_eq!(
+        opened.len(),
+        1,
+        "{REGISTRY_FILE}: the approved key is read once"
+    );
+    assert!(code.contains("CURRENT_USER.open(&self.approved_key)"));
+    // The real keys: in the one constructor, which test builds do not have
+    // (no test can write the real Run or StartupApproved key).
+    for key in ["RUN_KEY", "APPROVED_KEY"] {
+        assert_eq!(
+            word_positions(code, key).len(),
+            2,
+            "{REGISTRY_FILE}: {key} is declared and used by the real registry only"
+        );
+    }
+    let real = code.find("fn real()").expect("the real registry");
+    assert!(
+        code[..real].trim_end().ends_with("#[cfg(not(test))]"),
+        "{REGISTRY_FILE}: the real keys are not in test builds"
+    );
+    // No start-entry library of its own (`tauri-plugin-autostart` 2.7 wrote
+    // the path unquoted, `HKLM` as administrator, and forced Task Manager's
+    // choice to enabled).
+    let manifest = std::fs::read_to_string(repo_root().join("app/src-tauri/Cargo.toml")).unwrap();
+    for line in manifest
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+    {
+        for name in ["tauri-plugin-autostart", "auto-launch"] {
+            assert!(!line.contains(name), "app/src-tauri/Cargo.toml: {line}");
+        }
+    }
+}
+
+#[test]
+fn what_only_the_windows_registry_uses_may_be_unused_off_windows() {
+    // The README builds the workspace on Linux too (`cargo clippy
+    // --workspace --all-targets -- -D warnings`). The key paths, the value
+    // name and the values read are used only by the real registry
+    // (`cfg(windows)`), so each may be unused off Windows (as all of
+    // `winproc.rs` may).
+    let code = code_of(REGISTRY_FILE);
+    for item in [
+        "pub const RUN_KEY:",
+        "pub const APPROVED_KEY:",
+        "pub const VALUE_NAME:",
+        "pub enum RunValue",
+    ] {
+        let at = code
+            .find(item)
+            .unwrap_or_else(|| panic!("{REGISTRY_FILE}: {item}"));
+        // Its attributes (the doc comments are empty lines here).
+        let allowed = code[..at]
+            .lines()
+            .rev()
+            .map(str::trim)
+            .take_while(|line| line.is_empty() || line.starts_with("#["))
+            .any(|line| {
+                line.starts_with("#[cfg_attr(")
+                    && line.contains("not(windows)")
+                    && line.ends_with("allow(dead_code))]")
+            });
+        assert!(
+            allowed,
+            "{REGISTRY_FILE}: {item} lacks #[cfg_attr(any(not(windows), ...), allow(dead_code))]"
+        );
+    }
+    assert!(code_of(UNSAFE_FILE).contains("#![cfg_attr(not(windows), allow(dead_code))]"));
 }
 
 #[test]

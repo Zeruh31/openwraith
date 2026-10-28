@@ -2,8 +2,12 @@
 // with Windows (only with the icon), notifications and automatic backups.
 // Each change is saved at once; the backend then tells the shell (tray icon,
 // Run entry) and says when Windows didn't take it (the setting stays saved).
+// What Windows will do at the next sign-in (`windows_start`) is read again
+// with the settings; while it differs from the switch, a callout under the
+// switch says why and how to fix it (Task Manager's choice is the user's:
+// OpenWraith never changes it).
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "../../components/Button";
 import { Switch } from "../../components/Controls";
@@ -12,9 +16,11 @@ import { Card } from "../../components/Layout";
 import { useRestoreFocus } from "../../components/useRestoreFocus";
 import { ErrorView } from "../../flow/ErrorView";
 import { useDict } from "../../i18n";
+import type { Dict } from "../../i18n";
 import type { AppError, BackgroundSettingsIntent, BackgroundSettingsView } from "../../ipc/bindings";
 import { toAppError } from "../../ipc/errors";
 import { navigate } from "../../routes";
+import { useAppInfo } from "../../state/appInfo";
 import {
   backgroundIntent,
   loadBackgroundSettings,
@@ -99,14 +105,48 @@ function KeepField({
   );
 }
 
+/**
+ * The callout's texts while Windows won't do what the switch says, else `null`. An entry left
+ * behind without the icon doesn't point to the switch (disabled then, and turning the icon on and
+ * off doesn't retry the removal): Task Manager, or a new start, whose check removes it. A simulator
+ * build (`sim`) never has an entry, so it has nothing to fix there.
+ */
+export function windowsStartProblem(
+  view: BackgroundSettingsView,
+  t: Dict["settings"]["background"]["windowsStart"],
+  sim = false,
+): { title: string; body: string } | null {
+  const wanted = view.tray_enabled && view.start_with_windows;
+  switch (view.windows_start) {
+    case "off_in_task_manager":
+      return wanted ? { title: t.offInTaskManagerTitle, body: t.offInTaskManagerBody } : null;
+    case "entry_missing":
+      return wanted ? { title: t.entryMissingTitle, body: t.entryMissingBody } : null;
+    case "unavailable":
+      return wanted && !sim ? { title: t.unavailableTitle, body: t.unavailableBody } : null;
+    case "still_on":
+      if (wanted) return null;
+      return { title: t.stillOnTitle, body: view.tray_enabled ? t.stillOnBody : t.stillOnNoTrayBody };
+    case "on":
+    case "off":
+      return null;
+  }
+}
+
 /** Settings > Background. */
 export function BackgroundTab() {
   const dict = useDict();
   const t = dict.settings.background;
   const view = useBackgroundSettings();
+  const info = useAppInfo();
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [shellError, setShellError] = useState<AppError | null>(null);
+  const busy = useRef(false);
+  useEffect(() => {
+    busy.current = saving || checking;
+  }, [saving, checking]);
   useRestoreFocus(saving);
 
   useEffect(() => {
@@ -114,8 +154,18 @@ export function BackgroundTab() {
     loadBackgroundSettings().catch((error: unknown) => {
       if (alive) setLoadError(toAppError(error));
     });
+    // Back from Task Manager: read what Windows will do again (not while a
+    // change is being saved, which answers with it anyway).
+    const refresh = () => {
+      if (busy.current) return;
+      loadBackgroundSettings().catch(() => {
+        // The page keeps what it shows; "Check again" reports a failure.
+      });
+    };
+    window.addEventListener("focus", refresh);
     return () => {
       alive = false;
+      window.removeEventListener("focus", refresh);
     };
   }, []);
 
@@ -144,7 +194,7 @@ export function BackgroundTab() {
   }
 
   const apply = (change: (intent: BackgroundSettingsIntent) => BackgroundSettingsIntent) => {
-    if (saving) return;
+    if (saving || checking) return;
     setSaving(true);
     saveBackgroundSettings(change(backgroundIntent(view)))
       .then((applied) => {
@@ -157,6 +207,19 @@ export function BackgroundTab() {
         setSaving(false);
       });
   };
+
+  const recheck = () => {
+    if (saving || checking) return;
+    setChecking(true);
+    loadBackgroundSettings()
+      .catch((error: unknown) => {
+        toast({ kind: "danger", title: t.loadFailed, details: toAppError(error).message });
+      })
+      .finally(() => {
+        setChecking(false);
+      });
+  };
+  const startProblem = windowsStartProblem(view, t.windowsStart, info.sim);
 
   return (
     <div className="st-grid">
@@ -189,6 +252,20 @@ export function BackgroundTab() {
               apply((intent) => ({ ...intent, start_with_windows: start }));
             }}
           />
+          {startProblem === null ? null : (
+            <Callout
+              kind="warning"
+              title={startProblem.title}
+              role="status"
+              actions={
+                <Button size="sm" icon="refresh" disabled={saving || checking} onClick={recheck}>
+                  {t.windowsStart.recheck}
+                </Button>
+              }
+            >
+              <p>{startProblem.body}</p>
+            </Callout>
+          )}
           <p className="ow-muted ow-small">{t.startUninstall}</p>
         </div>
       </Card>

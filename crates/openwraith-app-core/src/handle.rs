@@ -28,7 +28,7 @@ use crate::dto::{
     ProfileSwitchPreview, ProfileSwitchReport, ProgramView, RecoveryIntent, RecoveryView,
     RestoreIntent, RestorePreview, RestoreReportView, RevealTarget, SafetyBackupEntry,
     SocdEditIntent, SocdEditPreview, SocdStateView, TravelCloseReport, TriggerEditIntent,
-    TriggerEditPreview, TriggerLimitsView, UiStateReport, UserPresetIntent,
+    TriggerEditPreview, TriggerLimitsView, UiStateReport, UserPresetIntent, WindowsStartState,
 };
 use crate::files::{FileKind, list_safety, safety_entry};
 use crate::ops::journal;
@@ -517,19 +517,37 @@ impl WorkerHandle {
         self.shared.set_shell(hook);
     }
 
-    /// `get_background_settings`.
+    /// `get_background_settings`: as saved, with what Windows will do at
+    /// the next sign-in (asked from the registered [`ShellHook`];
+    /// `unavailable` without one).
     pub fn background_settings(&self) -> BackgroundSettingsView {
-        self.config
+        let settings = self
+            .config
             .settings_path
             .as_deref()
             .map(crate::settings::background)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.with_windows_start(settings)
+    }
+
+    /// `settings` with the start state the shell reads now.
+    fn with_windows_start(&self, settings: BackgroundSettingsView) -> BackgroundSettingsView {
+        let windows_start = self
+            .shared
+            .shell()
+            .map_or(WindowsStartState::Unavailable, |hook| {
+                hook.windows_start(settings.start_with_windows)
+            });
+        BackgroundSettingsView {
+            windows_start,
+            ..settings
+        }
     }
 
     /// `set_background_settings`: validates and saves them, then has the
     /// shell apply what changed (the tray, start with Windows; through the
-    /// registered [`ShellHook`]). Without the tray there is no start with
-    /// Windows.
+    /// registered [`ShellHook`]) and reads what Windows will do now.
+    /// Without the tray there is no start with Windows.
     pub fn set_background_settings(
         &self,
         intent: &BackgroundSettingsIntent,
@@ -542,7 +560,7 @@ impl WorkerHandle {
             _ => None,
         };
         Ok(BackgroundSettingsApplied {
-            settings,
+            settings: self.with_windows_start(settings),
             shell,
             shell_error,
         })

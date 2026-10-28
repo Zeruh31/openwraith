@@ -257,6 +257,7 @@ export type { UiStateReport } from "./UiStateReport";
 export type { UnverifiedNoteView } from "./UnverifiedNoteView";
 export type { UserPresetIntent } from "./UserPresetIntent";
 export type { UserPresetView } from "./UserPresetView";
+export type { WindowsStartState } from "./WindowsStartState";
 export type { WriteBlockReason } from "./WriteBlockReason";
 export type { WriteGate } from "./WriteGate";
 export type { WriteWarningView } from "./WriteWarningView";

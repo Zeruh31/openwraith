@@ -95,13 +95,24 @@ simulator and with recorded fixtures (hardware checks A11-A35 in
 - **WebView2.** Windows 11 includes it. If it is missing, the installer
   downloads Microsoft's WebView2 installer (the only network access; the app
   itself never uses the network).
-- **Uninstall** in Windows Settings > Apps. Your safety backups and
-  automatic backups stay where they are. **If you turned on "Start
-  OpenWraith with Windows", turn off the notification-area icon in
-  Settings > Background first:** the uninstaller does not remove that
-  start entry (otherwise remove "OpenWraith" in Task Manager > Startup apps
-  afterwards). An entry made while OpenWraith ran as administrator is for
-  all users and is removed only in Task Manager > Startup apps.
+- **Uninstall** in Windows Settings > Apps. Your safety backups stay where
+  they are (`%LOCALAPPDATA%\OpenWraith\safety-backups`). The automatic
+  backups and the settings stay too, **unless you tick "Delete the
+  application data"** in the uninstaller of the setup program (`.exe`):
+  that deletes `%APPDATA%\io.github.zeruh31.openwraith` and
+  `%LOCALAPPDATA%\io.github.zeruh31.openwraith`, and the automatic backups
+  with them. The setup program's uninstaller also removes the "Start
+  OpenWraith with Windows" entry; a newer setup program that uninstalls
+  the old version first (its default) removes it too, and OpenWraith
+  writes it again the next time it starts. What you chose for OpenWraith
+  in Task Manager > Startup apps stays (an entry you disabled there stays
+  disabled after such an upgrade); only "Delete the application data"
+  removes that choice, with the settings. The MSI's uninstaller leaves
+  that entry: if you turned the option on, turn it off in Settings >
+  Background before you uninstall an MSI installation, or delete it
+  afterwards with
+  `reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OpenWraith /f`
+  (an entry left behind starts nothing once OpenWraith is gone).
 
 ### Use
 
@@ -225,14 +236,21 @@ profile switch is the same profile select as Fn + 1-4.
   another program, a key-depth test that may still be running). Hiding the
   window stops a live key-depth view, never a write.
 - **Start with Windows** (needs the icon): a per-user entry `OpenWraith` in
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` starts the app
-  hidden in the notification area (`--tray`). Turning the icon off removes
-  the entry. **The uninstaller does not remove it** (see Install). An entry
-  you turned off in Task Manager stays off: OpenWraith says so instead of
-  turning it back on. If OpenWraith ran as administrator when you turned
-  the option on, the entry is for all users (`HKLM`): turning the icon off
-  then cannot remove it, and OpenWraith says to turn it off in Task
-  Manager > Startup apps.
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, the path of
+  `openwraith-app.exe` in quotes followed by `--tray`, starts the app
+  hidden in the notification area. Never an entry for all users (`HKLM`),
+  also not when OpenWraith runs as administrator. Turning the option or
+  the icon off removes the entry; the setup program's uninstaller removes
+  it too, the MSI's does not (see Install). OpenWraith never changes what
+  you chose in Task Manager > Startup apps: while OpenWraith is turned off
+  there, Settings > Background says so under the switch (turn it on again
+  in Task Manager; turning the switch off and on does not change that
+  choice). It also says when Windows has no entry for this OpenWraith
+  (turn the switch off and on again) or still has one while the switch is
+  off (turn OpenWraith off in Task Manager, or start OpenWraith again).
+  At start OpenWraith writes the entry anew if the setting wants it and
+  it is missing or starts another copy, and removes it if the setting is
+  off; a start at sign-in does that check only after two minutes.
 - **Notifications** (Windows notifications of the installed app): the
   keyboard reported a reset, a profile looks reset, the firmware changed,
   an automatic backup failed (setting "reset alerts", on by default); a game
@@ -499,7 +517,7 @@ Install `pkg-config` and the udev development files (Debian/Ubuntu:
 (the CLI only; or explicitly `cargo build -p openwraith-cli --release`).
 
 The workspace-wide commands (`cargo test --workspace`, `cargo clippy
---workspace`) also build the desktop app, which needs Rust 1.95 and the Tauri
+--workspace`) also build the desktop app, which needs Rust 1.90 and the Tauri
 Linux prerequisites (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
 `libsoup-3.0-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`). The
 desktop app is not tested on Linux yet.
@@ -795,16 +813,18 @@ cargo fmt --all --check
 ```
 
 The `--workspace` commands include the desktop app's Tauri crate: they need
-Rust 1.95 or newer (and, on Linux, the Tauri prerequisites listed above).
+Rust 1.90 or newer (and, on Linux, the Tauri prerequisites listed above).
 
 Every test runs against the captures (through a mock transport) or against a
-simulated keyboard; no test opens a HID device. Contributions must never copy
-code or data files from the vendor's site: work from
-[docs/PROTOCOL.md](docs/PROTOCOL.md) and from your own captures.
+simulated keyboard; no test opens a HID device. No test touches the real
+start-with-Windows entry: on Windows one test writes the registry, only
+under `HKCU\Software\OpenWraithTests\<unique>`, and removes that key again.
+Contributions must never copy code or data files from the vendor's site:
+work from [docs/PROTOCOL.md](docs/PROTOCOL.md) and from your own captures.
 
 ### Desktop app development
 
-Prerequisites: the Rust toolchain above (the app needs Rust 1.95 or newer),
+Prerequisites: the Rust toolchain above (the app needs Rust 1.90 or newer),
 Node 22.22.2+, 24.15+ or 26+ (the versions the pinned Vite, Vitest, jsdom and
 ESLint support), and WebView2 (part of Windows 11). Run these from the
 repository root:
@@ -963,14 +983,25 @@ A11-A35, [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
 - WebView2 Windows 11'de hazır gelir. Yoksa kurulum programı Microsoft'un
   WebView2 kurulumunu indirir (tek ağ erişimi budur; uygulamanın kendisi ağı
   hiç kullanmaz).
-- Kaldırmak için Windows Ayarlar > Uygulamalar. Güvenlik yedekleriniz ve
-  otomatik yedekleriniz silinmez. **"OpenWraith Windows ile başlasın"
-  seçeneğini açtıysanız, kaldırmadan önce Ayarlar > Arka plan'da bildirim
-  alanı simgesini kapatın:** kaldırma programı bu başlangıç kaydını silmez
-  (yoksa sonradan Görev Yöneticisi > Başlangıç uygulamaları'ndan
-  "OpenWraith" kaydını kaldırın). OpenWraith yönetici olarak çalışırken
-  oluşturulan bir kayıt bütün kullanıcılar içindir ve yalnızca Görev
-  Yöneticisi > Başlangıç uygulamaları'ndan kaldırılır.
+- Kaldırmak için Windows Ayarlar > Uygulamalar. Güvenlik yedekleriniz
+  silinmez (`%LOCALAPPDATA%\OpenWraith\safety-backups`). Otomatik
+  yedekleriniz ve ayarlarınız da kalır; **ancak kurulum programının (`.exe`)
+  kaldırma programında "Uygulama verilerini sil" seçeneğini işaretlerseniz**
+  `%APPDATA%\io.github.zeruh31.openwraith` ve
+  `%LOCALAPPDATA%\io.github.zeruh31.openwraith` klasörleri, otomatik
+  yedeklerle birlikte silinir. Kurulum programının kaldırma programı
+  "OpenWraith Windows ile başlasın" kaydını da siler; önce eski sürümü
+  kaldıran (varsayılan seçenek) daha yeni bir kurulum programı da siler ve
+  OpenWraith kaydı bir sonraki açılışında yeniden yazar. Görev Yöneticisi >
+  Başlangıç uygulamaları'nda OpenWraith için yaptığınız seçim kalır (orada
+  devre dışı bıraktığınız bir kayıt böyle bir yükseltmeden sonra da devre
+  dışı kalır); bu seçimi yalnızca "Uygulama verilerini sil", ayarlarla
+  birlikte siler. MSI'nın kaldırma programı bu kaydı bırakır: bu seçeneği
+  açtıysanız, MSI ile yapılmış bir kurulumu kaldırmadan önce Ayarlar > Arka
+  plan'da kapatın ya da kaydı sonradan
+  `reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OpenWraith /f`
+  komutuyla silin (OpenWraith kaldırıldıktan sonra geride kalan bir kayıt
+  hiçbir şey başlatmaz).
 
 **Kullanım:**
 
@@ -1104,14 +1135,22 @@ profil değiştirme de Fn + 1-4 ile aynı profil seçimidir.
   derinliği görünümünü durdurur, bir yazmayı asla.
 - **Windows ile başlatma** (simge gerekir):
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` altındaki kullanıcıya
-  özel `OpenWraith` kaydı uygulamayı bildirim alanında gizli başlatır
-  (`--tray`). Simgeyi kapatmak bu kaydı siler. **Kaldırma programı bu kaydı
-  silmez** (Kurulum'a bakın). Görev Yöneticisi'nde kapattığınız bir kayıt
-  kapalı kalır: OpenWraith onu yeniden açmaz, durumu size söyler.
-  Seçeneği açtığınızda OpenWraith yönetici olarak çalışıyorduysa kayıt
-  bütün kullanıcılar içindir (`HKLM`): simgeyi kapatmak onu silemez ve
-  OpenWraith, kaydı Görev Yöneticisi > Başlangıç uygulamaları'ndan
-  kapatmanızı söyler.
+  özel `OpenWraith` kaydı (tırnak içinde `openwraith-app.exe` yolu ve
+  ardından `--tray`) uygulamayı bildirim alanında gizli başlatır. Bütün
+  kullanıcılar için bir kayıt (`HKLM`) hiçbir zaman yazılmaz; OpenWraith
+  yönetici olarak çalışırken de yazılmaz. Seçeneği ya da simgeyi kapatmak
+  kaydı siler; kurulum programının kaldırma programı da siler, MSI'nınki
+  silmez (Kurulum'a bakın). OpenWraith, Görev Yöneticisi > Başlangıç
+  uygulamaları'nda yaptığınız seçimi hiçbir zaman değiştirmez: OpenWraith
+  orada kapalı olduğu sürece Ayarlar > Arka plan bunu anahtarın altında
+  söyler (Görev Yöneticisi'nde yeniden açın; anahtarı kapatıp açmak bu
+  seçimi değiştirmez). Windows'ta bu OpenWraith için kayıt olmadığında
+  (anahtarı kapatıp yeniden açın) ya da anahtar kapalıyken kayıt hâlâ
+  durduğunda da (OpenWraith'i Görev Yöneticisi'nde kapatın ya da
+  OpenWraith'i yeniden başlatın) bunu söyler. OpenWraith açılışta, ayar
+  istiyorsa ve kayıt yoksa ya da başka bir kopyayı başlatıyorsa kaydı
+  yeniden yazar; ayar kapalıysa kaydı siler. Oturum açılışındaki bir başlatma bu denetimi
+  ancak iki dakika sonra yapar.
 - **Bildirimler** (kurulu uygulamanın Windows bildirimleri): klavye bir
   sıfırlama bildirdi, bir profil sıfırlanmış görünüyor, firmware değişti,
   otomatik yedek alınamadı ("sıfırlama uyarıları" ayarı, varsayılan açık);
@@ -1372,11 +1411,14 @@ gerekmez. `cargo build --release` yalnızca komut satırı aracını ve
 kütüphaneleri derler (Rust 1.89 ve üstü yeterlidir); açıkça
 `cargo build -p openwraith-cli --release` de yazılabilir. Linux için
 yukarıdaki udev kuralına bakın. `cargo test --workspace` gibi bütün çalışma
-alanını kapsayan komutlar masaüstü uygulamasını da derler: Rust 1.95 ve
+alanını kapsayan komutlar masaüstü uygulamasını da derler: Rust 1.90 ve
 Linux'ta Tauri ön koşulları gerekir (Debian/Ubuntu: `libwebkit2gtk-4.1-dev`,
 `libgtk-3-dev`, `libsoup-3.0-dev`, `librsvg2-dev`,
 `libayatana-appindicator3-dev`). Masaüstü uygulaması Linux'ta henüz test
-edilmedi.
+edilmedi. Hiçbir test gerçek "Windows ile başlat" kaydına dokunmaz:
+Windows'ta kayıt defterine yalnızca bir test yazar; o da yalnızca
+`HKCU\Software\OpenWraithTests\<benzersiz>` altına yazar ve bu anahtarı
+sonra siler.
 
 **Kullanım:**
 
@@ -1503,7 +1545,7 @@ henüz bilinmiyor (Q3); geri yükleme onları yalnızca karşılaştırır.
 
 ### Geliştirme
 
-**Masaüstü uygulaması:** Rust (1.95 veya üstü), Node (22.22.2 ve üstü,
+**Masaüstü uygulaması:** Rust (1.90 veya üstü), Node (22.22.2 ve üstü,
 24.15 ve üstü ya da 26 ve üstü) ve WebView2 gerekir. Komutlar depo
 klasöründe çalıştırılır:
 

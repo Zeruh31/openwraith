@@ -355,6 +355,10 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
   const background: Kept<BackgroundSettingsView> = { value: null, index: -1 };
   const profileNames: Kept<ProfileNamesView> = { value: null, index: -1 };
   const automation: Kept<AutoProfileStateView> = { value: null, index: -1 };
+  /** The recording shows OpenWraith turned off in Task Manager > Startup apps. */
+  const taskManagerOff = calls.some(
+    (call) => call.command === "get_background_settings" && call.ok?.windows_start === "off_in_task_manager",
+  );
   /** Programs answered so far, by token (for game rules). */
   const programs = new Map<string, ProgramView>();
   /** The recovery the user compared (its `apply_restore` resolves the hold). */
@@ -757,10 +761,14 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
       throw refused(`keep 1 to 100 automatic backups per profile, not ${String(keep)}`, "the settings were not saved");
     }
     const before = backgroundView();
+    // Starting with Windows needs the notification-area icon.
+    const start = intent.tray_enabled && intent.start_with_windows;
     const next: BackgroundSettingsView = {
       tray_enabled: intent.tray_enabled,
-      // Starting with Windows needs the notification-area icon.
-      start_with_windows: intent.tray_enabled && intent.start_with_windows,
+      start_with_windows: start,
+      // The mock's start entry follows the switch; a "turned off in Task Manager" the recording
+      // shows stays, as in the app (OpenWraith never changes that choice).
+      windows_start: !start ? "off" : taskManagerOff ? "off_in_task_manager" : "on",
       close_to_tray_explained: before.close_to_tray_explained,
       notifications: clone(intent.notifications),
       auto_backup: clone(intent.auto_backup),

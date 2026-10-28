@@ -1145,7 +1145,7 @@ chooses, ack
 | Crate | Contents |
 |---|---|
 | `crates/openwraith-app-core` | Everything but Tauri: the device worker and its connection state machine, the operations (prepare / apply), the IPC data types (`dto`; the TypeScript types are generated from them), the mappings from the library's types, the file registry, the operation journal, settings, the known-good store and reset detection (`autobackup.rs`, `ops/recovery.rs`), the per-game profile engine (`auto/`, `ops/auto_profile.rs`), the coexistence with the CLI and session hygiene (`worker/coexist.rs`, `worker/hygiene.rs`), the seams for the shell (`shell.rs` data types; traits `ShellHook`, `ProgramSource`, `NotificationSink`, `TraySink`), the simulator backend (feature `sim`, or tests) and all Rust tests of the app. `#![forbid(unsafe_code)]`; `unwrap`, `expect` and `panic` are denied outside tests. |
-| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`: progress, events and the live key-depth frames), file dialogs from Rust (`dialogs.rs`), the close guard, close to tray, the focus check and route navigation (`window.rs`), paths (`paths.rs`), and the background shell: the notification-area icon (`tray.rs`), Windows notifications (`notify.rs`), start with Windows (`autostart.rs`), the `ShellHook` (`shell.rs`), the foreground-program feed (`foreground.rs`) and the texts shown outside the window (`texts.rs`). |
+| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`: progress, events and the live key-depth frames), file dialogs from Rust (`dialogs.rs`), the close guard, close to tray, the focus check and route navigation (`window.rs`), paths (`paths.rs`), and the background shell: the notification-area icon (`tray.rs`), Windows notifications (`notify.rs`), start with Windows (`autostart.rs`), the `ShellHook` (`shell.rs`), the foreground-program feed (`foreground.rs`) with its limited process access (`winproc.rs`) and the texts shown outside the window (`texts.rs`). `#![deny(unsafe_code)]`, allowed only in `winproc.rs` (the Win32 process calls); `unwrap`, `expect` and `panic` are denied outside tests. |
 
 `cargo test --workspace` needs no Node: the core's tests use the simulator
 under `cfg(test)`. The Tauri crate builds without a built frontend
@@ -1153,7 +1153,7 @@ under `cfg(test)`. The Tauri crate builds without a built frontend
 and, in debug builds only, a placeholder `legal/THIRD-PARTY-NOTICES.txt`).
 `cargo build` without `-p` builds the default members only (the CLI and the
 libraries, Rust 1.89 for `File::try_lock`); the `--workspace` commands
-include the Tauri crate (Rust 1.95, for `sysinfo` 0.39).
+include the Tauri crate (Rust 1.90, for Tauri 2.12 and its plugins).
 
 ### Threads
 
@@ -1182,7 +1182,7 @@ exit hook runs once.
 
 The Tauri crate adds one thread, `openwraith-foreground`: every second it
 reports the program in front (`active-win-pos-rs`) with
-`foreground_changed` and checks the watched game processes (`sysinfo`,
+`foreground_changed` and checks the watched game processes (`winproc.rs`,
 `auto_watched_pids` / `process_exited`); it never touches the keyboard and
 stops at exit before the worker. The core calls the shell's sinks
 (`TraySink`, `NotificationSink`) from the worker thread; the glue only
@@ -1326,12 +1326,37 @@ check, `cancel_requested`, the macros emptied by a failed slot-0 write and
 the keys left on them); an import report is the restore report
 (`LastReport::Import`, shown in import words).
 
-Nothing else may write. A source-scan test (`tests::source_rules`) checks:
+Nothing else may write. A source-scan test (`tests::source_rules`) checks
+the app code: every `.rs` file of the core but its own tests (the core
+forbids `unsafe_code`, which no module can allow again) and every `.rs`
+file of the Tauri crate, its build script and any tests included (the
+crate only denies `unsafe_code`, which any of its modules could allow):
 
 - no app code uses `write_guarded`, `write_commit_trigger`, `write_command`
   (the simulator backend aside), `WritePacket`, `WriteRequest`,
   `TriggerGrouping` / `SameSetting`, `CommitSettle`, `SessionOptions`,
-  `writer_with`, hand-built `WriteOptions`, `HidTransport` or `unsafe`;
+  `writer_with`, hand-built `WriteOptions`, `HidTransport` or `unsafe`
+  (outside `app/src-tauri/src/winproc.rs`);
+- `unsafe` only in `app/src-tauri/src/winproc.rs`: the core forbids
+  `unsafe_code`, the Tauri crate denies it and only that file allows it,
+  with `unsafe_op_in_unsafe_fn` and `clippy::undocumented_unsafe_blocks`
+  denied and a `// SAFETY:` comment per `unsafe` block; no app code names
+  `PROCESS_VM_READ`, `PROCESS_QUERY_INFORMATION` (as a word, not inside
+  `PROCESS_QUERY_LIMITED_INFORMATION`), `PROCESS_ALL_ACCESS`, any other
+  `PROCESS_VM_` right or `NtOpenProcess`; the only `OpenProcess` call is in
+  that file and passes `PROCESS_QUERY_LIMITED_INFORMATION` alone; the app
+  crate does not depend on `sysinfo`;
+- the registry only in `app/src-tauri/src/autostart.rs` (`windows_registry`
+  nowhere else), no app code names `LOCAL_MACHINE` / `HKEY_LOCAL_MACHINE`
+  (nor `CLASSES_ROOT`, `CURRENT_CONFIG`, `USERS`); outside its tests that
+  file has exactly one `set_string(VALUE_NAME, ...)` and one
+  `remove_value(VALUE_NAME)`, no other registry write call, every key it
+  opens for writing is the Run key, the StartupApproved key is opened once,
+  for reading, and the real key paths are used only by a constructor that
+  test builds do not have; the key paths, the value name and `RunValue`
+  (used only by that Windows code) may be unused off Windows, where the
+  workspace builds too; the app crate depends on neither
+  `tauri-plugin-autostart` nor `auto-launch`;
 - no app code builds or patches a table, a slot or a raw entry, or decodes
   raw entries past the library's views (`set_entry`, `KeymapData`,
   `MacroData`, `CanonicalMacro`, `AdvancedSlotData`, `SocdWrite`,
@@ -1410,9 +1435,10 @@ only. Travel samples never enter the session's events.
 
 **Export and import.** `choose_export_destination` and `open_import_file`
 open the Rust dialogs and hand out file tokens. An export is
-`Backup::export_profile` (scope `profile_export`, no USB serial; the whole
-profile, since the library has no category filter yet); the active profile
-is a pure read, another profile needs `confirmed_switch`. An import is a
+`Backup::export_profile`, or `Backup::export_profile_parts` for chosen
+categories (scope `profile_export`, no USB serial; see the end of this
+paragraph); the active profile is a pure read, another profile needs
+`confirmed_switch`. An import is a
 restore with `ImportOptions`: the chosen categories (triggers and lighting
 by default), into a chosen profile (`confirmed_switches` when it is not
 active), a critical Fn override (Fn + 1..4, Fn + Space) only when every
@@ -1578,6 +1604,27 @@ every tick, and when it is not the one the engine set, that hold ends
 silently. A waiting switch is announced once per episode, also across
 alt-tabs, and skipped 30 s after it first waited.
 
+**Platform feed** (`foreground.rs`, `winproc.rs`; design B7: limited query
+rights only). The program in front is sampled every second
+(`active-win-pos-rs` opens the window's process with
+`PROCESS_QUERY_LIMITED_INFORMATION` for its path). The watched game
+processes other than the one in front are checked every 3 polls, and a game
+that just left the front at once: one Toolhelp32 process snapshot
+(`TH32CS_SNAPPROCESS`, which opens no process) says which still run, and
+each one still listed is opened with
+`PROCESS_QUERY_LIMITED_INFORMATION` alone for its start time
+(`GetProcessTimes`), the handle closed at once; the file name and the start
+time tell a reused pid from the game. The snapshot decides: a game that has
+exited is no longer listed even while another program (a launcher) still
+holds a handle to it (seen on Windows 11). A snapshot that fails reports no
+exit. The running list of Settings > Games is the same snapshot with each
+process's path (`QueryFullProcessImageNameW`, the same right; a process
+that refuses it is listed by its file name only). No process handle of the
+app has a memory right or the full query right, the game in front is never
+opened by the check, and no handle is kept between checks. Until 5b-3 the
+check and the list used `sysinfo` 0.39, which opened every process it
+looked at with `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ`.
+
 **Gates** (`Worker::auto_block`, in this order): paused for the CLI; `Ready`
 (or `OtherProgram` re-armed by the 180 s rule); no reset or lost session;
 no live depth view; no operation (the busy flag) and no pending plan; no
@@ -1648,13 +1695,58 @@ The core stays Tauri-free; the Tauri crate implements its seams:
 
 - `ShellHook` (`shell.rs`): `set_background_settings` saves first, then
   applies the changes (`ShellChanges`): start with Windows through
-  `autostart.rs` (`tauri-plugin-autostart`, the per-user Run value
-  `OpenWraith` = `<exe> --tray`, checked with `is_enabled` afterwards; a
-  disabled Task Manager entry or a machine-wide one is reported as an error,
-  never forced; not registered in simulator builds, so a dev build never
-  writes the Run key), then the icon. Turning the icon off also removes the
-  Run value and shows a hidden window. At start, `autostart::reconcile`
-  removes a Run value the settings no longer want and never re-creates one.
+  `autostart.rs`, then the icon. Turning the icon off also removes the Run
+  value and shows a hidden window. The hook also answers
+  `windows_start(wanted)`: what Windows will do at the next sign-in
+  (`WindowsStartState`: `off`, `on`, `off_in_task_manager`,
+  `entry_missing`, `still_on`, `unavailable`), which the handle puts into
+  `BackgroundSettingsView::windows_start` for every
+  `get_background_settings` and after every `set_background_settings`
+  (`unavailable` without a hook). It is read from the registry each time,
+  never stored.
+- **Start with Windows** (`autostart.rs`, our own code over
+  `windows-registry` 0.6.1's safe API; until 5b-3 it was
+  `tauri-plugin-autostart`, which wrote the path unquoted, wrote the
+  machine-wide key when OpenWraith ran as administrator and set Task
+  Manager's choice back to enabled). It writes only
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `OpenWraith`,
+  a `REG_SZ` `"<full exe path>" --tray`: the path always quoted, the
+  command line at most 260 characters (Microsoft Learn, "Run and RunOnce
+  Registry Keys"), never `HKLM`, also not as administrator. Turning it off
+  deletes the value (a missing one is fine). Task Manager > Startup apps
+  keeps the user's choice in
+  `HKCU\...\Explorer\StartupApproved\Run`, value `OpenWraith`
+  (`REG_BINARY`), a format Microsoft does not document; observed: first
+  byte 0x02/0x06 = enabled, 0x03/0x07 = disabled, an odd first byte means
+  disabled, a missing value means enabled. OpenWraith reads it and never
+  writes it: a start entry turned off in Task Manager stays off (also when
+  the switch is turned off and on, and across an upgrade with the setup
+  program, see "Installer"), and Settings > Background shows a
+  lasting callout instead (`off_in_task_manager`: turn it on in Task
+  Manager > Startup apps; `entry_missing`: turn the switch off and on
+  again; `unavailable`; `still_on` when the switch is off but the value
+  could not be removed: turn the switch on and off again or OpenWraith off
+  in Task Manager, and without the icon, whose switch is then disabled,
+  Task Manager or a new start, whose check removes it). At start
+  `autostart::reconcile` makes the value match the settings: wanted and
+  missing or starting another program path (an unquoted value of an
+  earlier build, another copy) -> written; not wanted and present ->
+  deleted; it reads first, so a start writes only when the value differs.
+  A start from the Run entry (`--tray`) waits `LOGON_DELAY` (120 s) and
+  reads the settings again before that check, so it never
+  writes the Run key while Windows processes it at logon. The check reads
+  the settings under the lock the switch changes the value under
+  (`autostart::RUN_ENTRY`; the settings are saved before), so a switch
+  turned while it runs has the last word. Simulator builds
+  never touch the registry (changes accepted and ignored, state
+  `unavailable`, for which Settings shows no callout: such a build has
+  nothing to fix); test builds have no registry with the real keys at all
+  (`autostart::registry` is `None` under `cfg(test)`), the unit tests use a
+  fake `Registry`, and one test of the real API writes only under
+  `HKCU\Software\OpenWraithTests\<unique>` and removes it, also when it
+  fails. The source rules keep the registry in `autostart.rs`, its writes
+  to the one `set_string` and `remove_value` of the Run value, the
+  StartupApproved key opened for reading only, and no `HKLM`.
 - `TraySink` (`tray.rs`): the core computes the `TrayModel` (state normal /
   disconnected / attention, a header, Profile 1-4 with local names, Pause
   game profiles, Back up now, attention items); the glue draws it on the
@@ -1671,8 +1763,9 @@ The core stays Tauri-free; the Tauri crate implements its seams:
   (`texts.rs`) and a click focuses the window and opens the route.
 - `ProgramSource` and the foreground feed (`foreground.rs`):
   `active-win-pos-rs` for the program in front (every second) and
-  `sysinfo` (processes only) for the running list and the exit check of the
-  watched game pids. No `unsafe`.
+  `winproc.rs` for the running list and the exit check of the watched game
+  pids (see "Platform feed" under the automatic profiles). The app's only
+  `unsafe` is in `winproc.rs`.
 - `window.rs`: close to tray (`CloseRequested` while the icon is shown:
   hide, stop a live depth view with `WindowHidden`, never a write; the
   first time, a notification explains it and `close_to_tray_explained` is
@@ -1743,7 +1836,7 @@ copy, and a deleted file is an error, not a plan.
 | Automatic backups (known-good store) | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\known-good\<sha256(product NUL serial) or unidentified>\profile-N\openwraith-<product>-<stamp>-auto-<reason>[-n].owbackup.json`; `profile-N\pinned.json`; `<keyboard>\recovery\` (the composed backups of "Restore all profiles", newest 5) |
 | Automation log | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\automation.log` (JSON lines with the rule id of every automatic switch; rotated to `automation.1.log` at 256 KiB) |
 | Device lock (shared with the CLI) | `%LOCALAPPDATA%\OpenWraith\device.lock`; `device.lock.json` next to it while a program holds it |
-| Start with Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `OpenWraith` = `<exe> --tray` (HKLM when the app runs as administrator); removed when the icon is turned off, not by the uninstaller |
+| Start with Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `OpenWraith` = `"<exe>" --tray` (`REG_SZ`, never HKLM); removed when the icon or the option is turned off and by the NSIS uninstaller (Task Manager's `...\Explorer\StartupApproved\Run` value of the same name, which the app only reads, only with the application data), not by the MSI |
 | Macro library ("this PC") | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json` (matched to keyboard slots by content hash; an unreadable file is kept as `macro-library.invalid-<stamp>.json`) |
 | Key-depth test marker | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\travel-test-open` (a live view that may still be on) |
 | WebView2 data | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\EBWebView\` |
@@ -1882,14 +1975,46 @@ check) and the safety-backup list ran end to end on the simulator.
   files it installed (the executable and itself) and then the folder if it
   is empty, so the CLI's `safety-backups` folder next to it is never
   touched; its optional "delete app data" removes only
-  `%APPDATA%` / `%LOCALAPPDATA%\io.github.zeruh31.openwraith`.
+  `%APPDATA%` / `%LOCALAPPDATA%\io.github.zeruh31.openwraith`, which
+  includes the automatic backups (`known-good\`) and the settings.
 - **MSI** (`OpenWraith_<version>_x64_en-US.msi`): per machine, English.
 
 Both download Microsoft's WebView2 bootstrapper only when WebView2 is
 missing; the VC runtime is linked statically. The installers are not signed
-yet (SmartScreen warns on the first start). Neither uninstaller removes the
-start-with-Windows Run value (`OpenWraith`): the app removes it when the
-icon is turned off, and the README says to do that before uninstalling.
+yet (SmartScreen warns on the first start).
+
+The NSIS uninstaller removes start with Windows: an installer hook
+(`bundle.windows.nsis.installerHooks` = `./windows/hooks.nsh`, macro
+`NSIS_HOOK_POSTUNINSTALL`, after the files, the uninstall entry and, if
+chosen, the app data are gone) deletes the HKCU Run value `OpenWraith`,
+except when the uninstaller runs for an update (`$UpdateMode`, `/UPDATE`),
+so an update keeps the entry. A newer setup program run by hand uninstalls
+the old version first by default (without `/UPDATE`, the settings kept),
+which removes the value too; the start-up check writes it again at
+OpenWraith's next start. Task Manager's `StartupApproved\Run` value of the
+same name is the user's choice: the hook deletes it only together with the
+settings, when "Delete the application data" is ticked
+(`$DeleteAppDataCheckboxState = 1`, the condition of Tauri's own deletion
+of the app data), since then nothing writes the Run value again. Kept
+otherwise, it keeps an entry the user disabled in Task Manager disabled
+across such an upgrade (deleted, the rewritten Run value would start
+OpenWraith again and Task Manager would show it enabled); without a Run
+value it starts nothing and Task Manager does not list it. `installMode`
+is set to `currentUser` (Tauri's default): the uninstaller then runs as the
+user who installed it, so HKCU is the right hive; the hook stops the build
+(`!error`) under any other mode. `tests::commands_sync` checks the
+configuration and the hook against `autostart.rs` (each deletion with the
+conditions it runs under) and, where npm installed the Tauri CLI, the
+variables the hook reads against the CLI's NSIS template. The MSI leaves
+the Run value: Windows Installer has no standard way to delete a single
+registry value on uninstall
+(`RemoveRegistryValue` / the `RemoveRegistry` table act when a component is
+installed; only whole keys can be removed on uninstall), and the per-machine
+MSI's uninstaller is not tied to the user's hive. The README says to turn
+the option off before uninstalling an MSI installation, or to delete the
+value afterwards (`reg delete
+"HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OpenWraith /f`).
+A value left behind starts nothing once the program is gone.
 Windows notifications need the Start menu shortcut the installers create
 (its AppUserModelID is the identifier); a development build shows them
 under another name.
@@ -2054,7 +2179,11 @@ or i18n library.
 - **Settings** has tabs (`?tab=general|background|games|profiles|about`).
   Its changes are local settings saved at once (no drafts, so they never
   defer an automatic switch). Background shows `shell_error` from
-  `set_background_settings` (a Run entry Windows kept off, for example);
+  `set_background_settings` (a Run value that could not be written, for
+  example) and, for as long as it lasts, a callout under the start-with-
+  Windows switch while `windows_start` says Windows won't do what the
+  switch says (read again with the settings, on "Check again" and when the
+  window gets the focus back);
   Games turns on only after a one-time explanation whose tick also stands
   for the vendor-site acknowledgement of automatic switches
   (`hints_shown` `settings.games.consent`), polls `get_auto_profile_state`
@@ -2109,9 +2238,9 @@ or i18n library.
 | `tests::recovery`, `tests::hygiene` | the known-good store end to end: first read, a change made elsewhere, the factory preset written by OpenWraith never alarms, R1 / R2 / R3, held profiles send and save nothing, "keep them", a single restore and a composed restore of four profiles, a maybe-lost write never promoted on its connection, pins and rotation (own files only, safety backups untouched), automatic backups off, export options and an automatic-backup source, background settings with a recording shell hook, profile names, the invalid settings notice; hygiene after 24 h and 1000 events, never while in use |
 | `tests::auto`, `tests::coexist`, `auto::*` units | the engine on a virtual clock (dwell, once per episode, exit, manual override (also of a switch on its way, none after the return to the default, none for the profile found after a reconnect at later ticks), Fn + k heard while observing or during a read, every wait reason deferred then skipped, the settle and the 5 s gap, the hourly limit and a failed switch pausing, folder and name matching); on the simulator the automatic path sends exactly one `21 .. 12 02` and reads; every worker gate; tray click rules, Back up now, the notification throttle; the CLI lock (pause, attribution of what is heard, the re-read after release, the app's busy message, refusal before anything is sent, an automatic switch waiting for the CLI) |
 | `tests::interleavings` | 150 seeded random sequences of commands and keyboard events (SOCD edits and pushes, stray streams and live views, keymap, colour and dead-band edits, resets with the factory forms, recovery prepare and apply, "keep them"; half of the seeds with automation on, foreground changes, game exits and CLI lock flips) against the write-path invariants: outside apply steps only automatic profile selects are written, and nothing at all while paused for the CLI (`INTERLEAVING_SEEDS=5000` runs more) |
-| `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, and the simulator's configuration and scripts |
+| `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, the NSIS uninstaller hook (per-user mode, the Run value but not on updates, Task Manager's value only with the application data; the variables it reads, against the installed Tauri CLI's template), and the simulator's configuration and scripts |
 | `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, the action catalogue, the `KeyboardEvent.code` table, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
-| `openwraith-app` (Tauri crate) | the text table (EN/TR parity, placeholders, every core notification key and wait reason, the `native.ts` mirror up to date), the tray menu model and ids, notification wording and the route book, the `--tray` start rule, route validation, the origin check and the route script, the autostart check, the foreground feed (failure grace, exit once, pid reuse) |
+| `openwraith-app` (Tauri crate) | the text table (EN/TR parity, placeholders, every core notification key and wait reason, the `native.ts` mirror up to date), the tray menu model and ids, notification wording and the route book, the `--tray` start rule, route validation, the origin check and the route script, start with Windows (the quoted Run value and its 260-character limit, Task Manager's bytes, the start-up check, the state, and that test builds have no real keys; a fake registry, and the real API under `HKCU\Software\OpenWraithTests\<unique>` only), the foreground feed (failure grace, exit once, pid reuse, a failed process list reports no exit), the process access on Windows (`winproc`: names up to the NUL, path lengths, FILETIME to Unix seconds; this test process listed with its name, start time and path; a spawned child found, then reported gone once killed; pid 0 and an unused pid give nothing) |
 | frontend (Vitest) | per tab: the draft to the exact recorded intent, review, write and report on the recorded fixtures; the DKS grid round trip for every grammar-valid row; the recorder's code table; catalogue search in English and Turkish; tab draft dots; i18n parity, no JSX literals, WCAG contrast of the tokens (badges and keycaps included) |
 
 ### Security
@@ -2119,18 +2248,44 @@ or i18n library.
 The window's capability (`capabilities/main.json`) allows exactly the app's
 commands (`allow-<command>`, generated by `build.rs` from
 `command_names.rs`) and no core or plugin permission: dialogs, the file
-manager, single instance, notifications and autostart are used from Rust
-only, and v0.2 added no capability (the tray is a Tauri feature; routes
-from the tray and notifications are set with a validated script on the
-app's own origin, not with an event). The simulator's
-commands are registered only in simulator builds and allowed only by
-`capabilities/dev-sim.json`, which only `tauri.sim.conf.json` enables. The
-CSP allows nothing but the app itself and the IPC (`connect-src ipc:
+manager, single instance and notifications are used from Rust only, start
+with Windows is the app's own Rust code, and v0.2 added no capability (the
+tray is a Tauri feature; routes from the tray and notifications are set
+with a validated script on the app's own origin, not with an event). The
+simulator's commands are registered only in simulator builds and allowed
+only by `capabilities/dev-sim.json`, which only `tauri.sim.conf.json`
+enables. The CSP allows nothing but the app itself and the IPC (`connect-src ipc:
 http://ipc.localhost`); `withGlobalTauri` is off and the prototype is
 frozen. No network access, no telemetry, no remote content. The VC runtime
 is linked statically into release builds only (the static variant puts an
 empty `msvcrt.lib` on the link path of the whole workspace build, which
 breaks the other crates' doctests in debug test runs).
+
+### Deviations from the design and decisions
+
+- **B6, recovery restores the whole profile (accepted).** The Recovery
+  card restores the whole profile from the chosen automatic backup through
+  the normal restore review (`prepare_restore` with
+  `OpKind::RecoveryCheck`, then `apply_restore`), which writes only the
+  tables that differ from the keyboard. The maintainer accepted this
+  deviation from B6 on 2026-10-28.
+- **B7, limited query rights only (resolved in 5b-3).** The exit check of
+  the watched games and the running-programs list used `sysinfo` 0.39,
+  which opened each process with `PROCESS_QUERY_INFORMATION |
+  PROCESS_VM_READ`. `winproc.rs` now opens processes with
+  `PROCESS_QUERY_LIMITED_INFORMATION` only (see "Platform feed" above), and
+  the source rules keep it so.
+- **`openwraith profile export --include` stays** (the maintainer's
+  decision): an export of chosen parts is part of v0.2.
+- **B5, start with Windows with our own code (5b-3).** `tauri-plugin-autostart`
+  2.7 (through `auto-launch` 0.6) wrote the Run value without quotes, wrote
+  `HKLM` when OpenWraith ran as administrator, set Task Manager's
+  `StartupApproved` value back to enabled when the option was turned on,
+  and was not removed by the uninstaller. `autostart.rs` replaces it (see
+  "Start with Windows" above): `HKCU` only, quoted, Task Manager's choice
+  read and never written, a lasting state in Settings > Background, and
+  the NSIS uninstaller removes the value (Task Manager's value only with
+  the application data, so an upgrade keeps that choice).
 
 ## Deferred (library API for the desktop app)
 

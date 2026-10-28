@@ -1264,30 +1264,54 @@ notification clicks it once; where a click must lead:
 
   Roll back: nothing was written (the backup only switched profiles and
   back).
-- **A26. Start with Windows: the hidden start and the removal of the Run
-  value.** Start OpenWraith (the icon comes back: the setting is kept).
+- **A26. Start with Windows: the quoted Run value, Task Manager's choice
+  and the removal.** Start OpenWraith (the icon comes back: the setting is
+  kept). First, reading only:
+  `reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Run /v OpenWraith`
+  finds nothing (a value there was left by a build before 5b-3 that ran as
+  administrator: delete it from an elevated prompt with the same path and
+  `reg delete ... /v OpenWraith /f`, and record that it was there).
   1. Settings > Background: turn on "Start OpenWraith with Windows". Pass:
-     no error under the switch; `reg query` shows `OpenWraith REG_SZ` with
-     the path of `openwraith-app.exe` followed by `--tray` (record it as it
-     is: the start entry library writes the path without quotes); Task
-     Manager > Startup apps lists OpenWraith as Enabled.
+     no error and no callout under the switch;
+     `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v OpenWraith`
+     shows `OpenWraith    REG_SZ    "C:\...\openwraith-app.exe" --tray`
+     with the installed path in quotes; regedit shows the same value under
+     that key (Type `REG_SZ`, the Data starting with `"`); the HKLM query
+     above still finds nothing (also when OpenWraith runs as
+     administrator, if you try that); Task Manager > Startup apps lists
+     OpenWraith as Enabled.
   2. Sign out and sign in again. Pass: no window opens; the icon is there
      and its tooltip names the keyboard and the profile (it connected and
      read the keyboard while hidden); opening the window shows the
      keyboard ready. Wait three minutes, then `reg query` again: the value
-     is still there (a start from the Run entry checks the entry only
-     after two minutes and never removes one the settings want).
-  3. Settings > Background: turn the notification-area icon off. Pass:
+     is still there, unchanged (a start from the Run entry checks the entry
+     only after two minutes and rewrites nothing that matches).
+  3. Task Manager > Startup apps: disable OpenWraith, then switch back to
+     OpenWraith's Settings > Background. Pass: under the switch a warning
+     "Windows won't start OpenWraith: it is turned off in Task Manager"
+     with **Check again**, and the switch stays on. It stays when you open
+     another tab and come back, and after **Quit** and a new start. Turn
+     the switch off and on again: the callout comes back and Task Manager
+     still shows Disabled (OpenWraith never writes Task Manager's choice);
+     `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run /v OpenWraith`
+     shows a `REG_BINARY` whose first byte is `03` (record the bytes).
+     Enable OpenWraith in Task Manager again and switch back to OpenWraith
+     (or **Check again**): the callout goes; record the first byte now
+     (`02` expected).
+  4. Optional, a missing entry: with the switch on,
+     `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v OpenWraith /f`,
+     then **Check again**. Pass: "Windows won't start OpenWraith: its start
+     entry is missing". **Quit** and start OpenWraith from the Start menu:
+     the value is back, quoted as in step 1, and the callout is gone (the
+     start-up check writes a missing entry the settings want).
+  5. Settings > Background: turn the notification-area icon off. Pass:
      "Start OpenWraith with Windows" turns off and is disabled with its
-     reason; `reg query` finds no `OpenWraith` value; the icon goes; the
-     window stays open. Turn the icon on again (start with Windows stays
-     off) for the next tests.
-  4. Optional: turn start with Windows on, disable OpenWraith in Task
-     Manager > Startup apps, then turn start with Windows off and on again
-     in OpenWraith. Record what Task Manager shows afterwards (the start
-     entry library marks its own entry Enabled again when it is turned on)
-     and whether OpenWraith shows "Saved, but Windows didn't take the
-     change". Turn it off again.
+     reason; `reg query` finds no `OpenWraith` value under Run; no callout;
+     the icon goes; the window stays open. Turn the icon on again (start
+     with Windows stays off) for the next tests.
+  6. The uninstaller's removal, and that an upgrade keeps Task Manager's
+     choice, are checked at the very end (the optional uninstall check
+     after A35's clean-up).
 
   Roll back: `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run
   /v OpenWraith /f` removes a value left behind.
@@ -1610,12 +1634,39 @@ openwraith restore before-a23.owbackup.json
 
 Pass: the dry run lists only the edits of A35's preparation on profile 4
 (W and the effect), and the last restore brings them back with a clean
-final check. Optional uninstall check: turn the icon and start with
-Windows on, **Quit**, uninstall OpenWraith (Windows Settings > Apps)
-without turning them off and leave "Delete the application data"
-unticked. Pass: the uninstaller leaves the `OpenWraith` Run value (as the
-README says), the safety backups and the automatic backups; delete the Run
-value by hand (Task Manager > Startup apps, or the `reg delete` of A26).
+final check. Optional uninstall check, for the setup program (`.exe`):
+turn the icon and start with Windows on, and disable OpenWraith in Task
+Manager > Startup apps (the callout of A26 step 3 appears). Then:
+
+1. An upgrade keeps Task Manager's choice. **Quit** and run
+   `OpenWraith_0.2.0_x64-setup.exe` again; after its welcome and license
+   pages, on the page for an installed OpenWraith, choose the second
+   option, **Uninstall OpenWraith** (the same uninstall without
+   `/UPDATE` that a newer setup program runs first by default, **Uninstall
+   before installing**). In the uninstaller leave **Delete the application
+   data** unticked, then finish the installation with **Run OpenWraith**
+   ticked. Pass: the `reg query` of A26 shows the quoted Run value again
+   (the start-up check wrote it); Task Manager > Startup apps still lists
+   OpenWraith as Disabled; the `Explorer\StartupApproved\Run` value still
+   starts with `03`; Settings > Background shows the "turned off in Task
+   Manager" callout.
+2. Uninstall. **Quit** and uninstall OpenWraith (Windows Settings > Apps)
+   without turning anything off, leaving "Delete the application data"
+   unticked. Pass: no `OpenWraith` value under `Run`; the one under
+   `Explorer\StartupApproved\Run` is still there (Task Manager's choice
+   stays with the settings, and starts nothing without a Run value); Task
+   Manager no longer lists OpenWraith; the safety backups and the
+   automatic backups are still there.
+3. Optional, the full removal (it deletes the settings and the automatic
+   backups: copy `%APPDATA%\io.github.zeruh31.openwraith` and
+   `%LOCALAPPDATA%\io.github.zeruh31.openwraith` aside first to keep
+   them). Install the setup program again, then uninstall OpenWraith with
+   "Delete the application data" ticked. Pass: no `OpenWraith` value under
+   `Run` nor under `Explorer\StartupApproved\Run`; the safety backups are
+   still there.
+
+For the MSI: the Run value stays (as the README says); delete it with the
+`reg delete` of A26.
 
 ## Reporting
 

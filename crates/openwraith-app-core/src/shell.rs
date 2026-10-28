@@ -31,8 +31,9 @@ pub struct ForegroundProgram {
 }
 
 /// A running program for the "add from running programs" list (the glue
-/// lists processes with `sysinfo`; the core filters, sorts and gives each
-/// a token).
+/// lists processes from a process snapshot and reads each path with the
+/// limited query right only; the core filters, sorts and gives each a
+/// token).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningProgram {
     /// Its process id.

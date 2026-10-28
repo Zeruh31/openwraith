@@ -31,21 +31,28 @@ pub trait ExitHook: Send + Sync {
 }
 
 /// Applies changed background settings to the shell: the tray icon and the
-/// per-user Run entry (`tauri-plugin-autostart`). Implemented by the Tauri
-/// glue and registered with
+/// per-user Run entry (the glue's `autostart.rs`), and says what Windows
+/// will do at the next sign-in. Implemented by the Tauri glue and
+/// registered with
 /// [`WorkerHandle::set_shell_hook`](crate::WorkerHandle::set_shell_hook);
 /// without one, the changes are only reported in the result of
-/// `set_background_settings`. Tests use a recording hook: nothing here
-/// touches the real tray or Run key.
+/// `set_background_settings` and the start state is `unavailable`. Tests
+/// use a recording hook: nothing here touches the real tray or Run key.
 pub trait ShellHook: Send + Sync {
     /// Applies `changes` (only the `Some` fields changed). An error is
     /// reported to the frontend; the settings stay saved.
     fn apply(&self, changes: &crate::dto::ShellChanges) -> Result<(), crate::dto::AppError>;
+
+    /// What Windows will do at the next sign-in, read now; `wanted` is
+    /// whether the saved settings want OpenWraith to start with Windows.
+    /// Asked for every `get_background_settings` and after every
+    /// `set_background_settings`; reads only.
+    fn windows_start(&self, wanted: bool) -> crate::dto::WindowsStartState;
 }
 
 /// Lists the running programs for Settings > Games ("add from running
-/// programs"). Implemented by the Tauri glue (`sysinfo`, process names and
-/// paths only) and registered with
+/// programs"). Implemented by the Tauri glue (`winproc.rs`: process names
+/// and paths only) and registered with
 /// [`WorkerHandle::set_program_source`](crate::WorkerHandle::set_program_source);
 /// without one the list is empty. Tests use a fixed list.
 pub trait ProgramSource: Send + Sync {

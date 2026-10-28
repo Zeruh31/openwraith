@@ -13,20 +13,22 @@
 //!   row, so that a moment between two windows does not restart a game's
 //!   wait.
 //! * The same thread checks the processes the core waits for
-//!   ([`WorkerHandle::auto_watched_pids`]) with `sysinfo` and reports the
-//!   ones that are gone, or whose pid now belongs to another program
+//!   ([`WorkerHandle::auto_watched_pids`]) and reports the ones that are
+//!   gone, or whose pid now belongs to another program
 //!   ([`WorkerHandle::process_exited`]). The game in front is never checked
 //!   (the sample shows it runs; its exit shows as another window in front,
 //!   and it is checked at once after it left the front); the others every
-//!   [`BACKGROUND_EVERY`] polls. It asks `sysinfo` only about those
-//!   processes, with nothing to refresh but their existence, and keeps no
-//!   handle between checks. `sysinfo` 0.39 opens each checked process with
-//!   `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ` first (and the limited
-//!   right only when that is denied): the "limited query rights only" of
-//!   design B7 hold for the foreground sample, not for this check, which is
-//!   why the game in front (often protected by an anti-cheat driver) is
-//!   left out of it.
-//! * The running-programs list ([`Programs`]) is made on demand only.
+//!   [`BACKGROUND_EVERY`] polls. A check ([`crate::winproc`]) reads one
+//!   process snapshot, which opens no process, and opens each checked
+//!   process still listed with `PROCESS_QUERY_LIMITED_INFORMATION` only,
+//!   for its start time; the handle is closed at once, and none is kept
+//!   between checks. A check that fails (no snapshot) reports nothing.
+//! * The running-programs list ([`Programs`]) is made on demand only: the
+//!   same snapshot, and each listed process opened the same way for its
+//!   path (one that refuses it is listed by its file name only).
+//! * So every process handle of the feed, the foreground sample's
+//!   included, has the limited query right only (design B7): no memory
+//!   read, no full query right.
 //! * Nothing here panics the thread: a panic inside a platform call counts
 //!   as a failed sample. The thread stops at exit ([`Feed::stop`]).
 //!
@@ -43,7 +45,8 @@ use std::time::Duration;
 
 use openwraith_app_core::shell::{ForegroundProgram, RunningProgram};
 use openwraith_app_core::{ProgramSource, WorkerHandle};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+use crate::winproc::{self, ProcessEntry};
 
 /// How often the foreground window is checked.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -139,6 +142,28 @@ impl Identity {
     }
 }
 
+/// Who each of `pids` is, from the process list `listed`; a pid that is
+/// not listed is gone. The start time is read (`start`) only for the
+/// listed ones.
+pub fn identities(
+    pids: &[u32],
+    listed: &[ProcessEntry],
+    start: impl Fn(u32) -> Option<u64>,
+) -> HashMap<u32, Identity> {
+    pids.iter()
+        .filter_map(|pid| {
+            let entry = listed.iter().find(|p| p.pid == *pid)?;
+            Some((
+                *pid,
+                Identity {
+                    name: entry.exe.to_string_lossy().into_owned(),
+                    start: start(*pid).unwrap_or(0),
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Finds the watched processes that exited (gone, or their pid reused by
 /// another program).
 #[derive(Debug, Default)]
@@ -181,8 +206,8 @@ impl ExitWatch {
 pub trait Platform {
     /// The program in front; `None` when it cannot be known.
     fn foreground(&mut self) -> Option<ForegroundProgram>;
-    /// Which of `pids` run now.
-    fn alive(&mut self, pids: &[u32]) -> HashMap<u32, Identity>;
+    /// Which of `pids` run now; `None` when that cannot be known.
+    fn alive(&mut self, pids: &[u32]) -> Option<HashMap<u32, Identity>>;
 }
 
 /// What the feed tells the core (the worker; a recorder in the tests).
@@ -252,8 +277,9 @@ pub fn tick(core: &impl Core, platform: &mut impl Platform, state: &mut FeedStat
         return;
     }
     state.until_check = BACKGROUND_EVERY.saturating_sub(1);
-    // A failed check reports nothing (better late than a false exit).
-    let Ok(alive) = catch_unwind(AssertUnwindSafe(|| platform.alive(&check))) else {
+    // A failed check (or a panic in it) reports nothing (better late than a
+    // false exit).
+    let Ok(Some(alive)) = catch_unwind(AssertUnwindSafe(|| platform.alive(&check))) else {
         return;
     };
     for pid in state.exits.exited(&check, &alive, front) {
@@ -261,7 +287,7 @@ pub fn tick(core: &impl Core, platform: &mut impl Platform, state: &mut FeedStat
     }
 }
 
-/// The real platform: `active-win-pos-rs` and `sysinfo`.
+/// The real platform: `active-win-pos-rs` and [`winproc`].
 struct Windows;
 
 impl Platform for Windows {
@@ -270,28 +296,10 @@ impl Platform for Windows {
         program_of(window.process_id, &window.process_path)
     }
 
-    fn alive(&mut self, pids: &[u32]) -> HashMap<u32, Identity> {
+    fn alive(&mut self, pids: &[u32]) -> Option<HashMap<u32, Identity>> {
         // A fresh list each time: no process handle is kept between checks.
-        let mut system = System::new();
-        let list: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&list),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
-        pids.iter()
-            .filter_map(|pid| {
-                system.process(Pid::from_u32(*pid)).map(|process| {
-                    (
-                        *pid,
-                        Identity {
-                            name: process.name().to_string_lossy().into_owned(),
-                            start: process.start_time(),
-                        },
-                    )
-                })
-            })
-            .collect()
+        let listed = winproc::processes()?;
+        Some(identities(pids, &listed, winproc::start_time))
     }
 }
 
@@ -301,17 +309,13 @@ pub struct Programs;
 impl ProgramSource for Programs {
     fn running_programs(&self) -> Vec<RunningProgram> {
         let listed = catch_unwind(|| {
-            let mut system = System::new();
-            system.refresh_processes_specifics(
-                ProcessesToUpdate::All,
-                true,
-                ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
-            );
-            system
-                .processes()
+            winproc::processes()
+                .unwrap_or_default()
                 .iter()
-                .filter_map(|(pid, process)| {
-                    running_program(pid.as_u32(), process.name(), process.exe())
+                .filter(|p| p.pid != 0)
+                .filter_map(|p| {
+                    let path = winproc::image_path(p.pid);
+                    running_program(p.pid, &p.exe, path.as_deref())
                 })
                 .collect::<Vec<_>>()
         });
@@ -418,6 +422,7 @@ mod tests {
         alive: HashMap<u32, Identity>,
         alive_calls: usize,
         panic_on_alive: bool,
+        no_process_list: bool,
     }
 
     impl Platform for FakePlatform {
@@ -427,12 +432,17 @@ mod tests {
                 None => panic!("the window could not be read"),
             }
         }
-        fn alive(&mut self, pids: &[u32]) -> HashMap<u32, Identity> {
+        fn alive(&mut self, pids: &[u32]) -> Option<HashMap<u32, Identity>> {
             self.alive_calls += 1;
             assert!(!self.panic_on_alive, "the process list failed");
-            pids.iter()
-                .filter_map(|p| self.alive.get(p).map(|i| (*p, i.clone())))
-                .collect()
+            if self.no_process_list {
+                return None;
+            }
+            Some(
+                pids.iter()
+                    .filter_map(|p| self.alive.get(p).map(|i| (*p, i.clone())))
+                    .collect(),
+            )
         }
     }
 
@@ -506,7 +516,7 @@ mod tests {
             fn foreground(&mut self) -> Option<ForegroundProgram> {
                 self.0.foreground()
             }
-            fn alive(&mut self, pids: &[u32]) -> HashMap<u32, Identity> {
+            fn alive(&mut self, pids: &[u32]) -> Option<HashMap<u32, Identity>> {
                 self.1.push(pids.to_vec());
                 self.0.alive(pids)
             }
@@ -531,17 +541,117 @@ mod tests {
 
     #[test]
     fn a_failed_process_check_reports_no_exit() {
-        let core = FakeCore::default();
-        core.watched.borrow_mut().push(10);
-        let mut platform = FakePlatform {
-            samples: VecDeque::from(vec![Some(game(99)); 2]),
-            panic_on_alive: true,
-            ..FakePlatform::default()
+        // A panic in the check, or no process list at all (the snapshot
+        // failed): nothing exited as far as the feed knows.
+        for (panic_on_alive, no_process_list) in [(true, false), (false, true)] {
+            let core = FakeCore::default();
+            core.watched.borrow_mut().push(10);
+            let mut platform = FakePlatform {
+                samples: VecDeque::from(vec![Some(game(99)); 4]),
+                panic_on_alive,
+                no_process_list,
+                ..FakePlatform::default()
+            };
+            let mut state = FeedState::default();
+            for _ in 0..4 {
+                tick(&core, &mut platform, &mut state);
+            }
+            assert!(core.exits.borrow().is_empty());
+            assert_eq!(platform.alive_calls, 2, "checked every third poll");
+        }
+    }
+
+    fn entry(pid: u32, exe: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent: 1,
+            exe: exe.into(),
+        }
+    }
+
+    #[test]
+    fn identities_come_from_the_list_and_start_times_only_for_listed_pids() {
+        let listed = [
+            entry(4, "System"),
+            entry(10, "game.exe"),
+            entry(20, "other.exe"),
+        ];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let start = |pid: u32| {
+            asked.borrow_mut().push(pid);
+            // The start time of 20 cannot be read (refused).
+            (pid == 10).then_some(1_700_000_000)
         };
-        let mut state = FeedState::default();
-        tick(&core, &mut platform, &mut state);
-        assert!(core.exits.borrow().is_empty());
-        assert_eq!(platform.alive_calls, 1);
+        let found = identities(&[10, 20, 30], &listed, start);
+        assert_eq!(
+            found,
+            HashMap::from([
+                (10, identity("game.exe", 1_700_000_000)),
+                (20, identity("other.exe", 0)),
+            ])
+        );
+        // 30 is not listed: gone, and never opened.
+        assert_eq!(*asked.borrow(), [10, 20]);
+        assert!(identities(&[], &listed, |_| unreachable!()).is_empty());
+    }
+
+    /// Windows only: the real platform on this test's own child (other
+    /// processes are only listed, and opened with the limited query right
+    /// for their path).
+    #[cfg(windows)]
+    #[test]
+    fn the_real_platform_reports_a_killed_child_once_it_is_gone() {
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("ping starts");
+        let pid = child.id();
+        let first = Windows.alive(&[pid]);
+        let running = Programs.running_programs();
+        // Kill it before any assertion can fail.
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(child);
+
+        let first = first.expect("a process list");
+        assert!(
+            first
+                .get(&pid)
+                .is_some_and(|i| i.name.eq_ignore_ascii_case("ping.exe") && i.start > 0),
+            "{first:?}"
+        );
+        assert!(
+            running.iter().any(|p| p.pid == pid
+                && p.exe.eq_ignore_ascii_case("ping.exe")
+                && p.path.is_some()),
+            "the child is in the running list"
+        );
+        assert!(
+            running
+                .iter()
+                .any(|p| p.pid == std::process::id() && p.path.is_some()),
+            "this process is in the running list"
+        );
+        let mut watch = ExitWatch::default();
+        assert!(watch.exited(&[pid], &first, None).is_empty());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let now = Windows.alive(&[pid]).expect("a process list");
+            if watch.exited(&[pid], &now, None) == [pid] {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the killed child was never reported"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
@@ -635,8 +745,8 @@ mod tests {
         fn foreground(&mut self) -> Option<ForegroundProgram> {
             Some(game(1))
         }
-        fn alive(&mut self, _pids: &[u32]) -> HashMap<u32, Identity> {
-            HashMap::new()
+        fn alive(&mut self, _pids: &[u32]) -> Option<HashMap<u32, Identity>> {
+            Some(HashMap::new())
         }
     }
 

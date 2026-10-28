@@ -4,7 +4,7 @@ import type { Fixture } from "../types";
 export const fixture: Fixture = {
   "app_info": {"os_locale":"en-US","platform":"windows","repository":"https://github.com/Zeruh31/openwraith","safety_dir":{"path":"C:\\Users\\you\\AppData\\Local\\OpenWraith\\safety-backups","state":"ok"},"sim":true,"tested_firmware":["3.22.07"],"version":"0.2.0"},
   "calls": [
-    {"args":{},"at_ms":0,"command":"get_background_settings","err":null,"ok":{"auto_backup":{"enabled":true,"keep":10},"close_to_tray_explained":false,"notifications":{"auto_switch":false,"reset":true},"start_with_windows":false,"tray_enabled":false},"progress":[]},
+    {"args":{},"at_ms":0,"command":"get_background_settings","err":null,"ok":{"auto_backup":{"enabled":true,"keep":10},"close_to_tray_explained":false,"notifications":{"auto_switch":false,"reset":true},"start_with_windows":false,"tray_enabled":false,"windows_start":"unavailable"},"progress":[]},
   ],
   "events": [
     {"at_ms":0,"event":{"event":"notice","notice":{"kept_as":"settings.invalid-20261024-073000.json","notice":"settings_file_invalid"}}},

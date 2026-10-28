@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::dto::{
     AppError, AppErrorKind, AutoBackupSettings, AutoProfileRule, AutoProfileSettings,
     BackgroundSettingsIntent, BackgroundSettingsView, EditProblemView, ErrorDetail,
-    LanguageSetting, RtIntent, Settings, ShellChanges, ThemeSetting,
+    LanguageSetting, RtIntent, Settings, ShellChanges, ThemeSetting, WindowsStartState,
 };
 use crate::map::editors::refused;
 
@@ -123,6 +123,8 @@ impl SettingsFile {
         BackgroundSettingsView {
             tray_enabled,
             start_with_windows: tray_enabled && self.get::<bool>(START_WITH_WINDOWS),
+            // Not stored: the handle asks the shell.
+            windows_start: WindowsStartState::Unavailable,
             close_to_tray_explained: self.get(CLOSE_TO_TRAY_EXPLAINED),
             notifications: self.get(NOTIFICATIONS),
             auto_backup: AutoBackupSettings {

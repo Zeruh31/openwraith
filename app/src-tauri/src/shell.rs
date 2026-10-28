@@ -1,10 +1,11 @@
 //! The core's [`ShellHook`]: Settings > Background changed the tray icon or
 //! start with Windows, and the shell follows (design B5, B11). The core has
 //! saved the settings already; an error here is shown to the user and the
-//! settings stay saved.
+//! settings stay saved. The hook also says what Windows will do at the next
+//! sign-in, which Settings > Background shows for as long as it lasts.
 
 use openwraith_app_core::ShellHook;
-use openwraith_app_core::dto::{AppError, AppErrorKind, ShellChanges};
+use openwraith_app_core::dto::{AppError, AppErrorKind, ShellChanges, WindowsStartState};
 use tauri::{AppHandle, Runtime};
 
 use crate::{autostart, tray};
@@ -18,7 +19,7 @@ impl<R: Runtime> ShellHook for Shell<R> {
         // The Run entry first: without the tray it must go even when the
         // icon cannot be removed.
         if let Some(start) = changes.start_with_windows
-            && let Err(error) = autostart::set_enabled(&self.0, start)
+            && let Err(error) = autostart::set_enabled(start)
         {
             problems.push(error.message);
         }
@@ -37,5 +38,9 @@ impl<R: Runtime> ShellHook for Shell<R> {
         } else {
             Err(AppError::new(AppErrorKind::Io, problems.join("; ")))
         }
+    }
+
+    fn windows_start(&self, wanted: bool) -> WindowsStartState {
+        autostart::state(wanted)
     }
 }

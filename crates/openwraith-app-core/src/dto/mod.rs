@@ -38,7 +38,7 @@ pub use auto::{
 pub use background::{
     AutoBackupSettings, AutoProfileRule, AutoProfileSettings, BackgroundSettingsApplied,
     BackgroundSettingsIntent, BackgroundSettingsView, NotificationSettings,
-    ProductProfileNamesView, ProfileNamesIntent, ProfileNamesView, ShellChanges,
+    ProductProfileNamesView, ProfileNamesIntent, ProfileNamesView, ShellChanges, WindowsStartState,
 };
 pub use catalog::{
     ActionCatalog, BindingRuleView, CatalogEntry, CatalogGroup, CatalogLayerView, CatalogModifier,
