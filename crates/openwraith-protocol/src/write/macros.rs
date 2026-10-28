@@ -3,7 +3,8 @@
 //! slot ([`MacroData`]).
 //!
 //! The encoding is CONFIRMED for a "play once" macro of keyboard steps (c13
-//! slot 0, typing test). Semantics follow the site's writer
+//! slot 0, typing test) and for the other three play modes (hardware test
+//! H19, 2026-10-27). Semantics follow the site's writer
 //! (`agreement.js:1468-1558`): byte 0 = macro ID, byte 1 = play mode, byte 3
 //! = step bytes, bytes 4-5 = repeat count (BE16), then 4 bytes per step
 //! `[usage, (press << 4) | 0, delay after the step, BE16]`. Mouse and
@@ -98,11 +99,11 @@ pub enum MacroPlay {
     /// 0: once per press (CONFIRMED, c13).
     Once,
     /// 1: `n` times per press, 1..=255 (the site's input range,
-    /// `wmIndex.js:5305-5307`; CODE-ONLY).
+    /// `wmIndex.js:5305-5307`; CONFIRMED with 3, H19).
     Times(u8),
-    /// 2: one press starts, the next stops (CODE-ONLY).
+    /// 2: one press starts, the next stops (CONFIRMED, H19).
     Toggle,
-    /// 3: repeats while held (CODE-ONLY).
+    /// 3: repeats while held (CONFIRMED, H19).
     WhileHeld,
 }
 
@@ -269,12 +270,11 @@ impl MacroProgram {
         MacroProgram::new(play, steps).ok()
     }
 
-    /// "Play once" is CONFIRMED (c13); the other modes are CODE-ONLY (Q13).
+    /// Every play mode is CONFIRMED: "play once" by c13, the others by
+    /// hardware test H19 (2026-10-27, Q13: three times typed "aaa", toggle
+    /// starts and stops, while-held repeats while held).
     pub fn evidence(&self) -> Evidence {
-        match self.play {
-            MacroPlay::Once => Evidence::Confirmed,
-            _ => Evidence::unverified("macro play mode other than once", "Q13"),
-        }
+        Evidence::Confirmed
     }
 }
 
@@ -348,7 +348,8 @@ mod tests {
             assert_eq!(bytes[0], 9);
             assert_eq!(bytes[1], code);
             assert_eq!(u16::from_be_bytes([bytes[4], bytes[5]]), count);
-            assert_eq!(program.evidence().is_confirmed(), play == MacroPlay::Once);
+            // H19 tested every play mode.
+            assert!(program.evidence().is_confirmed(), "{play:?}");
         }
         assert_eq!(
             MacroProgram::new(MacroPlay::Times(0), steps),

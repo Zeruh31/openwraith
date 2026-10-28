@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use openwraith_hid::{BlockCause, PlanAction, PlanItem, PlanWarning, RestorePlan, SkipReason};
 
 use super::change::change_view;
-use super::{clean, commit_reason, hex, key_ref, layer_view, sat16, table_ref};
+use super::{clean, commit_reason, hex, key_ref, layer_view, resend_reason, sat16, table_ref};
 use crate::dto::{
     BlockCauseView, PlanActionView, PlanItemView, PlanTotals, PlanWarningView, ProfilePlanView,
     ProfileTotals, RestorePlanView, SkipReasonView,
@@ -102,16 +102,14 @@ fn warning(warning: &PlanWarning) -> PlanWarningView {
             request: request.to_string(),
         },
         PlanWarning::CapabilityFlagsDiffer => PlanWarningView::CapabilityFlagsDiffer,
-        PlanWarning::SharedTablesMayChangeOtherProfiles { tables, profiles } => {
-            PlanWarningView::SharedTablesMayChangeOtherProfiles {
-                tables: tables.iter().copied().map(table_ref).collect(),
-                profiles: profiles.clone(),
+        PlanWarning::SocdPowerDiffersInBackup { profile, power } => {
+            PlanWarningView::SocdPowerDiffersInBackup {
+                profile: *profile,
+                power: *power,
             }
         }
-        PlanWarning::LikelySharedTableDiffers { table } => {
-            PlanWarningView::LikelySharedTableDiffers {
-                table: table_ref(*table),
-            }
+        PlanWarning::SocdPowerNotImported { power } => {
+            PlanWarningView::SocdPowerNotImported { power: *power }
         }
         PlanWarning::Imported { from, into } => PlanWarningView::Imported {
             from: *from,
@@ -154,6 +152,7 @@ fn item(item: &PlanItem) -> PlanItemView {
             more_changes: sat16(write.changes.len().saturating_sub(MAX_CHANGES)),
             commit_trigger: write.commit_trigger.map(commit_reason),
             resent_unchanged: write.is_resent_unchanged(),
+            resent: write.resent.map(resend_reason),
         },
         PlanAction::Skip { reason, message } => PlanActionView::Skip {
             reason: skip_reason(reason),

@@ -2,14 +2,16 @@
 import type { FinalMismatchView } from "./FinalMismatchView";
 
 /**
- * The final check of a restore.
+ * The final check of a restore: the SOCD power, one setting of the whole
+ * keyboard, read once more in the original profile after it was written
+ * in another one.
  */
 export type FinalCheckView = { 
 /**
- * The profiles read.
+ * The profiles read (the original one).
  */
 profiles: Array<number>, 
 /**
- * Tables that no longer hold the backup's bytes.
+ * What no longer holds the restored values.
  */
 mismatches: Array<FinalMismatchView>, };

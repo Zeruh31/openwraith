@@ -11,7 +11,7 @@ use openwraith_protocol::{
     ProfileId, SocdMode, SocdPair, TableId, WriteRequest,
 };
 
-use crate::report::commit_trigger_text;
+use crate::report::{commit_trigger_text, resend_text};
 use crate::table::{Table, wrap_list};
 
 /// Wrap long lists at this width.
@@ -36,16 +36,18 @@ fn media_text(key: MediaKey) -> String {
     }
 }
 
-/// A mouse action in words. Masks `08` and `10` are named by value: the
-/// vendor site calls them forward and back, which is not verified (Q37).
-fn mouse_text(action: MouseAction) -> String {
+/// A mouse action in words. Mask `08` is the back button (X1) and `10` the
+/// forward button (X2), the reverse of the vendor site's labels (hardware
+/// test H18).
+fn mouse_text(action: MouseAction) -> &'static str {
     match action {
-        MouseAction::Button(MouseButton::Left) => "mouse left button".to_string(),
-        MouseAction::Button(MouseButton::Right) => "mouse right button".to_string(),
-        MouseAction::Button(MouseButton::Middle) => "mouse middle button".to_string(),
-        MouseAction::Button(button) => format!("mouse button {:#04x}", button.mask()),
-        MouseAction::WheelUp => "mouse wheel up".to_string(),
-        MouseAction::WheelDown => "mouse wheel down".to_string(),
+        MouseAction::Button(MouseButton::Left) => "mouse left button",
+        MouseAction::Button(MouseButton::Right) => "mouse right button",
+        MouseAction::Button(MouseButton::Middle) => "mouse middle button",
+        MouseAction::Button(MouseButton::Back) => "mouse back button (X1)",
+        MouseAction::Button(MouseButton::Forward) => "mouse forward button (X2)",
+        MouseAction::WheelUp => "mouse wheel up",
+        MouseAction::WheelDown => "mouse wheel down",
     }
 }
 
@@ -55,7 +57,7 @@ pub fn assignment_text(assignment: &KeyAssignment) -> String {
         KeyAssignment::Default => "default".to_string(),
         KeyAssignment::Key(usage) => usage.to_string(),
         KeyAssignment::Media(key) => media_text(*key),
-        KeyAssignment::Mouse(action) => mouse_text(*action),
+        KeyAssignment::Mouse(action) => mouse_text(*action).to_string(),
         KeyAssignment::Combo(combo) => format!("combination {combo}"),
         KeyAssignment::Macro(slot) => format!("macro slot {}", slot.get()),
         KeyAssignment::Advanced(slot) => format!("advanced-key slot {}", slot.get()),
@@ -104,7 +106,7 @@ fn key_label(model: &Model, index: u8) -> String {
 }
 
 /// The writes of a plan in order, with their packets and why the Fn keymap
-/// is written.
+/// (or an unchanged macro slot) is written.
 pub fn writes_table(writes: &[PlannedEditWrite]) -> String {
     let mut table = Table::new(&["Write", "Packets", "Why"]).right_align(&[1]);
     for write in writes {
@@ -112,11 +114,27 @@ pub fn writes_table(writes: &[PlannedEditWrite]) -> String {
         if let Some(reason) = write.commit_trigger {
             why.push(commit_trigger_text(reason, write.resent_unchanged));
         }
-        if write.completes_binding {
-            why.push("completes a binding: written even after Ctrl+C".to_string());
+        if let Some(reason) = write.resent {
+            why.push(resend_text(reason));
         }
-        // The summary of a re-sent Fn keymap already says why.
-        let name = if write.resent_unchanged {
+        // A macro slot 1-9 after the plan's slot-0 write; any other write
+        // that completes something (a macro slot included: one a written
+        // layer newly refers to) completes a binding.
+        match (write.completes_binding, write.follows_macro_slot_0()) {
+            (true, true) if write.resent.is_none() => why.push(
+                "written after macro slot 0, which makes the keyboard clear slots 1-9: written \
+                 even after Ctrl+C"
+                    .to_string(),
+            ),
+            // The summary of the re-send already says why.
+            (true, true) => why.push("written even after Ctrl+C".to_string()),
+            (true, false) => {
+                why.push("completes a binding: written even after Ctrl+C".to_string());
+            }
+            (false, _) => {}
+        }
+        // The summary of a re-sent Fn keymap or macro slot already says why.
+        let name = if write.resent_unchanged || write.resent.is_some() {
             write.request().to_string()
         } else {
             write.summary.clone()
@@ -208,10 +226,11 @@ pub fn warnings_text(warnings: &[EditWarning], model: Option<&Model>) -> String 
                 "not yet verified on a W75: {} ({}). The vendor site sends the same bytes",
                 note.what, note.question
             ),
-            EditWarning::ScopeUnknown { table } => format!(
-                "{table} may apply to every profile: its profile scope is not known yet \
-                 (docs/PROTOCOL.md Q3)"
-            ),
+            EditWarning::SocdPowerAllProfiles => {
+                "the SOCD power is one setting of the whole keyboard: switching it changes every \
+                 profile (the pairs belong to the active profile)"
+                    .to_string()
+            }
             EditWarning::MalformedReferencePreserved { layer, index } => format!(
                 "{} on the {} layer holds a malformed macro or advanced-key entry; it is kept as \
                  read",
@@ -235,14 +254,6 @@ pub fn warnings_text(warnings: &[EditWarning], model: Option<&Model>) -> String 
                 "the keyboard shows custom colour table 1 only in the Custom light mode; add \
                  --custom-mode to switch to it"
                     .to_string()
-            }
-            EditWarning::PowerLossUntested { tables } => {
-                let tables: Vec<String> = tables.iter().map(ToString::to_string).collect();
-                format!(
-                    "whether the keyboard keeps {} across a power loss is not tested yet \
-                     (docs/HARDWARE_TESTS.md H22)",
-                    tables.join(", ")
-                )
             }
             EditWarning::SocdHotkey => {
                 "Fn + Right Shift on the keyboard also switches SOCD on and off".to_string()
@@ -293,8 +304,9 @@ pub fn keymap_plan(plan: &KeymapEditPlan, model: &Model, mode: PersistenceCheckM
     }
     if plan.forces_persistence_check() {
         out.push_str(
-            "--commit-trigger skip (hardware test): the Fn keymap (18 02) is NOT written after \
-             the slots, as the vendor site would; the persistence check always runs.\n",
+            "--commit-trigger skip (hardware test): the Fn keymap (18 02) is NOT written before \
+             the advanced-key slots, as the vendor site would (without it the keyboard does not \
+             keep them; macro slots are kept); the persistence check always runs.\n",
         );
     }
     out.push_str(&warnings_text(plan.warnings(), Some(model)));
@@ -435,10 +447,10 @@ pub fn socd_plan(plan: &SocdEditPlan, mode: PersistenceCheckMode) -> String {
     };
     let power_new = if plan.power() { "on" } else { "off" };
     let mut out = format!(
-        "SOCD (profile {} active):\n  Power  {power_now} -> {power_new}\n",
+        "SOCD (profile {} active):\n  Power (all profiles)  {power_now} -> {power_new}\n",
         plan.profile()
     );
-    out.push_str("  Pairs now:\n");
+    out.push_str(&format!("  Pairs of profile {} now:\n", plan.profile()));
     match (&current.pairs, current.unwritable) {
         (Some(pairs), _) => out.push_str(&pairs_text(pairs, "    ")),
         (None, reason) => out.push_str(&format!(
@@ -447,7 +459,7 @@ pub fn socd_plan(plan: &SocdEditPlan, mode: PersistenceCheckMode) -> String {
             current.raw_pairs
         )),
     }
-    out.push_str("  Pairs after:\n");
+    out.push_str(&format!("  Pairs of profile {} after:\n", plan.profile()));
     out.push_str(&pairs_text(plan.pairs(), "    "));
     if plan.has_changes() {
         out.push_str(
@@ -497,9 +509,20 @@ pub fn fn_builtins_text(model: &Model) -> String {
             )
         })
         .collect();
-    let mut out = String::from(
+    let checked: Vec<String> = model
+        .fn_builtins
+        .iter()
+        .filter(|b| b.confirmed)
+        .map(|b| model.key_name(b.index))
+        .collect();
+    let checked = if checked.is_empty() {
+        String::new()
+    } else {
+        format!(", checked on hardware for {}", checked.join(", "))
+    };
+    let mut out = format!(
         "  Built-in Fn functions (Fn + key; replaced by an Fn-layer entry other than default; \
-         labels from the vendor site):\n",
+         labels from the vendor site{checked}):\n",
     );
     out.push_str(&wrap_list(&items, "    ", WIDTH));
     out
@@ -523,9 +546,19 @@ mod tests {
         );
         assert_eq!(
             assignment_text(&KeyAssignment::Mouse(MouseAction::Button(
-                MouseButton::Mask10
+                MouseButton::Forward
             ))),
-            "mouse button 0x10"
+            "mouse forward button (X2)"
+        );
+        assert_eq!(
+            assignment_text(&KeyAssignment::Mouse(MouseAction::Button(
+                MouseButton::Back
+            ))),
+            "mouse back button (X1)"
+        );
+        assert_eq!(
+            assignment_text(&KeyAssignment::Media(MediaKey::new(0x24).expect("back"))),
+            "media Browser Back"
         );
         assert_eq!(
             assignment_text(&KeyAssignment::Macro(MacroSlotId::new(2).expect("slot"))),
@@ -560,7 +593,10 @@ mod tests {
                     function: "profile 2",
                     critical: true,
                 },
-                EditWarning::Unverified(UnverifiedNote::new("Mod-Tap hold path", "Q19")),
+                EditWarning::Unverified(UnverifiedNote::new(
+                    "Mod-Tap hold time other than 300 ms",
+                    "Q19",
+                )),
                 EditWarning::SocdHotkey,
             ],
             Some(&W75),
@@ -571,7 +607,7 @@ mod tests {
         );
         assert!(text.contains("CRITICAL"), "{text}");
         assert!(
-            text.contains("not yet verified on a W75: Mod-Tap hold path (Q19)"),
+            text.contains("not yet verified on a W75: Mod-Tap hold time other than 300 ms (Q19)"),
             "{text}"
         );
         assert!(text.contains("Fn + Right Shift"), "{text}");
@@ -581,10 +617,15 @@ mod tests {
     #[test]
     fn the_persistence_check_is_announced() {
         let p1 = ProfileId::new(1).expect("profile");
-        let auto = after_write_text(PersistenceCheckMode::Auto, p1, false, &[TableId::Socd]);
+        // The only table not known to be kept: an advanced-key slot without
+        // the Fn keymap before it.
+        let slot = TableId::AdvancedKey {
+            slot: AdvancedSlotId::new(0).expect("slot"),
+        };
+        let auto = after_write_text(PersistenceCheckMode::Auto, p1, false, &[slot]);
         assert!(auto.contains("waits 2 s"), "{auto}");
         assert!(
-            auto.contains("switches to profile 2 and back and reads SOCD again"),
+            auto.contains("switches to profile 2 and back and reads advanced-key slot 0 again"),
             "{auto}"
         );
         // Tables known to be kept: no switch is announced.
@@ -596,6 +637,12 @@ mod tests {
         let forced = after_write_text(PersistenceCheckMode::Never, p1, true, &[]);
         assert!(forced.contains("every written table"), "{forced}");
         assert_eq!(away_profile(ProfileId::new(2).expect("p")).get(), 1);
-        assert!(fn_builtins_text(&W75).contains("Space reset (critical)"));
+        let builtins = fn_builtins_text(&W75);
+        assert!(builtins.contains("Space reset (critical)"), "{builtins}");
+        // H18 checked F1-F4; c15 and H12 Right Shift.
+        assert!(
+            builtins.contains("checked on hardware for F1, F2, F3, F4, R-Shift"),
+            "{builtins}"
+        );
     }
 }

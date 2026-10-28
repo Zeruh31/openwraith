@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use openwraith_hid::{
-    BlockCause, CommitTriggerReason, DanglingBinding, EditReport, EntryChange, ImportSelection,
-    ItemReport, ItemResult, LightEditPlan, Outcome, Persistence, PersistenceCheck,
-    PersistenceCheckMode, PlanAction, PlanItem, PlanWarning, PlannedWrite, RestorePlan,
-    RestoreReport, SkipReason, TriggerEditPlan, WriteWarning,
+    BlockCause, ClearedMacro, CommitTriggerReason, DanglingBinding, EditReport, EntryChange,
+    ImportSelection, ItemReport, ItemResult, LightEditPlan, Outcome, Persistence, PersistenceCheck,
+    PersistenceCheckMode, PlanAction, PlanItem, PlanWarning, PlannedWrite, ResendReason,
+    RestorePlan, RestoreReport, SkipReason, TriggerEditPlan, WriteWarning,
 };
 use openwraith_protocol::{
     AdvancedSlotData, Distance, HidUsage, KeyAction, LightMode, LightRecord, Model, ProfileId,
@@ -170,16 +170,24 @@ fn socd_entry_text(bytes: &[u8]) -> String {
     }
 }
 
-/// One changed entry of a SOCD write: index 0 is the power, 1-20 the
-/// pairs.
+/// A SOCD power byte in words.
+fn power_word(bytes: &[u8]) -> String {
+    match bytes {
+        [0] => "off".to_string(),
+        [1] => "on".to_string(),
+        other => spaced(other),
+    }
+}
+
+/// One changed entry of a SOCD write: index 0 is the power (one setting
+/// of the whole keyboard, shown once per plan), 1-20 the pairs.
 fn socd_change_text(change: &EntryChange) -> String {
     if change.index == 0 {
-        let power = |b: &[u8]| match b {
-            [0] => "off".to_string(),
-            [1] => "on".to_string(),
-            other => spaced(other),
-        };
-        return format!("power {} -> {}", power(&change.old), power(&change.new));
+        return format!(
+            "SOCD power (all profiles): {} -> {}",
+            power_word(&change.old),
+            power_word(&change.new)
+        );
     }
     format!(
         "pair {}: {} -> {}",
@@ -391,6 +399,12 @@ pub fn restore_plan(
                     if let Some(reason) = write.commit_trigger {
                         changes.push(commit_trigger_text(reason, write.is_resent_unchanged()));
                     }
+                    if let Some(reason) = write.resent {
+                        changes.push(format!(
+                            "{}; written even after Ctrl+C",
+                            resend_text(reason)
+                        ));
+                    }
                     let mut first = true;
                     for line in changes.iter().map(String::as_str).chain(
                         // A write without listed changes still gets a row.
@@ -400,7 +414,11 @@ pub fn restore_plan(
                             let what = match item.key {
                                 Some(_) => item_name(item, model),
                                 // The reason is in the change column.
-                                None if write.commit_trigger.is_some() => write.request.to_string(),
+                                None if write.commit_trigger.is_some()
+                                    || write.resent.is_some() =>
+                                {
+                                    write.request.to_string()
+                                }
                                 None => write.summary.clone(),
                             };
                             writes.row(vec![what, write.packets.to_string(), line.to_string()]);
@@ -588,20 +606,16 @@ fn warning_text(warning: &PlanWarning, model: Option<&Model>) -> String {
              dead-band values are only restored when both use 0.02 mm units"
                 .to_string()
         }
-        PlanWarning::SharedTablesMayChangeOtherProfiles { tables, profiles } => {
-            let tables: Vec<String> = tables.iter().map(ToString::to_string).collect();
-            let profiles: Vec<String> = profiles.iter().map(ToString::to_string).collect();
-            format!(
-                "{} may be shared by all profiles (not known yet); writing it may also change \
-                 profile(s) {}, which this restore does not cover",
-                list(&tables),
-                list(&profiles)
-            )
-        }
-        PlanWarning::LikelySharedTableDiffers { table } => format!(
-            "the backup holds different copies of {table} in its profiles, but the keyboard \
-             holds the same copy in every profile: it is probably shared by all profiles, so \
-             the backup cannot be restored exactly (the final check will report it)"
+        PlanWarning::SocdPowerDiffersInBackup { profile, power } => format!(
+            "the backup's profiles hold different SOCD power settings, but the keyboard has one \
+             for all profiles: the power of profile {profile} (active when the backup was made) \
+             is restored, SOCD {}",
+            if *power { "on" } else { "off" }
+        ),
+        PlanWarning::SocdPowerNotImported { power } => format!(
+            "SOCD: only the pairs are imported; the power is one setting of the whole keyboard, \
+             not part of a profile, and stays {}",
+            if *power { "on" } else { "off" }
         ),
         PlanWarning::Imported { from, into } => {
             format!("profile {from} of the file is imported into profile {into} of the keyboard")
@@ -692,20 +706,52 @@ pub fn write_warning_text(warning: &WriteWarning) -> String {
 pub(crate) fn commit_trigger_text(reason: CommitTriggerReason, unchanged: bool) -> String {
     const BASE: &str =
         "the keyboard keeps the base keymap only when the Fn keymap is written after it";
-    const SLOTS: &str = "the keyboard may keep macro and advanced-key slots only when the Fn \
-                         keymap is written after them";
+    const SLOTS: &str = "the keyboard keeps advanced-key slots when the Fn keymap is written \
+                         in the same save (before them, as the vendor site does) and loses \
+                         them without it";
     match (reason, unchanged) {
         (CommitTriggerReason::BaseKeymap, true) => format!("unchanged, re-sent: {BASE}"),
         (CommitTriggerReason::BaseKeymap, false) => {
             format!("written right after the base keymap: {BASE}")
         }
-        (CommitTriggerReason::MacrosOrAdvancedKeys, true) => {
-            format!("unchanged, re-sent as a precaution (untested guess): {SLOTS}")
-        }
-        (CommitTriggerReason::MacrosOrAdvancedKeys, false) => {
-            format!("written after the macro slots as a precaution (untested guess): {SLOTS}")
+        (CommitTriggerReason::AdvancedKeys, true) => format!("unchanged, re-sent: {SLOTS}"),
+        (CommitTriggerReason::AdvancedKeys, false) => {
+            format!("written before the advanced-key slots: {SLOTS}")
         }
     }
+}
+
+/// Why a write re-sends content the plan does not change, in words (for
+/// the plan's change column).
+pub(crate) fn resend_text(reason: ResendReason) -> String {
+    format!("re-sent: {}", reason.text())
+}
+
+/// The macro slots an operation that stopped part-way left empty, and the
+/// keys it left referring to an empty slot, in words (`what`: "edit" or
+/// "restore").
+fn left_behind_text(
+    cleared: &[ClearedMacro],
+    dangling: &[DanglingBinding],
+    model: Option<&Model>,
+    what: &str,
+) -> String {
+    let mut out = String::new();
+    if !cleared.is_empty() {
+        let slots: Vec<String> = cleared
+            .iter()
+            .map(|c| format!("profile {}, macro slot {}", c.profile, c.slot.get()))
+            .collect();
+        out.push_str(&format!(
+            "Macros now EMPTY: writing macro slot 0 made the keyboard clear slots 1-9, and the \
+             {what} stopped before writing these again (the undo command below restores them):\n"
+        ));
+        for slot in slots {
+            out.push_str(&format!("  - {slot}\n"));
+        }
+    }
+    out.push_str(&dangling_text(dangling, model, what));
+    out
 }
 
 /// ` (read-back differs at byte offset(s) 1, 2)`, or nothing.
@@ -835,9 +881,8 @@ fn persistence_text_with(check: &PersistenceCheck, advice: &str) -> String {
     }
     if check.not_checked > 0 {
         parts.push(format!(
-            "{} could not be checked (a table that may be shared by all profiles and was \
-             written in another profile too, which the final check compares, or SOCD switched \
-             on the keyboard after it was written; see the notes of the table)",
+            "{} could not be checked (SOCD switched on the keyboard after it was written; see \
+             the notes of the table)",
             count(check.not_checked, "written table")
         ));
     }
@@ -946,7 +991,7 @@ struct Resent {
     profiles: Vec<u8>,
     /// Whether one was re-sent for a base keymap.
     base: bool,
-    /// Whether one was re-sent for macro or advanced-key slots (precaution).
+    /// Whether one was re-sent for advanced-key slots.
     slots: bool,
 }
 
@@ -960,7 +1005,7 @@ impl Resent {
             }
             resent.profiles.push(profile);
             match item.commit_trigger {
-                Some(CommitTriggerReason::MacrosOrAdvancedKeys) => resent.slots = true,
+                Some(CommitTriggerReason::AdvancedKeys) => resent.slots = true,
                 Some(CommitTriggerReason::BaseKeymap) | None => resent.base = true,
             }
         }
@@ -976,7 +1021,7 @@ impl Resent {
             }
             resent.profiles.push(profile);
             match item.commit_trigger {
-                Some(CommitTriggerReason::MacrosOrAdvancedKeys) => resent.slots = true,
+                Some(CommitTriggerReason::AdvancedKeys) => resent.slots = true,
                 Some(CommitTriggerReason::BaseKeymap) | None => resent.base = true,
             }
         }
@@ -995,13 +1040,8 @@ impl Resent {
             return None;
         }
         let why = match (self.base, self.slots) {
-            (true, true) => {
-                "to make the keyboard save the base keymap and, as a precaution, the macro and \
-                 advanced-key slots"
-            }
-            (false, true) => {
-                "to make sure the keyboard saves the macro and advanced-key slots (precaution)"
-            }
+            (true, true) => "to make the keyboard save the base keymap and the advanced-key slots",
+            (false, true) => "to make the keyboard save the advanced-key slots",
             _ => "to make the keyboard save the base keymap",
         };
         let place = if self.profiles.len() > 1 {
@@ -1103,8 +1143,9 @@ fn outcome_text(outcome: Outcome, counts: &Counts, error: Option<&str>) -> Strin
 fn cancel_note(cancel_requested: bool, outcome: Outcome) -> &'static str {
     if cancel_requested && outcome == Outcome::Completed {
         "Ctrl+C received; the remaining writes were needed to keep the keyboard consistent (the \
-         Fn keymap that makes it save the keys, or a slot a written key refers to), so they were \
-         sent. Everything planned was written.\n"
+         Fn keymap that makes it save the base keymap, a slot a written key refers to, or the \
+         macros that writing macro slot 0 had cleared), so they were sent. Everything planned \
+         was written.\n"
     } else {
         ""
     }
@@ -1148,29 +1189,35 @@ pub fn restore_report(report: &RestoreReport, model: Option<&Model>) -> String {
         let profiles: Vec<String> = check.profiles.iter().map(ToString::to_string).collect();
         if check.mismatches.is_empty() {
             out.push_str(&format!(
-                "Final check: profiles {} read again; every written table, and every table that \
-                 may be shared by all profiles, holds the backup's values.\n",
+                "Final check: the SOCD power, one setting of the whole keyboard, read again in \
+                 profile {}: it holds the restored power.\n",
                 list(&profiles)
             ));
         } else {
             out.push_str(&format!(
-                "Final check: profiles {} read again; {} no longer hold the backup's values (a \
-                 table shared by all profiles, or another program):\n",
-                list(&profiles),
-                count(check.mismatches.len(), "table")
+                "Final check: the SOCD power, one setting of the whole keyboard, read again in \
+                 profile {}: it does not hold the restored power (the keyboard did not apply it \
+                 to every profile, or another program changed it):\n",
+                list(&profiles)
             ));
             for m in &check.mismatches {
-                let offsets = m.mismatch.differing_offsets();
                 out.push_str(&format!(
-                    "  - profile {}: {} differs from the backup ({}, {})\n",
+                    "  - profile {}: {} is {}, the restore wrote {} ({})\n",
                     m.profile,
                     m.mismatch.table,
-                    m.mismatch.read,
-                    count(offsets.len(), "byte")
+                    power_word(&m.mismatch.got),
+                    power_word(&m.mismatch.expected),
+                    m.mismatch.read
                 ));
             }
         }
     }
+    out.push_str(&left_behind_text(
+        &report.cleared_macros,
+        &report.dangling,
+        model,
+        "restore",
+    ));
     if let Some(activity) = &report.foreign_activity {
         out.push_str(&format!(
             "Another program was active while writing ({activity}).\n"
@@ -1253,14 +1300,15 @@ pub enum PersistNote {
     CommitTriggerSkipped,
 }
 
-/// Keys left referring to an empty slot, in words.
-fn dangling_text(dangling: &[DanglingBinding], model: Option<&Model>) -> String {
+/// Keys left referring to an empty slot, in words (`what`: "edit" or
+/// "restore").
+fn dangling_text(dangling: &[DanglingBinding], model: Option<&Model>, what: &str) -> String {
     if dangling.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "Keys that may now refer to an empty slot (the edit stopped part-way; the undo command \
-         below restores them):\n",
+    let mut out = format!(
+        "Keys that may now refer to an empty slot (the {what} stopped part-way; the undo command \
+         below restores them):\n"
     );
     for d in dangling {
         let layer = match d.layer {
@@ -1336,13 +1384,19 @@ pub fn edit_report(report: &EditReport, model: Option<&Model>, note: PersistNote
         out.push_str(&match note {
             PersistNote::CommitTriggerSkipped => persistence_text_with(
                 check,
-                "Run the same command without --commit-trigger skip (the Fn keymap after the \
-                 slot makes the keyboard save it), or undo it with the command below.",
+                "Run the same command without --commit-trigger skip (the Fn keymap written \
+                 before an advanced-key slot makes the keyboard keep it), or undo it with the \
+                 command below.",
             ),
             _ => persistence_text(check, "command"),
         });
     }
-    out.push_str(&dangling_text(&report.dangling, model));
+    out.push_str(&left_behind_text(
+        &report.cleared_macros,
+        &report.dangling,
+        model,
+        "edit",
+    ));
     if let Some(activity) = &report.foreign_activity {
         out.push_str(&format!(
             "Another program was active while writing ({activity}).\n"
@@ -1505,6 +1559,7 @@ mod tests {
                     summary: "trigger".into(),
                     commit_trigger: None,
                     resent_unchanged: false,
+                    resent: None,
                     result: lost,
                 }],
             }],
@@ -1519,6 +1574,7 @@ mod tests {
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
             dangling: Vec::new(),
+            cleared_macros: Vec::new(),
             cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
@@ -1554,9 +1610,8 @@ mod tests {
             persistence_text(&check, "restore"),
             "Persistence check: profiles 2 and 3 selected again after switching away; 2 written \
              tables still hold what was written (the keyboard saved them); 1 written table could \
-             not be checked (a table that may be shared by all profiles and was written in \
-             another profile too, which the final check compares, or SOCD switched on the \
-             keyboard after it was written; see the notes of the table).\n"
+             not be checked (SOCD switched on the keyboard after it was written; see the notes \
+             of the table).\n"
         );
         let only_unchecked = PersistenceCheck {
             profiles: vec![3],
@@ -1586,15 +1641,19 @@ mod tests {
             "written right after the base keymap: the keyboard keeps the base keymap only when \
              the Fn keymap is written after it"
         );
+        // H20 (2026-10-27): the Fn keymap goes before the advanced-key
+        // slots, a confirmed requirement.
         assert_eq!(
-            commit_trigger_text(CommitTriggerReason::MacrosOrAdvancedKeys, true),
-            "unchanged, re-sent as a precaution (untested guess): the keyboard may keep macro \
-             and advanced-key slots only when the Fn keymap is written after them"
+            commit_trigger_text(CommitTriggerReason::AdvancedKeys, true),
+            "unchanged, re-sent: the keyboard keeps advanced-key slots when the Fn keymap is \
+             written in the same save (before them, as the vendor site does) and loses them \
+             without it"
         );
         assert_eq!(
-            commit_trigger_text(CommitTriggerReason::MacrosOrAdvancedKeys, false),
-            "written after the macro slots as a precaution (untested guess): the keyboard may \
-             keep macro and advanced-key slots only when the Fn keymap is written after them"
+            commit_trigger_text(CommitTriggerReason::AdvancedKeys, false),
+            "written before the advanced-key slots: the keyboard keeps advanced-key slots when \
+             the Fn keymap is written in the same save (before them, as the vendor site does) \
+             and loses them without it"
         );
         let note = write_warning_text(&WriteWarning::BaseKeymapNotSaved);
         assert!(
@@ -1619,8 +1678,7 @@ mod tests {
         assert_eq!(
             headline,
             "Done: 2 tables of 2 written and verified by reading them back; the Fn keymap (18 02) \
-             was also re-sent unchanged to make sure the keyboard saves the macro and \
-             advanced-key slots (precaution)."
+             was also re-sent unchanged to make the keyboard save the advanced-key slots."
         );
     }
 
@@ -1634,6 +1692,7 @@ mod tests {
             summary: "Fn keymap (18 02) re-sent unchanged".into(),
             commit_trigger: Some(reason),
             resent_unchanged: profile > 0,
+            resent: None,
             result: ItemResult::Written {
                 sends: 1,
                 packets: 10,
@@ -1647,6 +1706,7 @@ mod tests {
             summary: table.to_string(),
             commit_trigger: None,
             resent_unchanged: false,
+            resent: None,
             result: ItemResult::Written {
                 sends: 1,
                 packets: 10,
@@ -1657,8 +1717,8 @@ mod tests {
         let base = TableId::Keymap {
             layer: openwraith_protocol::Layer::Base,
         };
-        let slot = TableId::Macro {
-            slot: MacroSlotId::new(0).expect("slot"),
+        let slot = TableId::AdvancedKey {
+            slot: openwraith_protocol::AdvancedSlotId::new(0).expect("slot"),
         };
         let report = RestoreReport {
             outcome: Outcome::Completed,
@@ -1675,10 +1735,7 @@ mod tests {
                 },
                 openwraith_hid::ProfileReport {
                     profile: 2,
-                    items: vec![
-                        changed(slot),
-                        resent(2, CommitTriggerReason::MacrosOrAdvancedKeys),
-                    ],
+                    items: vec![changed(slot), resent(2, CommitTriggerReason::AdvancedKeys)],
                 },
             ],
             persistence: None,
@@ -1687,6 +1744,7 @@ mod tests {
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
             dangling: Vec::new(),
+            cleared_macros: Vec::new(),
             cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
@@ -1694,7 +1752,7 @@ mod tests {
             text.contains(
                 "Done: 2 tables of 2 written and verified by reading them back; the Fn keymap \
                  (18 02) was also re-sent unchanged in profiles 1 and 2 to make the keyboard \
-                 save the base keymap and, as a precaution, the macro and advanced-key slots."
+                 save the base keymap and the advanced-key slots."
             ),
             "{text}"
         );
@@ -1714,6 +1772,7 @@ mod tests {
             commit_trigger: (layer == openwraith_protocol::Layer::Fn)
                 .then_some(CommitTriggerReason::BaseKeymap),
             resent_unchanged: layer == openwraith_protocol::Layer::Fn,
+            resent: None,
             result,
         };
         let report = RestoreReport {
@@ -1754,6 +1813,7 @@ mod tests {
             undo_command: "openwraith restore safety.owbackup.json".into(),
             foreign_activity: None,
             dangling: Vec::new(),
+            cleared_macros: Vec::new(),
             cancel_requested: false,
         };
         let text = restore_report(&report, Some(&W75));
@@ -1799,6 +1859,7 @@ mod tests {
                 summary: "trigger".into(),
                 commit_trigger: None,
                 resent_unchanged: false,
+                resent: None,
                 result: ItemResult::MaybeLost {
                     sends: 1,
                     packets: 1,
@@ -1812,6 +1873,7 @@ mod tests {
             persistence: None,
             warnings: Vec::new(),
             dangling: Vec::new(),
+            cleared_macros: Vec::new(),
             cancel_requested: false,
         };
         let text = edit_report(&report, Some(&W75), PersistNote::NotNeeded);
@@ -1827,6 +1889,84 @@ mod tests {
         assert!(!text.contains("Something WAS written"), "{text}");
         assert!(report.anything_written());
         assert_eq!((report.written(), report.maybe_lost()), (0, 1));
+    }
+
+    #[test]
+    fn macros_a_stopped_slot_0_write_left_empty_are_named_with_their_keys() {
+        use openwraith_hid::{ClearedMacro, ConsentOrigin, ErrorInfo, ErrorKind, SlotRef};
+        use openwraith_protocol::{Layer, MacroSlotId};
+        let slot = |n: u8| MacroSlotId::new(n).expect("slot");
+        let item = |n: u8, resent: Option<ResendReason>, result: ItemResult| ItemReport {
+            table: TableId::Macro { slot: slot(n) },
+            key: None,
+            summary: match resent {
+                Some(reason) => format!("macro slot {n} (19 0{n}) re-sent: {}", reason.text()),
+                None => format!("macro slot {n} (19 0{n})"),
+            },
+            commit_trigger: None,
+            resent_unchanged: false,
+            resent,
+            result,
+        };
+        let report = EditReport {
+            outcome: Outcome::Failed,
+            error: Some(ErrorInfo {
+                kind: ErrorKind::Disconnected,
+                message: "the keyboard was disconnected".into(),
+            }),
+            consent: openwraith_hid::WriteConsent::new(ConsentOrigin::CommandLineFlag),
+            profile: 1,
+            active_profile_now: None,
+            items: vec![
+                item(
+                    0,
+                    None,
+                    ItemResult::Written {
+                        sends: 1,
+                        packets: 5,
+                        warnings: Vec::new(),
+                        persistence: Persistence::NotChecked,
+                    },
+                ),
+                item(
+                    2,
+                    Some(ResendReason::MacroSlot0Clears),
+                    ItemResult::NotAttempted,
+                ),
+            ],
+            safety_backup: "safety.owbackup.json".into(),
+            undo_command: "openwraith restore safety.owbackup.json".into(),
+            foreign_activity: None,
+            waited_for_commit_ms: None,
+            persistence: None,
+            warnings: Vec::new(),
+            dangling: vec![DanglingBinding {
+                profile: 1,
+                layer: Layer::Base,
+                index: 37,
+                slot: SlotRef::Macro(slot(2)),
+            }],
+            cleared_macros: vec![ClearedMacro {
+                profile: 1,
+                slot: slot(2),
+            }],
+            cancel_requested: false,
+        };
+        let text = edit_report(
+            &report,
+            Some(&W75),
+            PersistNote::Mode(PersistenceCheckMode::Auto),
+        );
+        for expected in [
+            "macro slot 2 (19 02) re-sent: writing macro slot 0 makes the keyboard clear slots 1-9",
+            "Macros now EMPTY: writing macro slot 0 made the keyboard clear slots 1-9, and the \
+             edit stopped before writing these again (the undo command below restores them):\n  \
+             - profile 1, macro slot 2\n",
+            "Keys that may now refer to an empty slot (the edit stopped part-way; the undo \
+             command below restores them):\n  - profile 1, base layer, Home (#37) -> macro slot 2",
+        ] {
+            assert!(text.contains(expected), "{expected}\n---\n{text}");
+        }
     }
 
     #[test]
@@ -1846,5 +1986,17 @@ mod tests {
             ),
             "W (#46): default (00 00 00 00) -> A (00 04 00 00)"
         );
+    }
+
+    #[test]
+    fn the_ctrl_c_note_names_the_macros_slot_0_cleared() {
+        let note = cancel_note(true, Outcome::Completed);
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            note.contains("or the macros that writing macro slot 0 had cleared"),
+            "{note}"
+        );
+        assert_eq!(cancel_note(true, Outcome::Cancelled), "");
+        assert_eq!(cancel_note(false, Outcome::Completed), "");
     }
 }

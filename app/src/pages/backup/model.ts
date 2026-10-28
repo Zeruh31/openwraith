@@ -149,7 +149,8 @@ function addItem(group: ProfileGroup, item: PlanItemView): void {
   switch (action.action) {
     case "write": {
       group.packets += action.packets;
-      if (!action.resent_unchanged) group.changes += 1;
+      // A re-sent Fn keymap or macro slot changes no setting.
+      if (!action.resent_unchanged && action.resent === null) group.changes += 1;
       if (item.table.table === "triggers" && item.key !== null) {
         const change = action.changes.find((c) => c.kind === "trigger");
         group.triggers.push({

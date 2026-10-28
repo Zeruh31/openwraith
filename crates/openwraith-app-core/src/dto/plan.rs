@@ -3,7 +3,8 @@
 use serde::Serialize;
 
 use super::common::{
-    CommitTriggerReasonView, KeyRef, LayerView, LightValue, PlanToken, TableRef, TriggerValue,
+    CommitTriggerReasonView, KeyRef, LayerView, LightValue, PlanToken, ResendReasonView, TableRef,
+    TriggerValue,
 };
 use super::files::BackupFileSummary;
 
@@ -92,6 +93,9 @@ pub enum PlanActionView {
         commit_trigger: Option<CommitTriggerReasonView>,
         /// An unchanged Fn keymap re-sent as the commit trigger.
         resent_unchanged: bool,
+        /// Set when it re-sends a macro slot whose content does not change
+        /// (written again after macro slot 0; `changes` is empty).
+        resent: Option<ResendReasonView>,
     },
     /// The table differs but is not written.
     Skip {
@@ -346,12 +350,17 @@ pub enum PlanWarningView {
         request: String,
     },
     CapabilityFlagsDiffer,
-    SharedTablesMayChangeOtherProfiles {
-        tables: Vec<TableRef>,
-        profiles: Vec<u8>,
+    /// A restored profile of the backup holds another SOCD power than
+    /// `profile` (active when the backup was made), whose power is restored
+    /// for the whole keyboard.
+    SocdPowerDiffersInBackup {
+        profile: u8,
+        power: bool,
     },
-    LikelySharedTableDiffers {
-        table: TableRef,
+    /// An import writes the SOCD pairs only; the keyboard keeps its power
+    /// (`power`), a setting of the whole keyboard.
+    SocdPowerNotImported {
+        power: bool,
     },
     /// Profile `from` of the file is imported into profile `into`.
     Imported {

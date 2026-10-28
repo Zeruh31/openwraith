@@ -3,4 +3,4 @@
 /**
  * Why the Fn keymap is re-sent as the keymap group's commit trigger.
  */
-export type CommitTriggerReasonView = "base_keymap" | "macros_or_advanced_keys";
+export type CommitTriggerReasonView = "base_keymap" | "advanced_keys";

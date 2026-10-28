@@ -58,11 +58,10 @@ pub enum SetCommand {
     Advanced(SetAdvancedArgs),
     /// Per-key colours of custom colour table 1 of the active profile (WRITES).
     Colors(SetColorsArgs),
-    /// Top and bottom dead zones of keys (WRITES; may apply to every
-    /// profile, its scope is not known yet).
+    /// Top and bottom dead zones of keys of the active profile (WRITES).
     Deadband(SetDeadBandArgs),
-    /// SOCD power and key pairs (WRITES; may apply to every profile, its
-    /// scope is not known yet).
+    /// SOCD power (one setting of every profile) and the key pairs of the
+    /// active profile (WRITES).
     Socd(SetSocdArgs),
 }
 
@@ -91,9 +90,9 @@ pub struct WriteFlags {
 /// `--check-persistence`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum CheckPersistence {
-    /// Check the tables whose keeping is not proven on hardware yet (macro
-    /// slots, SOCD, advanced-key slots written without the Fn keymap before
-    /// them).
+    /// Check the tables whose keeping is not proven on hardware (today only
+    /// advanced-key slots written without the Fn keymap before them, which
+    /// --commit-trigger skip checks anyway).
     #[default]
     Auto,
     /// Check every written table.
@@ -129,8 +128,8 @@ pub struct EditFlags {
         help = concat!(
             "Switch to another profile and back after writing to check that the ",
             "keyboard kept it (the lighting changes briefly): auto = only tables not yet ",
-            "proven on hardware (macro slots, SOCD, advanced keys without the Fn keymap ",
-            "before them), always, never [default: auto]"
+            "proven on hardware (today only advanced-key slots written without the Fn ",
+            "keymap before them), always, never [default: auto]"
         )
     )]
     pub check_persistence: CheckPersistence,
@@ -160,11 +159,14 @@ impl LayerArg {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum CommitTriggerArg {
     /// The vendor site's order: the Fn keymap (18 02) is written after
-    /// every base keymap and between the macro and the advanced-key slots.
+    /// every base keymap and before the advanced-key slots (the keyboard
+    /// keeps an advanced-key slot when the Fn keymap is written in the same
+    /// save, and loses it without; macro slots need none).
     #[default]
     Auto,
-    /// Hardware test only: slots without the Fn keymap after them (refused
-    /// when a keymap layer changes; forces the persistence check).
+    /// Hardware test only: advanced-key slots without the Fn keymap before
+    /// them (refused when a keymap layer changes; forces the persistence
+    /// check).
     Skip,
 }
 
@@ -279,9 +281,9 @@ pub struct SetKeyArgs {
         help = concat!(
             "Key and what it does. ACTION: default | a key name (A, L-Ctrl, F13, \"KP 1\") | ",
             "usage:0xNN | media:NAME or media:0xNN (mute, volume-up, volume-down, play-pause, ",
-            "next, previous, stop, calculator, ...; 0x24 and 0x25: browser back and forward in ",
-            "some order, which is which is not verified, Q14) | mouse:left|right|middle|0x08|0x10|",
-            "wheel-up|wheel-down | combo:L-Ctrl+L-Shift+A (1-2 modifiers, then one key) | ",
+            "next, previous, stop, calculator, browser-back, browser-forward, ...) | ",
+            "mouse:left|right|middle|back|forward|wheel-up|wheel-down (back = 0x08, forward = ",
+            "0x10) | combo:L-Ctrl+L-Shift+A (1-2 modifiers, then one key) | ",
             "macro:N | advanced:N (an existing slot). Several pairs are written together ",
             "(e.g. a swap: Caps=L-Ctrl L-Ctrl=Caps). The = key is written `equal`, or ==A"
         )
@@ -334,7 +336,7 @@ pub struct SetMacroArgs {
     pub steps: Option<MacroSteps>,
 
     /// How the macro plays: once, times:N (1-255), toggle (a press starts,
-    /// the next stops) or while-held. Only `once` is verified on hardware.
+    /// the next stops) or while-held.
     #[arg(long, value_name = "MODE", value_parser = parse_play, default_value = "once")]
     pub play: MacroPlay,
 
@@ -343,7 +345,9 @@ pub struct SetMacroArgs {
     pub layer: LayerArg,
 
     /// The macro slot (0-9) [default for a key: the slot only this key
-    /// uses, else the lowest free one].
+    /// uses, else the lowest free one in 1-9, slot 0 last]. Writing slot 0
+    /// makes the keyboard clear slots 1-9, so their macros are written
+    /// again right after it.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=9))]
     pub slot: Option<u8>,
 
@@ -678,9 +682,10 @@ pub enum ImportPart {
     Lighting,
     /// Key assignments (both layers), macros and advanced keys.
     Keys,
-    /// The dead band (its profile scope is not known yet).
+    /// The dead band.
     Deadband,
-    /// SOCD (its profile scope is not known yet).
+    /// The SOCD pairs (the SOCD power is one setting of the whole keyboard
+    /// and keeps the keyboard's value).
     Socd,
 }
 

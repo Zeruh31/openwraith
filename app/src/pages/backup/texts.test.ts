@@ -68,8 +68,8 @@ const WARNINGS: PlanWarningView[] = [
   { code: "firmware_differs", backup: "3.23.01", keyboard: null },
   { code: "constant_differs", request: "21/04 distance unit" },
   { code: "capability_flags_differ" },
-  { code: "shared_tables_may_change_other_profiles", tables: [{ table: "side_light" }], profiles: [2, 3] },
-  { code: "likely_shared_table_differs", table: { table: "poll_rate" } },
+  { code: "socd_power_differs_in_backup", profile: 2, power: true },
+  { code: "socd_power_not_imported", power: false },
   { code: "imported", from: 1, into: 3 },
   { code: "imported_macros", slots: [0, 4] },
   { code: "fn_builtin_overridden", index: 24, critical: true },
@@ -99,11 +99,12 @@ describe.each(LANGS)("restore texts (%s)", (lang) => {
     expect(blockCauseText({ code: "malformed_reference", layer: "fn", index: 7 }, dict)).toContain("7");
   });
 
-  it("explains every plan warning; shared tables are amber", () => {
+  it("explains every plan warning; another profile's SOCD setting is amber", () => {
     for (const warning of WARNINGS) {
       const view = planWarningView(warning, dict, format);
       expect(view.text.trim().length, warning.code).toBeGreaterThan(10);
-      const amber = warning.code.includes("shared") || warning.code === "fn_builtin_overridden";
+      expect(view.text).not.toContain("undefined");
+      const amber = warning.code === "socd_power_differs_in_backup" || warning.code === "fn_builtin_overridden";
       expect(view.tone).toBe(amber ? "warning" : "info");
     }
     expect(planWarningView(WARNINGS[1] as PlanWarningView, dict, format).technical).toBe("21/04 distance unit");
@@ -187,5 +188,11 @@ describe("Turkish copy", () => {
   it("uses no plural after a number", () => {
     expect(tr.review.confirm({ n: 3 })).toBe("3 değişikliği geri yükle");
     expect(tr.review.triggers({ n: 4 })).toBe("Aktivasyon ve Rapid Trigger: 4 tuş");
+  });
+
+  it("describes one SOCD switch on the keyboard as on or off, not both", () => {
+    const text = tr.result.persistence.notChecked({ n: 1 });
+    expect(text).toContain("açıldı ya da kapatıldı");
+    expect(text).not.toContain("açılıp kapatıldı");
   });
 });

@@ -75,12 +75,13 @@ pub fn hid_usage_name(usage: u8) -> Option<&'static str> {
     }
 }
 
-/// Name of a multimedia index (keymap entry `07 xx`; CODE-ONLY).
+/// Name of a multimedia index (keymap entry `07 xx`; CODE-ONLY unless the
+/// spec says otherwise).
 ///
-/// Indices `0x24` and `0x25` are labelled contradictorily by the vendor
-/// (code name "BrowserForward" with the label "previous page", and the
-/// reverse; spec section 4.8.3, open question Q14). Their names say so
-/// instead of picking one meaning.
+/// The vendor labels `0x24` and `0x25` contradictorily (code name
+/// "BrowserForward" with the label "previous page", and the reverse; spec
+/// section 4.8.3). Hardware test H18 (2026-10-27, Q14) showed what they do
+/// on a W75: `0x24` goes back and `0x25` goes forward in a browser.
 pub fn media_name(index: u8) -> Option<&'static str> {
     Some(match index {
         0x10 => "Volume +",
@@ -94,8 +95,8 @@ pub fn media_name(index: u8) -> Option<&'static str> {
         0x21 => "Browser Search",
         0x22 => "Favorites",
         0x23 => "Browser Home",
-        0x24 => "Browser Forward/Back (0x24, label contradictory)",
-        0x25 => "Browser Back/Forward (0x25, label contradictory)",
+        0x24 => "Browser Back",
+        0x25 => "Browser Forward",
         0x26 => "Browser Stop",
         0x27 => "Refresh",
         0x30 => "Media Player",
@@ -123,8 +124,9 @@ mod tests {
         assert_eq!(hid_usage_name(0xFA), None);
         assert_eq!(media_name(0x12), Some("Mute"));
         assert_eq!(media_name(0x99), None);
-        assert!(media_name(0x24).is_some_and(|n| n.contains("contradictory")));
-        assert!(media_name(0x25).is_some_and(|n| n.contains("contradictory")));
+        // H18: what 24 and 25 do on a W75.
+        assert_eq!(media_name(0x24), Some("Browser Back"));
+        assert_eq!(media_name(0x25), Some("Browser Forward"));
     }
 
     #[test]

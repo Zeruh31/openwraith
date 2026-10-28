@@ -211,15 +211,25 @@ export const backupRestore: Messages<typeof en> = {
           : `Başka bir profile geçildikten sonra ${p.list} numaralı profiller yeniden seçildi.`,
       kept: (p) => `${p.n} değişiklik, profile geri dönüldüğünde hâlâ yerindeydi.`,
       lost: (p) => `${p.n} değişiklik, profile geri dönüldüğünde kaybolmuştu.`,
-      notChecked: (p) => `Profiller arasında ortak olan ayarlardaki ${p.n} değişiklik ayrıca denetlenemedi.`,
+      notChecked: (p) =>
+        `${p.n} değişiklik denetlenemedi: yazıldıktan sonra SOCD klavyeden (Fn + Sağ Shift) açıldı ya da kapatıldı.`,
     },
     finalTitle: "Son denetim",
     finalOk: (p) =>
       p.count === 1
-        ? `Profil ${p.list} yeniden okundu; yedekteki değerleri taşıyor.`
-        : `${p.list} numaralı profiller yeniden okundu; yedekteki değerleri taşıyorlar.`,
-    finalMismatches: "Şu ayarlar artık yedekteki değerleri taşımıyor:",
+        ? `SOCD tüm profillerde birlikte açılıp kapanır. Profil ${p.list} yeniden okundu; geri yüklenen ayar yerinde.`
+        : `SOCD tüm profillerde birlikte açılıp kapanır. ${p.list} numaralı profiller yeniden okundu; geri yüklenen ayar yerinde.`,
+    finalMismatches:
+      "SOCD tüm profillerde birlikte açılıp kapanır, ama bu profilde geri yüklenen ayar yok (başka bir program değiştirmiş olabilir):",
     finalMismatch: (p) => `Profil ${p.n}: ${p.table}`,
+    clearedTitle: "Boş kalan makrolar",
+    clearedBody:
+      "Makro 1 yazılınca klavye Makro 2–10'u siler; geri yükleme bunları yeniden yazamadan durdu. Geri al, bunları geri getirir.",
+    clearedItem: (p) => `Profil ${p.n}: Makro ${p.slot}`,
+    danglingTitle: "Artık hiçbir şey yapmayan tuşlar",
+    danglingBody:
+      "Geri yükleme yarıda kaldığı için bu tuşlar boş bir makroya ya da gelişmiş tuşa bağlı. Geri al, bunları geri getirir.",
+    danglingItem: (p) => `Profil ${p.n}: ${p.key} → ${p.target}`,
     counts: {
       title: "Sayılarla",
       written: "Yazıldı ve doğrulandı",
@@ -298,10 +308,10 @@ export const backupRestore: Messages<typeof en> = {
     firmware_differs: (p) => `Yedek ${p.backup} sürümlü firmware ile alınmış; klavyede ${p.keyboard} sürümü var.`,
     constant_differs: "Normalde hiç değişmeyen bir değer yedekle klavye arasında farklı.",
     capability_flags_differ: "Klavye, yedeğin alındığı zamandan farklı özellikler bildiriyor.",
-    shared_tables_may_change_other_profiles: (p) =>
-      `Şu ayarlar profiller arasında ortak olabilir: ${p.tables}. Bunları geri yüklemek şu profilleri de değiştirebilir: ${p.profiles}.`,
-    likely_shared_table_differs: (p) =>
-      `Profiller arasında büyük olasılıkla ortak olan bir ayar yedekten farklı: ${p.table}.`,
+    socd_power_differs_in_backup: (p) =>
+      `Yedekteki profillerde SOCD farklı biçimde açılıp kapatılmış, ama klavyede tüm profiller için tek bir SOCD anahtarı var. Yedek alınırken etkin olan profilin (profil ${p.profile}) ayarı geri yüklenir: SOCD ${p.on ? "açık" : "kapalı"}.`,
+    socd_power_not_imported: (p) =>
+      `Yalnızca SOCD tuş çiftleri içe aktarılır. SOCD'nin açık olup olmadığı bir profile değil tüm profillere ait tek bir ayardır; bu yüzden ${p.on ? "açık" : "kapalı"} kalır.`,
     imported: (p) => `Dosyadaki profil ${p.from}, klavyedeki profil ${p.into} üzerine yazılır.`,
     imported_macros: (p) => `Dosyadaki makrolar yazılır: ${p.slots}.`,
     fn_builtin_overridden: (p) =>

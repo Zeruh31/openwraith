@@ -20,8 +20,9 @@ use crate::response::RawResponse;
 pub const SOCD_PAIRS_LEN: usize = 80;
 
 /// How a SOCD pair resolves both keys being held (pair byte 1). The vendor
-/// UI numbers the options 1-4, the wire 0-3 (spec section 4.15 table;
-/// firmware behaviour untested, Q35).
+/// UI numbers the options 1-4, the wire 0-3 (spec section 4.15 table).
+/// Modes 1 and 4 behave as named (CONFIRMED, hardware test H21,
+/// 2026-10-27); modes 2 and 3 are untested (Q35).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -241,25 +242,20 @@ impl SocdWrite {
         &self.pairs
     }
 
-    /// What is not verified about this write (Q35): that the power write
-    /// takes effect, the firmware behaviour of the pairs, and modes 3/4,
-    /// which were never seen on the wire.
+    /// What is not verified about this write (Q35): modes 2 and 3. The
+    /// power write and pairs in modes 1 and 4 take effect as named
+    /// (CONFIRMED, hardware test H21, 2026-10-27).
     pub fn evidence(&self) -> Vec<UnverifiedNote> {
-        let pairs = self.pairs.pairs();
-        let mut notes = vec![UnverifiedNote::new("SOCD power write takes effect", "Q35")];
-        if !pairs.is_empty() {
-            notes.push(UnverifiedNote::new(
-                "firmware behaviour of the SOCD pairs",
-                "Q35",
-            ));
-        }
-        if pairs
+        let untested = self
+            .pairs
+            .pairs()
             .iter()
-            .any(|p| matches!(p.mode, SocdMode::M3 | SocdMode::M4))
-        {
-            notes.push(UnverifiedNote::new("SOCD modes 3 and 4", "Q35"));
+            .any(|p| matches!(p.mode, SocdMode::M2 | SocdMode::M3));
+        if untested {
+            vec![UnverifiedNote::new("SOCD modes 2 and 3", "Q35")]
+        } else {
+            Vec::new()
         }
-        notes
     }
 }
 
@@ -400,12 +396,29 @@ mod tests {
 
     #[test]
     fn evidence_notes() {
+        // H21: the power write and modes 1 and 4 are confirmed.
         let empty = SocdWrite::new(true, SocdPairsData::from_pairs(&W75, &[]).unwrap());
-        assert_eq!(empty.evidence().len(), 1);
-        let m4 = SocdPairsData::from_pairs(&W75, &[pair(SocdMode::M4, 0x04, 0x07)]).unwrap();
+        assert!(empty.evidence().is_empty());
+        let m4 = SocdPairsData::from_pairs(
+            &W75,
+            &[
+                pair(SocdMode::M4, 0x04, 0x07),
+                pair(SocdMode::M1, 0x1A, 0x16),
+            ],
+        )
+        .unwrap();
         let write = SocdWrite::new(false, m4);
-        assert_eq!(write.evidence().len(), 3);
+        assert!(write.evidence().is_empty());
         assert!(!write.power());
-        assert_eq!(write.pairs().pairs().len(), 1);
+        assert_eq!(write.pairs().pairs().len(), 2);
+        for mode in [SocdMode::M2, SocdMode::M3] {
+            let pairs = SocdPairsData::from_pairs(&W75, &[pair(mode, 0x04, 0x07)]).unwrap();
+            let notes: Vec<String> = SocdWrite::new(true, pairs)
+                .evidence()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(notes, ["SOCD modes 2 and 3 (Q35)"], "{mode:?}");
+        }
     }
 }

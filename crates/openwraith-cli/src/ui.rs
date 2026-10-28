@@ -40,8 +40,8 @@ pub trait Ui {
     fn confirm(&mut self, question: &str) -> anyhow::Result<bool>;
 
     /// Starts honouring Ctrl+C as "cancel at the next table boundary" (in a
-    /// keymap group: after the group's Fn keymap, `18 02`, which makes the
-    /// keyboard save it). Called by the commands that write.
+    /// keymap group: after the writes the group still needs, see
+    /// [`FIRST_CTRL_C`]). Called by the commands that write.
     fn enable_cancel(&mut self);
 
     /// Starts honouring Ctrl+C for the live key-depth view: every Ctrl+C
@@ -64,6 +64,23 @@ static PRESSES: AtomicU32 = AtomicU32::new(0);
 
 /// Width of the progress line.
 const PROGRESS_WIDTH: usize = 72;
+
+/// What the first Ctrl+C of a command that writes does (see
+/// `openwraith_hid::group`): the writes the keymap group still needs go out
+/// first, which after macro slot 0 can be up to nine more macro slots.
+pub(crate) const FIRST_CTRL_C: &str = "Ctrl+C: stopping after the current table and returning \
+     to the original profile. Inside the keymap group the writes it still needs go out first: \
+     the Fn keymap (18 02) after a base keymap already written (the keyboard keeps the base \
+     keymap only then), a macro or advanced-key slot that a written key refers to, and, once \
+     macro slot 0 was written, every other macro slot that keeps content (writing slot 0 makes \
+     the keyboard clear slots 1-9, so they are written again). Press Ctrl+C again to stop \
+     immediately.";
+
+/// The warning of the second Ctrl+C, before the process exits.
+pub(crate) const SECOND_CTRL_C: &str = "warning: second Ctrl+C: stopping immediately. A table \
+     or a profile switch may have been interrupted, and if macro slot 0 was written, the macros \
+     not yet written again after it stay empty; check the keyboard with `openwraith profile` and \
+     `openwraith show`, and restore the safety backup if needed (the undo command of the plan).";
 
 /// The real console.
 #[derive(Debug, Default)]
@@ -106,19 +123,10 @@ impl Terminal {
                 return;
             }
             if presses > 1 {
-                eprintln!(
-                    "\nwarning: second Ctrl+C: stopping immediately. A table or a profile switch \
-                     may have been interrupted; check the keyboard with `openwraith profile` and \
-                     `openwraith show`, and restore the safety backup if needed."
-                );
+                eprintln!("\n{SECOND_CTRL_C}");
                 std::process::exit(130);
             }
-            eprintln!(
-                "\nCtrl+C: stopping after the current table (inside the keymap group: after \
-                 the Fn keymap (18 02) that makes the keyboard save it and any macro or \
-                 advanced-key slot that an already written key refers to) and returning to the \
-                 original profile (press Ctrl+C again to stop immediately)."
-            );
+            eprintln!("\n{FIRST_CTRL_C}");
         });
         if let Err(e) = installed {
             eprintln!("warning: Ctrl+C cannot be handled ({e}); it will stop OpenWraith at once");
@@ -199,5 +207,38 @@ impl Ui for Terminal {
 
     fn cancelled(&self) -> bool {
         CANCEL.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Ctrl+C messages name every write a cancellation still sends,
+    /// the macro slots after slot 0 included, and what a second Ctrl+C can
+    /// leave empty.
+    #[test]
+    fn the_ctrl_c_messages_name_the_macros_after_slot_0() {
+        let first = FIRST_CTRL_C
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for part in [
+            "the Fn keymap (18 02) after a base keymap already written",
+            "once macro slot 0 was written, every other macro slot that keeps content",
+            "Press Ctrl+C again to stop immediately.",
+        ] {
+            assert!(first.contains(part), "{part}: {first}");
+        }
+        let second = SECOND_CTRL_C
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            second.contains(
+                "if macro slot 0 was written, the macros not yet written again after it stay empty"
+            ),
+            "{second}"
+        );
     }
 }

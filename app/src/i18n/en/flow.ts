@@ -6,6 +6,7 @@ import type {
   CommitTriggerReasonView,
   OpKind,
   ReadPurpose,
+  ResendReasonView,
   WriteWarningView,
 } from "../../ipc/bindings";
 
@@ -83,7 +84,7 @@ export const flow = {
   cancel: {
     available: "Stop",
     requested: "Stopping after the current step…",
-    finishing_keymap_group: "Finishing the key assignments first, so the keyboard keeps them…",
+    finishing_keymap_group: "Finishing the key-assignment writes that belong together, so no key or macro is left half-changed…",
     not_now: "This step can't be stopped; it ends in a moment.",
     not_cancellable: "This can't be stopped once it has started.",
   } satisfies Record<CancelState, string>,
@@ -183,8 +184,13 @@ export const flow = {
   } satisfies Record<Code, unknown>,
   commitTrigger: {
     base_keymap: "Fn layer key assignments: re-sent unchanged so the keyboard keeps the key assignments",
-    macros_or_advanced_keys: "Fn layer key assignments: re-sent unchanged as a precaution (untested)",
+    advanced_keys:
+      "Fn layer key assignments: re-sent unchanged before the advanced keys so the keyboard keeps them (it loses advanced keys written without them)",
   } satisfies Record<CommitTriggerReasonView, string>,
+  /** Why a macro is written again although it doesn't change (slots shown 1-based). */
+  resent: {
+    macro_slot0_clears: "Unchanged, written again: writing Macro 1 makes the keyboard clear Macros 2–10.",
+  } satisfies Record<ResendReasonView, string>,
   footer: {
     safetyBackup: "Safety backup:",
     undoDisabled: "Connect the keyboard to undo.",

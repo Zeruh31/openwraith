@@ -1,7 +1,7 @@
 //! Restores and Undo.
 
 use openwraith_hid::SimTable;
-use openwraith_hid::protocol::{Layer, MacroSlotId, ReadRequest};
+use openwraith_hid::protocol::ReadRequest;
 
 use super::harness::{Harness, pos, profile};
 use super::seeds::with_device_info;
@@ -254,25 +254,14 @@ fn an_unplug_while_waiting_for_the_save_is_maybe_lost() {
     h.assert_clean();
 }
 
+/// Stop while the base keymap is written: the Fn keymap after it is still
+/// sent (the keyboard keeps the base keymap only then), the advanced-key
+/// slot after the Fn keymap is not.
 #[test]
 fn stop_inside_the_keymap_group_still_sends_the_fn_keymap() {
     let mut h = Harness::ready();
     let (file, _) = h.backup_all("all.owbackup.json");
-    h.with_sim(|s| {
-        let mut base = s
-            .table(profile(1), SimTable::Keymap(Layer::Base))
-            .unwrap()
-            .to_vec();
-        base[usize::from(W) * 4 + 2] ^= 0x01;
-        s.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
-        let mut slot = vec![0u8; 256];
-        slot[..8].copy_from_slice(&[0, 0, 0, 4, 0x01, 0x04, 0x00, 0x00]);
-        s.set_table(
-            profile(1),
-            SimTable::Macro(MacroSlotId::new(0).unwrap()),
-            slot,
-        );
-    });
+    h.with_sim(super::harness::base_keymap_and_advanced_slot_changed);
     let preview = h
         .prepare_restore(intent(&file, Some(vec![1]), vec![]), &h.watch())
         .unwrap();
@@ -285,26 +274,26 @@ fn stop_inside_the_keymap_group_still_sends_the_fn_keymap() {
     assert_eq!(
         tables,
         vec![
-            TableRef::Macro { slot: 0 },
             TableRef::Keymap {
                 layer: crate::dto::LayerView::Base
             },
             TableRef::Keymap {
                 layer: crate::dto::LayerView::Fn
             },
+            TableRef::AdvancedKey { slot: 5 },
         ]
     );
     let watch = h.watch();
-    watch.cancel_when(super::harness::is_write_start);
+    watch.cancel_when(super::harness::is_base_keymap_start);
     let report = h
         .apply_restore(&Harness::token(&preview.token), &watch)
         .unwrap();
     assert_eq!(report.outcome, OutcomeView::Cancelled, "{report:#?}");
     let items = &report.profiles[0].items;
     assert!(matches!(items[0].result, ItemResultView::Written { .. }));
-    assert!(matches!(items[1].result, ItemResultView::NotAttempted));
-    assert!(matches!(items[2].result, ItemResultView::Written { .. }));
-    assert!(items[2].resent_unchanged);
+    assert!(matches!(items[1].result, ItemResultView::Written { .. }));
+    assert!(items[1].resent_unchanged);
+    assert!(matches!(items[2].result, ItemResultView::NotAttempted));
     assert!(
         watch
             .all()

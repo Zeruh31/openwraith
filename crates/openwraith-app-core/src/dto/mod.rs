@@ -24,7 +24,8 @@ pub use app::{AppInfo, LanguageSetting, PlatformView, SafetyDirView, Settings, T
 pub use common::{
     BackupKind, CloseChoice, CommitTriggerReasonView, DeviceId, DeviceIdentityView, DialogText,
     FileRef, FileToken, ForeignActivityView, KeyRef, LayerView, LightModeKey, LightModeView,
-    LightValue, OpId, PlanToken, RevealTarget, TableRef, TriggerModeView, TriggerValue,
+    LightValue, OpId, PlanToken, ResendReasonView, RevealTarget, TableRef, TriggerModeView,
+    TriggerValue,
 };
 pub use error::{AppError, AppErrorKind, ErrorDetail, IntentField, RangeField};
 pub use files::{BackupFileKind, BackupFileSummary, SafetyBackupEntry, SafetyReason, ToolView};
@@ -39,10 +40,10 @@ pub use preview::{
 };
 pub use progress::{CancelState, ProgressEvent, ProgressStep, ReadPurpose};
 pub use report::{
-    BackupSaved, EditReportView, FinalCheckView, FinalMismatchView, Headline, ItemReportView,
-    ItemResultView, LastReport, MismatchKindView, MismatchView, OutcomeView, PersistenceCheckView,
-    PersistenceView, ProfileReportView, ProfileSwitchReport, ReportCounts, RestoreReportView,
-    WriteWarningView,
+    BackupSaved, ClearedMacroView, DanglingBindingView, EditReportView, FinalCheckView,
+    FinalMismatchView, Headline, ItemReportView, ItemResultView, LastReport, MismatchKindView,
+    MismatchView, OutcomeView, PersistenceCheckView, PersistenceView, ProfileReportView,
+    ProfileSwitchReport, ReportCounts, RestoreReportView, WriteWarningView,
 };
 pub use sim::{SimAction, SimInfo};
 pub use snapshot::{

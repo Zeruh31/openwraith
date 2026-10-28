@@ -337,7 +337,7 @@ fn c17_fn_layer_codes_match_the_site() {
         ("F2", KeyAssignment::Mouse(MouseAction::WheelDown)),
         (
             "F3",
-            KeyAssignment::Mouse(MouseAction::Button(MouseButton::Mask10)),
+            KeyAssignment::Mouse(MouseAction::Button(MouseButton::Forward)),
         ),
         ("F4", KeyAssignment::Media(MediaKey::new(0x25).unwrap())),
         ("W", KeyAssignment::Media(MediaKey::new(0x32).unwrap())),

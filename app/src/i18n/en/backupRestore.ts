@@ -246,16 +246,25 @@ export const backupRestore = {
         p.n === 1 ? "1 change was gone after switching back." : `${p.n} changes were gone after switching back.`,
       notChecked: (p: { n: number }) =>
         p.n === 1
-          ? "1 change to a setting shared between profiles couldn't be checked separately."
-          : `${p.n} changes to settings shared between profiles couldn't be checked separately.`,
+          ? "1 change couldn't be checked: SOCD was switched on the keyboard after it was written."
+          : `${p.n} changes couldn't be checked: SOCD was switched on the keyboard after they were written.`,
     },
     finalTitle: "Final check",
     finalOk: (p: { list: string; count: number }) =>
       p.count === 1
-        ? `Profile ${p.list} was read again and holds the backup's values.`
-        : `Profiles ${p.list} were read again and hold the backup's values.`,
-    finalMismatches: "These settings no longer hold the backup's values:",
+        ? `SOCD is switched on or off for all profiles at once. Profile ${p.list} was read again and has the restored setting.`
+        : `SOCD is switched on or off for all profiles at once. Profiles ${p.list} were read again and have the restored setting.`,
+    finalMismatches:
+      "SOCD is switched on or off for all profiles at once, but this profile doesn't have the restored setting (another program may have changed it):",
     finalMismatch: (p: { n: number; table: string }) => `Profile ${p.n}: ${p.table}`,
+    clearedTitle: "Macros left empty",
+    clearedBody:
+      "Writing Macro 1 makes the keyboard clear Macros 2–10, and the restore stopped before writing these again. Undo brings them back.",
+    clearedItem: (p: { n: number; slot: number }) => `Profile ${p.n}: Macro ${p.slot}`,
+    danglingTitle: "Keys that now do nothing",
+    danglingBody:
+      "The restore stopped part-way, so these keys refer to an empty macro or advanced key. Undo brings them back.",
+    danglingItem: (p: { n: number; key: string; target: string }) => `Profile ${p.n}: ${p.key} → ${p.target}`,
     counts: {
       title: "In numbers",
       written: "Written and verified",
@@ -342,10 +351,10 @@ export const backupRestore = {
       `The backup was made with firmware ${p.backup}; the keyboard has ${p.keyboard}.`,
     constant_differs: "A value that normally never changes differs between the backup and the keyboard.",
     capability_flags_differ: "The keyboard reports different capabilities than when the backup was made.",
-    shared_tables_may_change_other_profiles: (p: { tables: string; profiles: string }) =>
-      `These settings may be shared between profiles: ${p.tables}. Restoring them can also change profiles ${p.profiles}.`,
-    likely_shared_table_differs: (p: { table: string }) =>
-      `This setting is probably shared between profiles and differs from the backup: ${p.table}.`,
+    socd_power_differs_in_backup: (p: { profile: number; on: boolean }) =>
+      `The profiles in the backup have SOCD switched on and off differently, but the keyboard has one SOCD switch for all profiles. The setting of profile ${p.profile} (active when the backup was made) is restored: SOCD ${p.on ? "on" : "off"}.`,
+    socd_power_not_imported: (p: { on: boolean }) =>
+      `Only the SOCD key pairs are imported. Whether SOCD is on is one setting for all profiles, not part of a profile, so it stays ${p.on ? "on" : "off"}.`,
     imported: (p: { from: number; into: number }) =>
       `Profile ${p.from} of the file is written to profile ${p.into} of the keyboard.`,
     imported_macros: (p: { slots: string }) => `Macros from the file are written: ${p.slots}.`,

@@ -140,21 +140,18 @@ impl MediaKey {
         self.0
     }
 
-    /// The vendor's label, e.g. `"Mute"` (`24`/`25` say that their label
-    /// is contradictory, spec section 4.8.3).
+    /// The name, e.g. `"Mute"` (the vendor's label; `24`/`25` by what they
+    /// do on a W75, spec section 4.8.3).
     pub fn name(self) -> Option<&'static str> {
         media_name(self.0)
     }
 
-    /// Mute (`12`) and Calculator (`32`) are CONFIRMED (c17); `24`/`25`
-    /// have a contradictory label (Q14); the others rely on the vendor's
-    /// label only.
+    /// Mute (`12`) and Calculator (`32`) are CONFIRMED (c17), Browser Back
+    /// (`24`) and Browser Forward (`25`) by hardware test H18 (2026-10-27,
+    /// Q14); the others rely on the vendor's label only (Q37).
     pub const fn evidence(self) -> Evidence {
         match self.0 {
-            0x12 | 0x32 => Evidence::Confirmed,
-            0x24 | 0x25 => {
-                Evidence::unverified("direction of browser forward/back (07 24 / 07 25)", "Q14")
-            }
+            0x12 | 0x24 | 0x25 | 0x32 => Evidence::Confirmed,
             _ => Evidence::unverified("multimedia function named by the vendor site", "Q37"),
         }
     }
@@ -176,9 +173,10 @@ impl From<MediaKey> for u8 {
 
 /// A mouse button mask of a `12 00 <mask> 00` entry.
 ///
-/// Masks `08` and `10` are named by value: the vendor site labels them
-/// Forward and Back, but standard HID numbering suggests the reverse
-/// (spec section 4.8.3, Q37).
+/// Mask `08` is the back button (X1) and `10` the forward button (X2), as
+/// in standard HID numbering: CONFIRMED by hardware test H18 (2026-10-27,
+/// Q37). The vendor site labels them the other way round (spec section
+/// 4.8.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -189,10 +187,10 @@ pub enum MouseButton {
     Right,
     /// `04`: middle button.
     Middle,
-    /// `08` (the site's "Forward").
-    Mask08,
-    /// `10` (the site's "Back").
-    Mask10,
+    /// `08`: back (X1; the site's "Forward").
+    Back,
+    /// `10`: forward (X2; the site's "Back").
+    Forward,
 }
 
 impl MouseButton {
@@ -201,8 +199,8 @@ impl MouseButton {
         MouseButton::Left,
         MouseButton::Right,
         MouseButton::Middle,
-        MouseButton::Mask08,
-        MouseButton::Mask10,
+        MouseButton::Back,
+        MouseButton::Forward,
     ];
 
     /// The button mask byte.
@@ -211,8 +209,8 @@ impl MouseButton {
             MouseButton::Left => 0x01,
             MouseButton::Right => 0x02,
             MouseButton::Middle => 0x04,
-            MouseButton::Mask08 => 0x08,
-            MouseButton::Mask10 => 0x10,
+            MouseButton::Back => 0x08,
+            MouseButton::Forward => 0x10,
         }
     }
 
@@ -222,8 +220,8 @@ impl MouseButton {
             0x01 => Some(MouseButton::Left),
             0x02 => Some(MouseButton::Right),
             0x04 => Some(MouseButton::Middle),
-            0x08 => Some(MouseButton::Mask08),
-            0x10 => Some(MouseButton::Mask10),
+            0x08 => Some(MouseButton::Back),
+            0x10 => Some(MouseButton::Forward),
             _ => None,
         }
     }
@@ -266,16 +264,12 @@ impl MouseAction {
         }
     }
 
-    /// Wheel down and mask `10` were written and reported working (c17;
-    /// mask `10` is named by value, its direction is open); the others
-    /// follow the same layout but are untested (Q37).
+    /// Every action is CONFIRMED: wheel down and forward were written and
+    /// reported working in c17; the left, right, middle, back and forward
+    /// buttons and wheel up were tested one by one in hardware test H18
+    /// (2026-10-27, Q37).
     pub const fn evidence(self) -> Evidence {
-        match self {
-            MouseAction::WheelDown | MouseAction::Button(MouseButton::Mask10) => {
-                Evidence::Confirmed
-            }
-            _ => Evidence::unverified("mouse button or wheel up", "Q37"),
-        }
+        Evidence::Confirmed
     }
 }
 
@@ -283,7 +277,8 @@ impl MouseAction {
 /// that is not a modifier (the vendor UI's rule, `wmIndex.js:3563-3577`).
 ///
 /// Written as `13 m1 m2 key` with two modifiers (CONFIRMED, c17
-/// `13 e0 e1 04`) and `13 m key 00` with one (CODE-ONLY).
+/// `13 e0 e1 04`) and `13 m key 00` with one (CONFIRMED, hardware test H18:
+/// `13 e0 06` = L-Ctrl+C copies).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Combo {
@@ -346,13 +341,27 @@ impl Combo {
         combo.ok().filter(|c| c.bytes() == bytes)
     }
 
-    /// Two modifiers: CONFIRMED (c17); one modifier: untested (Q37).
+    /// Left-side modifiers (`E0`-`E3`): CONFIRMED, two by c17 (`13 e0 e1
+    /// 04`) and one by hardware test H18 (`13 e0 06`); a right-side modifier
+    /// (`E4`-`E7`) was never tested on a W75 (Q37).
     pub const fn evidence(&self) -> Evidence {
-        match self.modifiers {
-            (_, Some(_)) => Evidence::Confirmed,
-            (_, None) => Evidence::unverified("key combination with one modifier", "Q37"),
+        let (first, second) = self.modifiers;
+        let right_side = match second {
+            Some(second) => is_right_side(first) || is_right_side(second),
+            None => is_right_side(first),
+        };
+        if right_side {
+            Evidence::unverified("key combination with a right-side modifier", "Q37")
+        } else {
+            Evidence::Confirmed
         }
     }
+}
+
+/// Whether `modifier` is a right-side modifier (`E4`-`E7`: R-Ctrl,
+/// R-Shift, R-Alt, R-GUI).
+const fn is_right_side(modifier: HidUsage) -> bool {
+    modifier.get() >= 0xE4
 }
 
 impl fmt::Display for Combo {
@@ -440,18 +449,18 @@ impl KeyAssignment {
         }
     }
 
-    /// How well the effect of this assignment on `layer` is verified.
+    /// How well the effect of this assignment on `layer` is verified. A
+    /// macro binding on the Fn layer is CONFIRMED by hardware test H19
+    /// (2026-10-27: Fn + Q, `10 14 04 00`, plays the macro); an advanced-key
+    /// binding there is not tested (Q36).
     pub const fn evidence(&self, layer: Layer) -> Evidence {
         match (self, layer) {
             (KeyAssignment::Default | KeyAssignment::Key(_), _) => Evidence::Confirmed,
             (KeyAssignment::Media(key), _) => key.evidence(),
             (KeyAssignment::Mouse(action), _) => action.evidence(),
             (KeyAssignment::Combo(combo), _) => combo.evidence(),
-            (KeyAssignment::Macro(_), Layer::Base) | (KeyAssignment::Advanced(_), Layer::Base) => {
+            (KeyAssignment::Macro(_), _) | (KeyAssignment::Advanced(_), Layer::Base) => {
                 Evidence::Confirmed
-            }
-            (KeyAssignment::Macro(_), Layer::Fn) => {
-                Evidence::unverified("macro binding on the Fn layer", "Q13")
             }
             (KeyAssignment::Advanced(_), Layer::Fn) => {
                 Evidence::unverified("advanced-key binding on the Fn layer", "Q36")
@@ -529,12 +538,14 @@ pub enum PlacementError {
     /// The Fn-layer entry would hide a built-in Fn function the user did
     /// not acknowledge (or acknowledged without the critical flag).
     #[error(
-        "Fn + key #{index} is the built-in function \"{function}\"; replacing it needs an explicit acknowledgement{}",
+        "Fn + {key} (#{index}) is the built-in function \"{function}\"; replacing it needs an explicit acknowledgement{}",
         critical_suffix(.critical)
     )]
     BuiltinNotAcknowledged {
         /// Key index.
         index: u8,
+        /// The key's name in the model's layout, e.g. `"F1"`.
+        key: &'static str,
         /// The built-in function.
         function: &'static str,
         /// Whether it is a critical one.
@@ -613,6 +624,7 @@ pub fn check_placement(
     } else {
         Err(PlacementError::BuiltinNotAcknowledged {
             index,
+            key: key.name,
             function: builtin.function,
             critical: builtin.critical,
         })
@@ -670,13 +682,19 @@ mod tests {
         assert!(MediaKey::new(0x17).is_none());
         assert!(MediaKey::ALL.iter().all(|i| media_name(*i).is_some()));
         assert!(MediaKey::new(0x32).unwrap().evidence().is_confirmed());
+        // H18: 24 = Browser Back, 25 = Browser Forward.
+        for (index, name) in [(0x24, "Browser Back"), (0x25, "Browser Forward")] {
+            let key = MediaKey::new(index).unwrap();
+            assert!(key.evidence().is_confirmed(), "{index:#04x}");
+            assert_eq!(key.name(), Some(name));
+        }
         assert_eq!(
-            MediaKey::new(0x25)
+            MediaKey::new(0x26)
                 .unwrap()
                 .evidence()
                 .note()
                 .map(|n| n.question),
-            Some("Q14")
+            Some("Q37")
         );
     }
 
@@ -686,11 +704,16 @@ mod tests {
             let action = MouseAction::Button(button);
             assert_eq!(MouseAction::from_bytes(action.bytes()), Some(action));
         }
-        // c17: Fn+F2 wheel down, Fn+F3 mask 10.
+        // c17: Fn+F2 wheel down, Fn+F3 mask 10; H18: mask 08 = back (X1),
+        // mask 10 = forward (X2).
         assert_eq!(MouseAction::WheelDown.bytes(), [0x12, 0x01, 0xff, 0x00]);
         assert_eq!(
-            MouseAction::Button(MouseButton::Mask10).bytes(),
+            MouseAction::Button(MouseButton::Forward).bytes(),
             [0x12, 0x00, 0x10, 0x00]
+        );
+        assert_eq!(
+            MouseAction::Button(MouseButton::Back).bytes(),
+            [0x12, 0x00, 0x08, 0x00]
         );
         assert_eq!(
             MouseAction::from_bytes([0x12, 0x01, 0x01, 0x00]),
@@ -699,8 +722,14 @@ mod tests {
         // Value-first (unswapped) and other masks are not mouse entries we write.
         assert_eq!(MouseAction::from_bytes([0x12, 0x01, 0x00, 0x00]), None);
         assert_eq!(MouseAction::from_bytes([0x12, 0x00, 0x03, 0x00]), None);
+        // H18 tested every button and wheel up; c17 wheel down.
         assert!(MouseAction::WheelDown.evidence().is_confirmed());
-        assert!(!MouseAction::WheelUp.evidence().is_confirmed());
+        assert!(MouseAction::WheelUp.evidence().is_confirmed());
+        assert!(
+            MouseButton::ALL
+                .iter()
+                .all(|b| MouseAction::Button(*b).evidence().is_confirmed())
+        );
     }
 
     #[test]
@@ -712,7 +741,24 @@ mod tests {
         assert!(two.evidence().is_confirmed());
         let one = Combo::new(&[ctrl], a).unwrap();
         assert_eq!(one.bytes(), [0x13, 0xe0, 0x04, 0x00]);
-        assert!(!one.evidence().is_confirmed());
+        // H18: L-Ctrl+C (`13 e0 06`) copies.
+        assert!(one.evidence().is_confirmed());
+        // A right-side modifier (R-Ctrl E4 .. R-GUI E7) was never tested.
+        for right in [0xE4, 0xE7] {
+            let alone = Combo::new(&[usage(right)], usage(0x06)).unwrap();
+            let paired = Combo::new(&[ctrl, usage(right)], a).unwrap();
+            for combo in [alone, paired] {
+                let evidence = combo.evidence();
+                assert!(!evidence.is_confirmed(), "{combo}");
+                assert_eq!(evidence.note().map(|n| n.question), Some("Q37"), "{combo}");
+            }
+        }
+        assert!(
+            Combo::new(&[usage(0xE3)], a)
+                .unwrap()
+                .evidence()
+                .is_confirmed()
+        );
         for (mods, key) in [
             (&[][..], a),
             (&[ctrl, ctrl][..], a),
@@ -824,7 +870,8 @@ mod tests {
         );
         let macro_ = KeyAssignment::Macro(MacroSlotId::new(0).unwrap());
         assert!(macro_.evidence(Layer::Base).is_confirmed());
-        assert!(!macro_.evidence(Layer::Fn).is_confirmed());
+        // H19: a macro bound on the Fn layer plays.
+        assert!(macro_.evidence(Layer::Fn).is_confirmed());
         assert!(
             KeyAssignment::Key(usage(4))
                 .evidence(Layer::Fn)
@@ -876,9 +923,16 @@ mod tests {
             check(Layer::Fn, f1, &a, &[]),
             Err(PlacementError::BuiltinNotAcknowledged {
                 index: 2,
+                key: "F1",
                 function: "media player",
                 critical: false
             })
+        );
+        // The refusal names the key, not only its index.
+        assert_eq!(
+            check(Layer::Fn, f1, &a, &[]).unwrap_err().to_string(),
+            "Fn + F1 (#2) is the built-in function \"media player\"; replacing it needs an \
+             explicit acknowledgement"
         );
         let ack = BuiltinAck {
             pos: f1,
@@ -938,10 +992,10 @@ mod tests {
         assert!(serde_json::from_str::<HidUsage>("50").is_err());
         assert_eq!(
             serde_json::to_string(&KeyAssignment::Mouse(MouseAction::Button(
-                MouseButton::Mask10
+                MouseButton::Forward
             )))
             .unwrap(),
-            r#"{"mouse":{"button":"mask10"}}"#
+            r#"{"mouse":{"button":"forward"}}"#
         );
         assert_eq!(
             serde_json::to_string(&PlacementError::Knob).unwrap(),

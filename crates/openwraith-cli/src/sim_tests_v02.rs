@@ -248,13 +248,15 @@ fn fn_layer_codes_are_the_bytes_of_capture_17() {
     println!("--- set key --layer fn ... ---\n{}", ui.out);
     for expected in [
         "Fn     F1         default (built-in: media player)  media Mute",
-        "Fn     F3         default (built-in: volume +)      mouse button 0x10",
+        "Fn     F3         default (built-in: volume +)      mouse forward button (X2)",
+        "Fn     F4         default (built-in: mute)          media Browser Forward",
         "Fn     Caps Lock  default                           combination L-Ctrl+L-Shift+A",
         "Fn + F1 (#2) will no longer do its built-in function \"media player\"",
-        "not yet verified on a W75: direction of browser forward/back (07 24 / 07 25) (Q14)",
     ] {
         assert!(ui.out.contains(expected), "{expected}\n---\n{}", ui.out);
     }
+    // Every code here is confirmed on hardware (c17, H18 2026-10-27).
+    assert!(!ui.out.contains("not yet verified"), "{}", ui.out);
     // Only the Fn keymap: c17 #1890-#1900, byte for byte.
     let sim = connector.sim.borrow();
     assert_eq!(
@@ -287,9 +289,10 @@ fn built_in_fn_functions_the_knob_and_fn_are_refused() {
         &mut ui,
     )
     .expect_err("refused");
+    // The refusal names the key (H18: it said "Fn + key #2").
     assert!(
         err.to_string()
-            .contains("built-in function \"media player\""),
+            .contains("Fn + F1 (#2) is the built-in function \"media player\""),
         "{err}"
     );
     assert!(
@@ -361,7 +364,7 @@ fn run_command_err(cli: &crate::Cli, connector: &mut SimConnector, ui: &mut Test
 }
 
 #[test]
-fn set_macro_writes_the_c13_slot_binds_it_and_checks_persistence() {
+fn set_macro_writes_the_c13_slot_and_binds_it() {
     let fx = Fixture::new();
     let mut connector = SimConnector::new(c06_sim());
     let ui = run_yes(
@@ -371,27 +374,33 @@ fn set_macro_writes_the_c13_slot_binds_it_and_checks_persistence() {
             "Caps",
             "--steps",
             "A+ 100, A- 100, B+ 100, B-",
+            // The capture's slot (a new macro takes slot 1 by itself);
+            // every other slot is empty, so nothing is re-sent after it.
+            "--slot",
+            "0",
         ],
         &mut connector,
         &fx,
         Exit::Success,
     );
-    println!("--- set macro Caps --steps ... ---\n{}", ui.out);
+    println!("--- set macro Caps --steps ... --slot 0 ---\n{}", ui.out);
     let out = &ui.out;
     for expected in [
         "base   Caps Lock  default  macro slot 0",
         "macro slot 0: empty -> A+ 100, A- 100, B+ 100, B- (Once)",
-        "switches to profile 2 and back",
-        "Persistence check: profile 1 selected again after switching away; 2 written tables \
-         still hold what was written (the keyboard saved them).",
-        "whether the keyboard keeps macro slot 0 across a power loss is not tested yet",
+        // Macro slots and keymaps are known to be kept (H19, 2026-10-27).
+        "and does not switch profiles: hardware tests showed that the keyboard keeps these \
+         tables",
     ] {
         assert!(out.contains(expected), "{expected}\n---\n{out}");
     }
+    assert!(!out.contains("Persistence check"), "{out}");
+    // Macro slots survive a power cycle (H22, 2026-10-27).
+    assert!(!out.contains("power loss"), "{out}");
     let sim = connector.sim.borrow();
     // The site's order: the macro slot (c13 #316-#326), the base keymap with
-    // Caps -> `10 39 00 00` (c13 #425), the Fn keymap as commit trigger,
-    // then the persistence check's switches.
+    // Caps -> `10 39 00 00` (c13 #425), the Fn keymap as commit trigger; no
+    // profile switch.
     let c13 = "capture_13_macro_ab_on_caps";
     assert_eq!(
         sent(&sim, 0, "19 00"),
@@ -405,10 +414,7 @@ fn set_macro_writes_the_c13_slot_binds_it_and_checks_persistence() {
     assert_eq!(heads[..5], ["19 00"; 5]);
     assert_eq!(heads[5..15], ["18 00"; 10]);
     assert_eq!(heads[15..25], ["18 02"; 10]);
-    assert_eq!(
-        selects(&sim),
-        ["21 00 00 00 00 12 02", "21 00 00 00 00 12 01"]
-    );
+    assert!(selects(&sim).is_empty());
     assert_eq!(sim.active_profile(), 1);
     assert_eq!(sim.discarded_edits(), 0);
     sim.assert_clean();
@@ -625,8 +631,9 @@ fn set_advanced_writes_the_c16_slots_after_the_keymaps() {
         assert!(text.contains(expected), "{expected}\n---\n{text}");
     }
 
-    // A lone slot change without the Fn keymap (hardware test H20): only
-    // `22 00`, then the forced persistence check.
+    // A lone slot change without the Fn keymap (hardware test H20 step 2,
+    // 2026-10-27, `hw/v02/h20-2.txt`): only `22 00`, then the forced
+    // persistence check, which finds it gone as the keyboard did.
     let before = connector.sim.borrow().writes_sent();
     let ui = run_yes(
         &[
@@ -641,7 +648,7 @@ fn set_advanced_writes_the_c16_slots_after_the_keymaps() {
         ],
         &mut connector,
         &fx,
-        Exit::Success,
+        Exit::Failure,
     );
     println!(
         "--- set advanced E dks ... --commit-trigger skip ---\n{}",
@@ -656,9 +663,24 @@ fn set_advanced_writes_the_c16_slots_after_the_keymaps() {
             .collect();
         assert_eq!(tables, ["22 00"]);
         assert_eq!(selects(&sim).len(), 2);
-        assert!(ui.out.contains("persisted"), "{}", ui.out);
+        assert_has(
+            &ui.out,
+            &[
+                "the Fn keymap (18 02) is NOT written before the advanced-key slots",
+                "then LOST: gone after a profile switch, the keyboard did not keep it \
+                 (read-back differs at byte offset(s) 9, 11, 14, 18)",
+                "Run the same command without --commit-trigger skip (the Fn keymap written \
+                 before an advanced-key slot makes the keyboard keep it)",
+            ],
+        );
         sim.assert_clean();
     }
+    // The keyboard still holds the DKS of before.
+    let text = render::advanced(&AdvancedView::new(&backup_of(&connector)));
+    assert!(
+        text.contains("Slot 0: DKS at 1.5 mm: E tap/-/-/-, R -/tap/-/-"),
+        "{text}"
+    );
 
     // Unbinding H clears its slot (2) in the same group.
     let ui = run_yes(
@@ -799,7 +821,7 @@ fn set_colors_writes_custom_table_1_like_capture_17() {
 }
 
 #[test]
-fn set_deadband_writes_one_table_and_says_its_scope_is_unknown() {
+fn set_deadband_writes_one_table_of_the_active_profile() {
     let fx = Fixture::new();
     let mut connector = SimConnector::new(c06_sim());
     let ui = run_yes(
@@ -816,10 +838,12 @@ fn set_deadband_writes_one_table_and_says_its_scope_is_unknown() {
     assert_eq!(json["confirmed"], true);
     assert_eq!(json["report"]["outcome"], "completed");
     assert!(json["safety_backup"]["path"].is_string(), "{json}");
+    // Each profile has its own dead band (H16, 2026-10-27) and the keyboard
+    // keeps it across a power cycle (H22): no note at all.
     assert!(
         json["plan"]["warnings"]
             .as_array()
-            .is_some_and(|w| w.iter().any(|w| w["warning"] == "scope_unknown")),
+            .is_some_and(Vec::is_empty),
         "{json}"
     );
     let sim = connector.sim.borrow();
@@ -828,13 +852,19 @@ fn set_deadband_writes_one_table_and_says_its_scope_is_unknown() {
         .expect("dead band");
     // W (index 46) at offset 92: 0.10 / 0.20 mm (c12).
     assert_eq!(band[92..94], [0x05, 0x0a]);
+    assert!(
+        sim.table(profile(2), SimTable::DeadBand)
+            .expect("dead band")
+            .iter()
+            .all(|b| *b == 0)
+    );
     let heads: Vec<String> = writes(&sim).iter().map(|w| w[..5].to_string()).collect();
     assert_eq!(heads, ["26 01"; 5]);
     sim.assert_clean();
 }
 
 #[test]
-fn set_socd_sends_the_c15_bursts_and_checks_persistence() {
+fn set_socd_sends_the_c15_bursts_and_needs_no_persistence_check() {
     let fx = Fixture::new();
     let mut connector = SimConnector::new(c06_sim());
     let c15 = "capture_15_socd";
@@ -849,16 +879,31 @@ fn set_socd_sends_the_c15_bursts_and_checks_persistence() {
         let before = connector.sim.borrow().writes_sent();
         let ui = run_yes(args, &mut connector, &fx, Exit::Success);
         println!("--- {} ---\n{}", args.join(" "), ui.out);
-        assert!(
+        // The power is one setting of the whole keyboard (H21): said when
+        // the command sets it.
+        let sets_power = args.contains(&"--on") || args.contains(&"--off");
+        assert_eq!(
             ui.out
-                .contains("may apply to every profile: its profile scope is not known yet"),
+                .contains("the SOCD power is one setting of the whole keyboard"),
+            sets_power,
             "{}",
             ui.out
         );
-        // SOCD's keeping is not proven: the plan announces the check.
+        assert!(ui.out.contains("Power (all profiles)"), "{}", ui.out);
+        // SOCD is known to be kept (H21, H22 2026-10-27): no check announced.
         assert!(
+            ui.out.contains(
+                "and does not switch profiles: hardware tests showed that the keyboard keeps \
+                 these tables"
+            ),
+            "{}",
             ui.out
-                .contains("switches to profile 2 and back and reads SOCD again"),
+        );
+        // Mode 2 is the only one here that is not tested on hardware.
+        assert_eq!(
+            ui.out
+                .contains("not yet verified on a W75: SOCD modes 2 and 3 (Q35)"),
+            args.contains(&"A/D:2"),
             "{}",
             ui.out
         );
@@ -869,9 +914,12 @@ fn set_socd_sends_the_c15_bursts_and_checks_persistence() {
             captured(c15, &[start, start + 1, start + 2]),
             "{args:?}"
         );
-        // SOCD has no persistence evidence yet: switched away and back.
-        assert!(ui.out.contains("Persistence check:"), "{}", ui.out);
-        assert!(ui.out.contains("persisted"), "{}", ui.out);
+        // No switch away and back.
+        assert!(!ui.out.contains("Persistence check:"), "{}", ui.out);
+        assert!(
+            sent(&sim, before, "21 00 00 00 00 12").is_empty(),
+            "{args:?}"
+        );
         sim.assert_clean();
     }
     let sim = connector.sim.borrow();
@@ -899,18 +947,26 @@ fn set_socd_sends_the_c15_bursts_and_checks_persistence() {
     )
     .expect("dry run");
     for expected in [
-        "Power  off -> on",
+        "Power (all profiles)  off -> on",
+        "Pairs of profile 1 after:",
         "1. Left / Right, mode 4: the later key only interrupts the first",
         "24 03 00 00 01 01",
-        "not yet verified on a W75: SOCD modes 3 and 4 (Q35)",
         "Dry run: nothing was written.",
     ] {
         assert!(ui.out.contains(expected), "{expected}\n---\n{}", ui.out);
     }
+    // Mode 4 behaves as named (H21, 2026-10-27).
+    assert!(!ui.out.contains("not yet verified"), "{}", ui.out);
     let backup = backup_of(&connector);
     let text = render::socd(&SocdView::new(&backup));
-    assert!(text.contains("Power: off"), "{text}");
+    assert!(text.contains("Power (all profiles): off"), "{text}");
     assert!(text.contains("Pairs: none"), "{text}");
+    assert!(
+        text.contains(
+            "The power is one setting of the whole keyboard; the pairs belong to each profile."
+        ),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1812,4 +1868,498 @@ fn conflicting_v02_flags_are_usage_errors() {
     assert!(is_usage_error(&err), "{args:?}: {err}");
     assert!(err.to_string().contains("--keep-slot"), "{err}");
     assert_eq!((connector.read_sessions, connector.write_sessions), (0, 0));
+}
+
+// ----- macro slot 0 (hw/v02/macro-exp.txt, H24) -----
+
+/// A one-key macro `usage` in slot `n` of profile 1, with `key` bound to it
+/// on the base layer when given.
+fn put_macro(sim: &mut DeviceSim, n: u8, usage: u8, key_name: Option<&str>) {
+    let slot = MacroSlotId::new(n).expect("slot");
+    let usage = openwraith_protocol::HidUsage::new(usage).expect("usage");
+    let program = openwraith_protocol::MacroProgram::new(
+        openwraith_protocol::MacroPlay::Once,
+        vec![
+            openwraith_protocol::write::MacroStep::press(usage, 0),
+            openwraith_protocol::write::MacroStep::release(usage, 0),
+        ],
+    )
+    .expect("valid");
+    sim.set_table(
+        profile(1),
+        SimTable::Macro(slot),
+        program.encode(slot).to_bytes().to_vec(),
+    );
+    if let Some(name) = key_name {
+        let k = key(name);
+        let own = openwraith_protocol::W75
+            .key(k.index())
+            .and_then(|k| k.hid_usage)
+            .expect("usage");
+        let mut base = sim
+            .table(profile(1), SimTable::Keymap(Layer::Base))
+            .expect("keymap")
+            .to_vec();
+        let at = usize::from(k.index()) * 4;
+        base[at..at + 4].copy_from_slice(&[0x10, own, n, 0x00]);
+        sim.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
+    }
+}
+
+/// The saved bytes of macro slot `n` of profile 1.
+fn macro_slot(sim: &DeviceSim, n: u8) -> Vec<u8> {
+    sim.persisted_table(
+        profile(1),
+        SimTable::Macro(MacroSlotId::new(n).expect("slot")),
+    )
+    .expect("slot")
+    .to_vec()
+}
+
+/// Step 4 of the experiment: `set macro --slot 0` while slot 2 holds a
+/// macro. The plan writes slot 2 again right after slot 0 and says why;
+/// both macros are kept.
+#[test]
+fn set_macro_slot_0_writes_the_other_macros_again() {
+    let fx = Fixture::new();
+    let mut connector = SimConnector::new(c06_sim());
+    run_yes(
+        &["set", "macro", "--slot", "2", "--steps", "C+, C-"],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    let slot2 = macro_slot(&connector.sim.borrow(), 2);
+    let ui = run_yes(
+        &["set", "macro", "--slot", "0", "--steps", "B+, B-"],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- set macro --slot 0 ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "macro slot 0: empty -> B+, B- (Once)",
+            "macro slot 0 (19 00) 5",
+            "macro slot 2 (19 02) 5 re-sent: writing macro slot 0 makes the keyboard clear \
+             slots 1-9; written even after Ctrl+C",
+            "macro slot 2 (19 02) re-sent: writing macro slot 0 makes the keyboard clear slots \
+             1-9 written and verified (5 packets)",
+        ],
+    );
+    // Only slot 0 changes content.
+    assert!(!ui.out.contains("macro slot 2: "), "{}", ui.out);
+    let sim = connector.sim.borrow();
+    assert_eq!(macro_slot(&sim, 2), slot2);
+    assert!(macro_slot(&sim, 0).iter().any(|b| *b != 0));
+    sim.assert_clean();
+}
+
+/// Moving Home from slot 3 to a new macro in slot 5: slot 5 goes out even
+/// after Ctrl+C (the base keymap that newly refers to it does, since it
+/// moves Home off the cleared slot 3), but no slot 0 is written, so the
+/// plan does not blame one.
+#[test]
+fn a_macro_a_written_key_newly_needs_is_not_said_to_follow_slot_0() {
+    let mut sim = c06_sim();
+    put_macro(&mut sim, 3, 0x07, Some("Home"));
+    let mut connector = SimConnector::new(sim);
+    let ui = run_plain(
+        &[
+            "set",
+            "macro",
+            "Home",
+            "--slot",
+            "5",
+            "--steps",
+            "F+, F-",
+            "--dry-run",
+        ],
+        &mut connector,
+        Exit::Success,
+    );
+    println!("--- set macro Home --slot 5 --dry-run ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &["macro slot 5 (19 05) 5 completes a binding: written even after Ctrl+C"],
+    );
+    assert!(!ui.out.contains("macro slot 0"), "{}", ui.out);
+    assert!(!ui.out.contains("clear slots 1-9"), "{}", ui.out);
+}
+
+/// A restore whose slot 0 differs: the plan re-sends the unchanged slot 3
+/// right after it; when that write fails, the report names the macro left
+/// empty and the key bound to it.
+#[test]
+fn a_restore_re_sends_the_macros_after_slot_0_and_names_what_a_failure_left_empty() {
+    let fx = Fixture::new();
+    let mut source = c06_sim();
+    put_macro(&mut source, 0, 0x1d, None);
+    put_macro(&mut source, 3, 0x07, Some("Home"));
+    let target = read_all(&mut openwraith_hid::Session::new(&mut source)).expect("backup");
+    let file = fx.save(&target, "macros");
+    let keyboard = || {
+        let mut sim = c06_sim();
+        put_macro(&mut sim, 0, 0x04, None);
+        put_macro(&mut sim, 3, 0x07, Some("Home"));
+        sim
+    };
+    let restore = |connector: &mut SimConnector, exit: Exit| {
+        let mut ui = TestUi::answering(&[]);
+        let result = run(
+            &[
+                "restore",
+                text(&file),
+                "--yes",
+                "--safety-dir",
+                text(&fx.safety_dir()),
+            ],
+            connector,
+            &mut ui,
+        )
+        .expect("restore");
+        assert_eq!(result, exit, "{}\n{}", ui.out, ui.err);
+        ui
+    };
+
+    let mut connector = SimConnector::new(keyboard());
+    let slot3 = macro_slot(&connector.sim.borrow(), 3);
+    let ui = restore(&mut connector, Exit::Success);
+    println!("--- restore ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "macro slot 3 (19 03) 5 re-sent: writing macro slot 0 makes the keyboard clear \
+           slots 1-9; written even after Ctrl+C",
+        ],
+    );
+    assert_eq!(macro_slot(&connector.sim.borrow(), 3), slot3);
+    connector.sim.borrow().assert_clean();
+
+    // Slot 3 never takes the write.
+    let mut sim = keyboard();
+    sim.freeze(SimTable::Macro(MacroSlotId::new(3).expect("slot")));
+    let mut connector = SimConnector::new(sim);
+    let ui = restore(&mut connector, Exit::Failure);
+    println!("--- restore, slot 3 frozen ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "Macros now EMPTY: writing macro slot 0 made the keyboard clear slots 1-9, and the \
+             restore stopped before writing these again",
+            "- profile 1, macro slot 3",
+            "Keys that may now refer to an empty slot (the restore stopped part-way",
+            "- profile 1, base layer, Home (#37) -> macro slot 3",
+        ],
+    );
+    connector.sim.borrow().assert_clean();
+}
+
+#[test]
+fn a_macro_slot_alone_is_written_without_the_fn_keymap() {
+    // H19 step 2 (2026-10-27, `hw/v02/h19-2.txt`): the keyboard keeps a
+    // macro slot written alone, so no Fn keymap goes with it and no profile
+    // switch checks it.
+    let fx = Fixture::new();
+    let mut connector = SimConnector::new(c06_sim());
+    let ui = run_yes(
+        &["set", "macro", "--slot", "3", "--steps", "A+ 30, A-"],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- set macro --slot 3 --steps ... ---\n{}", ui.out);
+    assert!(!ui.out.contains("Fn keymap (18 02)"), "{}", ui.out);
+    let sim = connector.sim.borrow();
+    let heads: Vec<String> = writes(&sim).iter().map(|w| w[..5].to_string()).collect();
+    assert_eq!(heads, ["19 03"; 5]);
+    assert!(selects(&sim).is_empty());
+    sim.assert_clean();
+}
+
+#[test]
+fn an_import_of_socd_writes_the_pairs_and_keeps_the_keyboards_power() {
+    // H21 (2026-10-27): the SOCD power is one setting of the whole
+    // keyboard, the pairs belong to the profile.
+    let fx = Fixture::new();
+    let mut connector = SimConnector::new(sim_with_profiles());
+    {
+        let mut sim = connector.sim.borrow_mut();
+        sim.set_table(
+            profile(1),
+            SimTable::SocdSettings,
+            vec![1, 0, 0, 0, 0xfa, 0xe5],
+        );
+        let mut pairs = vec![0u8; 80];
+        pairs[..4].copy_from_slice(&[0x01, 0x00, 0x04, 0x07]);
+        sim.set_table(profile(1), SimTable::SocdPairs, pairs);
+    }
+    let file = export_profile_1(&mut connector, &fx);
+    // SOCD off again on the keyboard (every profile).
+    connector.sim.borrow_mut().set_table(
+        profile(2),
+        SimTable::SocdSettings,
+        vec![0, 0, 0, 0, 0xfa, 0xe5],
+    );
+    let ui = run_yes(
+        &[
+            "profile",
+            "import",
+            text(&file),
+            "--into",
+            "3",
+            "--include",
+            "socd",
+        ],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- profile import --into 3 --include socd ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "SOCD: only the pairs are imported; the power is one setting of the whole keyboard, \
+             not part of a profile, and stays off",
+            "SOCD power off and pairs (24 03, 24 00)",
+        ],
+    );
+    assert!(!ui.out.contains("SOCD power (all profiles)"), "{}", ui.out);
+    let sim = connector.sim.borrow();
+    let socd = |p: u8| {
+        (
+            sim.persisted_table(profile(p), SimTable::SocdSettings)
+                .map(|b| b[0]),
+            sim.persisted_table(profile(p), SimTable::SocdPairs)
+                .map(|b| b[..4].to_vec()),
+        )
+    };
+    assert_eq!(socd(3), (Some(0), Some(vec![0x01, 0x00, 0x04, 0x07])));
+    assert_eq!(socd(2), (Some(0), Some(vec![0; 4])));
+    sim.assert_clean();
+}
+
+/// Runs `args` (no question asked) and expects `exit`.
+fn run_plain(args: &[&str], connector: &mut SimConnector, exit: Exit) -> TestUi {
+    let mut ui = TestUi::answering(&[]);
+    let result = run(args, connector, &mut ui).unwrap_or_else(|e| {
+        panic!(
+            "{args:?}: {e:#}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            ui.out, ui.err
+        )
+    });
+    assert_eq!(result, exit, "{args:?}\n{}\n{}", ui.out, ui.err);
+    ui
+}
+
+/// Hardware tests H26 and H27 (docs/HARDWARE_TESTS.md, "Re-tests after the
+/// H12-H24 findings") as the tester types them: H26's macros in profile 4,
+/// SOCD on with the A/D pair in profile 2 and Left/Right in profile 3,
+/// profile 4 active, then the restore of the backup made before H26. The
+/// dry run compares every profile only `--against` an all-profile backup of
+/// the keyboard; the plan writes SOCD in profiles 2 and 3 and shows the
+/// power change once, in profile 2's write. Profile 3's write is the one
+/// H24 refused (the first write had switched the power of every profile);
+/// the restore ends with exit code 0 and a clean final check in profile 4.
+#[test]
+fn hardware_tests_h26_and_h27_in_the_simulator() {
+    let fx = Fixture::new();
+    let mut connector = SimConnector::new(sim_with_profiles());
+    let before = fx.path("before-h26.owbackup.json");
+    let now = fx.path("before-h27.owbackup.json");
+    run_plain(
+        &["backup", "--all-profiles", "-o", text(&before)],
+        &mut connector,
+        Exit::Success,
+    );
+    // H26.
+    run_plain(&["profile", "select", "4"], &mut connector, Exit::Success);
+    for (slot, steps) in [("1", "B+, B-"), ("2", "C+, C-")] {
+        let ui = run_yes(
+            &["set", "macro", "--slot", slot, "--steps", steps],
+            &mut connector,
+            &fx,
+            Exit::Success,
+        );
+        assert!(!ui.out.contains("Fn keymap"), "{}", ui.out);
+    }
+    let ui = run_plain(
+        &[
+            "set",
+            "macro",
+            "--slot",
+            "0",
+            "--steps",
+            "A+, A-",
+            "--dry-run",
+        ],
+        &mut connector,
+        Exit::Success,
+    );
+    println!("--- set macro --slot 0 --dry-run ---\n{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "macro slot 0: empty -> A+, A- (Once)",
+            "macro slot 1 (19 01) 5 re-sent: writing macro slot 0 makes the keyboard clear \
+             slots 1-9; written even after Ctrl+C",
+            "macro slot 2 (19 02) 5 re-sent: writing macro slot 0 makes the keyboard clear \
+             slots 1-9; written even after Ctrl+C",
+        ],
+    );
+    assert!(!ui.out.contains("Fn keymap"), "{}", ui.out);
+    let macros = |connector: &SimConnector| render::macros(&MacrosView::new(&backup_of(connector)));
+    for clear in [false, true] {
+        let mut args = vec!["set", "macro", "--slot", "0"];
+        args.extend(if clear {
+            ["--clear"].as_slice()
+        } else {
+            ["--steps", "A+, A-"].as_slice()
+        });
+        run_yes(&args, &mut connector, &fx, Exit::Success);
+        let shown = macros(&connector);
+        println!("--- show macros ---\n{shown}");
+        assert!(
+            shown.contains("B+, B-") && shown.contains("C+, C-"),
+            "{shown}"
+        );
+        assert_eq!(shown.contains("A+, A-"), !clear, "{shown}");
+    }
+    // H27.
+    run_plain(&["profile", "select", "2"], &mut connector, Exit::Success);
+    let ui = run_yes(
+        &["set", "socd", "--on", "--pair", "A/D"],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- set socd --on --pair A/D ---\n{}", ui.out);
+    run_plain(&["profile", "select", "3"], &mut connector, Exit::Success);
+    let ui = run_yes(
+        &["set", "socd", "--pair", "Left/Right"],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- set socd --pair Left/Right ---\n{}", ui.out);
+    run_plain(&["profile", "select", "4"], &mut connector, Exit::Success);
+    run_plain(
+        &["backup", "--all-profiles", "-o", text(&now)],
+        &mut connector,
+        Exit::Success,
+    );
+    let ui = run_plain(
+        &[
+            "restore",
+            text(&before),
+            "--dry-run",
+            "--against",
+            text(&now),
+            "--packets",
+        ],
+        &mut connector,
+        Exit::Success,
+    );
+    println!("--- restore --dry-run --against ---\n{}", ui.out);
+    assert_eq!(
+        ui.out
+            .matches("SOCD power (all profiles): on -> off")
+            .count(),
+        1,
+        "{}",
+        ui.out
+    );
+    let profile2 = ui.out.find("Profile 2").expect("profile 2 in the plan");
+    let profile3 = ui.out.find("Profile 3").expect("profile 3 in the plan");
+    let power = ui.out.find("SOCD power (all profiles)").expect("power");
+    assert!(profile2 < power && power < profile3, "{}", ui.out);
+    // A dry run without --against compares the active profile only.
+    let ui = run_plain(
+        &["restore", text(&before), "--dry-run"],
+        &mut connector,
+        Exit::Success,
+    );
+    assert!(
+        ui.out.contains("Profiles 1, 2 and 3: not compared"),
+        "{}",
+        ui.out
+    );
+
+    let ui = run_yes(
+        &["restore", text(&before)],
+        &mut connector,
+        &fx,
+        Exit::Success,
+    );
+    println!("--- restore ---\n{}", ui.out);
+    assert_eq!(
+        ui.out
+            .matches("SOCD power (all profiles): on -> off")
+            .count(),
+        1,
+        "{}",
+        ui.out
+    );
+    assert!(!ui.out.contains("changed after"), "{}", ui.out);
+    assert_has(
+        &ui.out,
+        &[
+            "4 macro slot 1 (19 01) written and verified (5 packets), persisted",
+            "4 macro slot 2 (19 02) written and verified (5 packets), persisted",
+            "Final check: the SOCD power, one setting of the whole keyboard, read again in \
+             profile 4: it holds the restored power.",
+        ],
+    );
+    // Profiles 2 and 3; the second is the write H24 refused.
+    assert_eq!(
+        ui.out
+            .lines()
+            .filter(|l| l.contains("SOCD power off and pairs (24 03, 24 00)")
+                && l.ends_with("written and verified (3 packets), persisted"))
+            .count(),
+        2,
+        "{}",
+        ui.out
+    );
+    // `show socd`.
+    let shown = render::socd(&SocdView::new(&backup_of(&connector)));
+    assert!(shown.contains("Power (all profiles): off"), "{shown}");
+    let after = fx.path("after-h27.owbackup.json");
+    run_plain(
+        &["backup", "--all-profiles", "-o", text(&after)],
+        &mut connector,
+        Exit::Success,
+    );
+    let ui = run_plain(
+        &[
+            "restore",
+            text(&before),
+            "--dry-run",
+            "--against",
+            text(&after),
+        ],
+        &mut connector,
+        Exit::Success,
+    );
+    println!("--- restore --dry-run --against after-h27 ---\n{}", ui.out);
+    assert!(ui.out.contains("Nothing to write"), "{}", ui.out);
+    assert!(!ui.out.contains("not compared"), "{}", ui.out);
+    let sim = connector.sim.borrow();
+    assert_eq!(sim.active_profile(), 4);
+    for n in 1..=4 {
+        assert_eq!(
+            sim.persisted_table(profile(n), SimTable::SocdSettings)
+                .map(|b| b[0]),
+            Some(0),
+            "profile {n}"
+        );
+        assert_eq!(
+            sim.persisted_table(profile(n), SimTable::SocdPairs)
+                .map(|b| b[..4].to_vec()),
+            Some(vec![0; 4]),
+            "profile {n}"
+        );
+    }
+    sim.assert_clean();
 }

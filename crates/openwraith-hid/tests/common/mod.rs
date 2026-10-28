@@ -6,12 +6,14 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use openwraith_hid::protocol::capture::{Capture, CaptureEvent};
+use openwraith_hid::protocol::write::MacroStep;
 use openwraith_hid::protocol::{
-    KeyPos, ProfileId, REPORT_LEN, ReadRequest, Report, is_keyboard_reset,
+    HidUsage, KeyPos, Layer, MacroPlay, MacroProgram, MacroSlotId, ProfileId, REPORT_LEN,
+    ReadRequest, Report, W75, is_keyboard_reset,
 };
 use openwraith_hid::{
     Backup, BackupOptions, ConsentOrigin, DeviceSim, MockTransport, ProfilesOptions, ScopeConfig,
-    Session, SimPacket, ToolInfo, WriteConsent, read_all_with,
+    Session, SimPacket, SimTable, ToolInfo, WriteConsent, read_all_with,
 };
 
 pub const C06: &str = "capture_06_powercycle_W_persisted";
@@ -204,6 +206,77 @@ pub fn last_trigger_write(sim: &DeviceSim) -> (usize, Duration) {
 /// A scratch directory for safety backups.
 pub fn temp_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("temporary directory")
+}
+
+// ----- macro slots and their keys -----
+
+/// Macro slot `n`.
+pub fn macro_slot(n: u8) -> MacroSlotId {
+    MacroSlotId::new(n).expect("slot")
+}
+
+/// The position of the key named `name` on the W75.
+pub fn key_named(name: &str) -> KeyPos {
+    W75.key_by_name(name)
+        .and_then(|k| k.pos())
+        .unwrap_or_else(|| panic!("no key {name}"))
+}
+
+/// A one-key macro: `usage` pressed and released (the experiment's
+/// "A+, A-" of `hw/v02/macro-exp.txt`).
+pub fn tap(usage: u8) -> MacroProgram {
+    let usage = HidUsage::new(usage).expect("usage");
+    MacroProgram::new(
+        MacroPlay::Once,
+        vec![MacroStep::press(usage, 0), MacroStep::release(usage, 0)],
+    )
+    .expect("valid")
+}
+
+/// The bytes of `program` in macro slot `n`.
+pub fn macro_bytes(n: u8, program: &MacroProgram) -> Vec<u8> {
+    program.encode(macro_slot(n)).to_bytes().to_vec()
+}
+
+/// Macro slot `n` of profile `p` holds `program`.
+pub fn put_macro(sim: &mut DeviceSim, p: ProfileId, n: u8, program: &MacroProgram) {
+    sim.set_table(p, SimTable::Macro(macro_slot(n)), macro_bytes(n, program));
+}
+
+/// The entry of key `name` on `layer` of profile `p` refers to macro slot
+/// `n` (`10 <own usage> n 00`).
+pub fn bind_macro(sim: &mut DeviceSim, p: ProfileId, layer: Layer, name: &str, n: u8) {
+    let k = key_named(name);
+    let own = W75.key(k.index()).and_then(|k| k.hid_usage).expect("usage");
+    let mut table = sim
+        .table(p, SimTable::Keymap(layer))
+        .expect("keymap")
+        .to_vec();
+    let at = usize::from(k.index()) * 4;
+    table[at..at + 4].copy_from_slice(&[0x10, own, n, 0x00]);
+    sim.set_table(p, SimTable::Keymap(layer), table);
+}
+
+/// What macro slot `n` of profile `p` holds after a profile switch.
+pub fn kept_macro(sim: &DeviceSim, p: ProfileId, n: u8) -> Vec<u8> {
+    sim.persisted_table(p, SimTable::Macro(macro_slot(n)))
+        .expect("macro slot")
+        .to_vec()
+}
+
+/// Whether a macro slot's bytes are empty (all `00` or all `FF`).
+pub fn is_empty_slot(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0) || bytes.iter().all(|b| *b == 0xFF)
+}
+
+/// The 4 bytes of the entry of key `name` on `layer` of profile `p`, as
+/// saved (after a profile switch).
+pub fn kept_entry(sim: &DeviceSim, p: ProfileId, layer: Layer, name: &str) -> [u8; 4] {
+    let at = usize::from(key_named(name).index()) * 4;
+    let table = sim
+        .persisted_table(p, SimTable::Keymap(layer))
+        .expect("keymap");
+    [table[at], table[at + 1], table[at + 2], table[at + 3]]
 }
 
 /// Rewrites a report the host reads (bytes, profile selects sent so far).

@@ -129,7 +129,7 @@ pub use error::{
     BackupError, ErrorInfo, ErrorKind, ListenError, ProfilesError, ProfilesFailure, RestoreError,
     SessionError, TransportError, WriteError,
 };
-pub use group::{DanglingBinding, SlotRef};
+pub use group::{ClearedMacro, DanglingBinding, ResendReason, SlotRef};
 pub use hid::{
     DeviceChoiceError, DeviceDescriptor, DeviceListing, HidBackend, HidTransport,
     WritableHidTransport, choose_device, is_supported_interface,

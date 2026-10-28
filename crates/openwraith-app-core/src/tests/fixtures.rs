@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use openwraith_hid::protocol::{Layer, MacroSlotId, REPORT_LEN, RawResponse, ReadRequest, Report};
+use openwraith_hid::protocol::{Layer, REPORT_LEN, RawResponse, ReadRequest, Report};
 use openwraith_hid::{Backup, BackupEntry, SimTable};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -926,21 +926,7 @@ fn backup_restore() -> Vec<Rec> {
 
     let mut h = Harness::ready();
     let (_, path) = h.backup_all("all.owbackup.json");
-    h.with_sim(|s| {
-        let mut base = s
-            .table(profile(1), SimTable::Keymap(Layer::Base))
-            .unwrap()
-            .to_vec();
-        base[usize::from(W) * 4 + 2] ^= 0x01;
-        s.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
-        let mut slot = vec![0u8; 256];
-        slot[..8].copy_from_slice(&[0, 0, 0, 4, 0x01, 0x04, 0x00, 0x00]);
-        s.set_table(
-            profile(1),
-            SimTable::Macro(MacroSlotId::new(0).unwrap()),
-            slot,
-        );
-    });
+    h.with_sim(super::harness::base_keymap_and_advanced_slot_changed);
     let mut r = Rec::new("restore_cancelled_in_keymap_group", h);
     let summary = r.open_file(path).unwrap();
     let preview = r
@@ -948,7 +934,7 @@ fn backup_restore() -> Vec<Rec> {
         .unwrap();
     let token = Rec::token(&preview.token);
     r.call("apply_restore", json!({"token": token}), |h, w| {
-        w.cancel_when(super::harness::is_write_start);
+        w.cancel_when(super::harness::is_base_keymap_start);
         h.apply_restore(&token, w)
     })
     .unwrap();

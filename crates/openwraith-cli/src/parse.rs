@@ -84,9 +84,9 @@ const USAGE_ALIASES: &[(&str, &str)] = &[
     ("bksp", "Backspace"),
 ];
 
-/// Multimedia names: the vendor's labels (`media_name`) plus short forms.
-/// `24` and `25` are given by number only (their label is contradictory,
-/// spec 4.8.3).
+/// Multimedia names: the names of `media_name` (`24` Browser Back and `25`
+/// Browser Forward by what they do on a W75, hardware test H18) plus short
+/// forms.
 const MEDIA_ALIASES: &[(&str, u8)] = &[
     ("volumeup", 0x10),
     ("volup", 0x10),
@@ -108,6 +108,8 @@ const MEDIA_ALIASES: &[(&str, u8)] = &[
     ("favourites", 0x22),
     ("home", 0x23),
     ("browserhome", 0x23),
+    ("back", 0x24),
+    ("forward", 0x25),
     ("browserstop", 0x26),
     ("refresh", 0x27),
     ("mediaplayer", 0x30),
@@ -174,14 +176,14 @@ fn parse_media(text: &str) -> Result<MediaKey, String> {
             format!(
                 "unknown multimedia key {text:?}: one of mute, volume-up, volume-down, \
                  play-pause, next, previous, stop, mail, search, favorites, browser-home, \
-                 browser-stop, refresh, media-player, calculator, my-computer, or 0x24 and 0x25 \
-                 (browser back and forward in some order; which is which is not verified, Q14)"
+                 browser-back, browser-forward, browser-stop, refresh, media-player, \
+                 calculator, my-computer, or 0xNN"
             )
         })
 }
 
-/// A mouse action: `left`, `right`, `middle`, `0x08`, `0x10`, `wheel-up`,
-/// `wheel-down`.
+/// A mouse action: `left`, `right`, `middle`, `back` (`0x08`, X1),
+/// `forward` (`0x10`, X2), `wheel-up`, `wheel-down`.
 fn parse_mouse(text: &str) -> Result<MouseAction, String> {
     if let Some(byte) = parse_hex_byte(text) {
         return MouseButton::from_mask(byte)
@@ -192,11 +194,13 @@ fn parse_mouse(text: &str) -> Result<MouseAction, String> {
         "left" => Ok(MouseAction::Button(MouseButton::Left)),
         "right" => Ok(MouseAction::Button(MouseButton::Right)),
         "middle" => Ok(MouseAction::Button(MouseButton::Middle)),
+        "back" | "x1" => Ok(MouseAction::Button(MouseButton::Back)),
+        "forward" | "x2" => Ok(MouseAction::Button(MouseButton::Forward)),
         "wheelup" => Ok(MouseAction::WheelUp),
         "wheeldown" => Ok(MouseAction::WheelDown),
         _ => Err(format!(
-            "unknown mouse action {text:?}: one of left, right, middle, 0x08, 0x10 (the vendor \
-             site's forward and back; their direction is not verified), wheel-up, wheel-down"
+            "unknown mouse action {text:?}: one of left, right, middle, back (0x08), forward \
+             (0x10), wheel-up, wheel-down"
         )),
     }
 }
@@ -554,6 +558,10 @@ mod tests {
         assert_eq!(parse_action("media:Volume +"), Ok(media(0x10)));
         assert_eq!(parse_action("media:calculator"), Ok(media(0x32)));
         assert_eq!(parse_action("media:0x24"), Ok(media(0x24)));
+        // H18: 24 goes back and 25 forward in a browser.
+        assert_eq!(parse_action("media:browser-back"), Ok(media(0x24)));
+        assert_eq!(parse_action("media:Browser Forward"), Ok(media(0x25)));
+        assert_eq!(parse_action("media:back"), Ok(media(0x24)));
         assert!(parse_action("media:0x99").is_err());
         assert_eq!(
             parse_action("mouse:wheel-down"),
@@ -562,9 +570,23 @@ mod tests {
         assert_eq!(
             parse_action("mouse:0x10"),
             Ok(KeyAssignment::Mouse(MouseAction::Button(
-                MouseButton::Mask10
+                MouseButton::Forward
             )))
         );
+        // H18: mask 08 is the back button (X1), 10 the forward button (X2).
+        for (text, button) in [
+            ("mouse:back", MouseButton::Back),
+            ("mouse:x1", MouseButton::Back),
+            ("mouse:0x08", MouseButton::Back),
+            ("mouse:forward", MouseButton::Forward),
+            ("mouse:X2", MouseButton::Forward),
+        ] {
+            assert_eq!(
+                parse_action(text),
+                Ok(KeyAssignment::Mouse(MouseAction::Button(button))),
+                "{text}"
+            );
+        }
         assert!(parse_action("mouse:0x20").is_err());
         let combo = parse_action("combo:L-Ctrl+L-Shift+A").expect("combo");
         let KeyAssignment::Combo(combo) = combo else {

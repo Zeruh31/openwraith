@@ -1150,14 +1150,8 @@ fn a_failed_verification_is_reported_with_what_was_written() {
 #[test]
 fn a_final_check_mismatch_is_reported_with_exit_code_1() {
     let fx = Fixture::new();
-    // The backup: dead bands per profile (profile 1 `05 0a`, profile 2
-    // `07 0b` on W).
+    // The backup: SOCD off without pairs in every profile.
     let mut source = sim_with_profiles();
-    for (n, entry) in [(1, [0x05, 0x0a]), (2, [0x07, 0x0b])] {
-        let mut band = vec![0u8; 264];
-        band[92..94].copy_from_slice(&entry);
-        source.set_table(profile(n), SimTable::DeadBand, band);
-    }
     let target = {
         let mut session = openwraith_hid::Session::new(&mut source);
         openwraith_hid::read_all_profiles(
@@ -1169,15 +1163,26 @@ fn a_final_check_mismatch_is_reported_with_exit_code_1() {
         .expect("all-profile backup")
     };
     let file = fx.save(&target, "all");
-    // The keyboard holds the same settings, but shares one dead band
-    // between all profiles (holding profile 1's).
-    let keyboard = DeviceSim::from_backup_with(
+    // The keyboard keeps the SOCD power per profile (not the W75, H21): on
+    // in every profile, with A/D in profile 2. The restore writes SOCD in
+    // profile 2 only; the final check finds profile 1 still on.
+    let mut keyboard = DeviceSim::from_backup_with(
         &target,
         openwraith_hid::ScopeConfig {
-            dead_band: openwraith_hid::Scope::Global,
+            socd_power: openwraith_hid::Scope::PerProfile,
             ..openwraith_hid::ScopeConfig::default()
         },
     );
+    for n in 1..=4 {
+        keyboard.set_table(
+            profile(n),
+            SimTable::SocdSettings,
+            vec![1, 0, 0, 0, 0xfa, 0xe5],
+        );
+    }
+    let mut pairs = vec![0u8; 80];
+    pairs[..4].copy_from_slice(&[0x01, 0x00, 0x04, 0x07]);
+    keyboard.set_table(profile(2), SimTable::SocdPairs, pairs);
     let mut connector = SimConnector::new(keyboard);
     let mut ui = TestUi::answering(&[]);
     let exit = run(
@@ -1195,10 +1200,19 @@ fn a_final_check_mismatch_is_reported_with_exit_code_1() {
     assert_eq!(exit, Exit::Failure);
     let out = &ui.out;
     assert!(out.contains("FAILED: "), "{out}");
-    assert!(out.contains("Final check: profiles 1, 2, 3"), "{out}");
-    assert!(out.contains("no longer hold the backup's values"), "{out}");
     assert!(
-        out.contains("profile 1: dead band differs from the backup"),
+        out.contains("SOCD power (all profiles): on -> off"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "Final check: the SOCD power, one setting of the whole keyboard, read again in \
+             profile 1: it does not hold the restored power"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("  - profile 1: SOCD is on, the restore wrote off"),
         "{out}"
     );
     assert!(out.contains("To undo:"), "{out}");

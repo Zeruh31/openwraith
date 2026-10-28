@@ -1448,8 +1448,8 @@ fn random_assignment(rng: &mut Rng, usages: &[HidUsage]) -> KeyAssignment {
         MouseAction::Button(MouseButton::Left),
         MouseAction::Button(MouseButton::Right),
         MouseAction::Button(MouseButton::Middle),
-        MouseAction::Button(MouseButton::Mask08),
-        MouseAction::Button(MouseButton::Mask10),
+        MouseAction::Button(MouseButton::Back),
+        MouseAction::Button(MouseButton::Forward),
         MouseAction::WheelUp,
         MouseAction::WheelDown,
     ];

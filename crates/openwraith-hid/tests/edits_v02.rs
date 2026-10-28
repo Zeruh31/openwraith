@@ -5,7 +5,7 @@ mod common;
 use std::ops::ControlFlow;
 
 use common::{c06_backup, consent, pos, profile, selects, temp_dir, write_bytes};
-use openwraith_hid::protocol::{Distance, KeyPos, Rgb, TableId, TriggerWriteMode};
+use openwraith_hid::protocol::{Distance, KeyPos, Rgb, TriggerWriteMode};
 use openwraith_hid::{
     ColorEdit, DeadBandEdit, DeviceSim, EditError, EditOptions, EditWarning, SavedBackup, Session,
     SimTable, TRIGGER_PRESETS, WriteOptions, apply_color_edit, apply_dead_band_edit,
@@ -93,11 +93,8 @@ fn key_colours_change_only_the_keys_and_keep_every_other_slot() {
         .filter(|i| slot(after, *i) != slot(&table, *i))
         .collect();
     assert_eq!(differing, [102, 125]);
-    assert!(report.warnings.contains(&EditWarning::PowerLossUntested {
-        tables: vec![TableId::CustomColors {
-            table: openwraith_hid::protocol::CustomTable::Custom1
-        }]
-    }));
+    // Custom colours 1 survive a power cycle (H22, 2026-10-27): no note.
+    assert_eq!(report.warnings, []);
     sim.assert_clean();
 }
 
@@ -175,9 +172,6 @@ fn a_dead_band_edit_writes_the_whole_table_with_the_keys_changed() {
         },
     )
     .expect("plan");
-    assert!(plan.warnings().contains(&EditWarning::ScopeUnknown {
-        table: TableId::DeadBand
-    }));
     assert_eq!(plan.changes().len(), 1);
     let report = apply_dead_band_edit(
         &mut session,
@@ -195,6 +189,13 @@ fn a_dead_band_edit_writes_the_whole_table_with_the_keys_changed() {
         .expect("dead band");
     assert_eq!(table[92..94], [0x05, 0x0a]);
     assert_eq!(table.iter().filter(|b| **b != 0).count(), 2);
+    // Each profile has its own dead band (H16, 2026-10-27).
+    assert!(
+        sim.persisted_table(profile(2), SimTable::DeadBand)
+            .expect("dead band")
+            .iter()
+            .all(|b| *b == 0)
+    );
     let writes = write_bytes(&sim);
     assert_eq!(writes.len(), 5);
     assert!(writes.iter().all(|b| b[..2] == [0x26, 0x01]));

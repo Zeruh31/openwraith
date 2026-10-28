@@ -46,7 +46,7 @@ impl Evidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct UnverifiedNote {
-    /// Short description, e.g. `"Mod-Tap hold path"`.
+    /// Short description, e.g. `"Mod-Tap hold time other than 300 ms"`.
     pub what: &'static str,
     /// The open question of spec section 7.1, e.g. `"Q19"`.
     pub question: &'static str,
@@ -60,7 +60,7 @@ impl UnverifiedNote {
 }
 
 impl fmt::Display for UnverifiedNote {
-    /// E.g. `Mod-Tap hold path (Q19)`.
+    /// E.g. `SOCD modes 2 and 3 (Q35)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ({})", self.what, self.question)
     }
@@ -74,11 +74,11 @@ mod tests {
     fn evidence_accessors() {
         assert!(Evidence::Confirmed.is_confirmed());
         assert_eq!(Evidence::Confirmed.note(), None);
-        let e = Evidence::unverified("Mod-Tap hold path", "Q19");
+        let e = Evidence::unverified("SOCD modes 2 and 3", "Q35");
         assert!(!e.is_confirmed());
         assert_eq!(
             e.note().map(|n| n.to_string()).as_deref(),
-            Some("Mod-Tap hold path (Q19)")
+            Some("SOCD modes 2 and 3 (Q35)")
         );
     }
 

@@ -75,7 +75,7 @@ export const flow: Messages<typeof en> = {
   cancel: {
     available: "Durdur",
     requested: "Geçerli adımdan sonra durdurulacak…",
-    finishing_keymap_group: "Klavyenin saklayabilmesi için önce tuş atamalarının yazımı tamamlanıyor…",
+    finishing_keymap_group: "Hiçbir tuş ya da makro yarım kalmasın diye birlikte yazılması gereken tuş atamaları tamamlanıyor…",
     not_now: "Bu adım durdurulamaz; birazdan biter.",
     not_cancellable: "Bu işlem başladıktan sonra durdurulamaz.",
   },
@@ -165,7 +165,11 @@ export const flow: Messages<typeof en> = {
   },
   commitTrigger: {
     base_keymap: "Fn katmanı tuş atamaları: klavye tuş atamalarını saklasın diye değiştirilmeden yeniden gönderilir",
-    macros_or_advanced_keys: "Fn katmanı tuş atamaları: önlem olarak değiştirilmeden yeniden gönderilir (test edilmedi)",
+    advanced_keys:
+      "Fn katmanı tuş atamaları: klavyenin gelişmiş tuşları saklaması için onlardan önce değiştirilmeden yeniden gönderilir (bu yazım olmadan gelişmiş tuşlar kaybolur)",
+  },
+  resent: {
+    macro_slot0_clears: "Değişmeden yeniden yazılır: Makro 1 yazılınca klavye Makro 2–10'u siler.",
   },
   footer: {
     safetyBackup: "Güvenlik yedeği:",

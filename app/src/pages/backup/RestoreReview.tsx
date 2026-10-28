@@ -258,6 +258,7 @@ function WriteRow({ item }: { item: WriteItem }) {
       {action.resent_unchanged ? null : <ChangeList changes={action.changes} />}
       {action.more_changes > 0 ? <p className="ow-muted ow-small">{t.moreChanges({ n: action.more_changes })}</p> : null}
       {commit !== null && !action.resent_unchanged ? <p className="ow-muted ow-small">{t.commitNote}</p> : null}
+      {action.resent === null ? null : <p className="ow-muted ow-small">{dict.flow.resent[action.resent]}</p>}
     </li>
   );
 }

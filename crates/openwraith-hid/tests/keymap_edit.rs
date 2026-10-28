@@ -205,17 +205,16 @@ fn binding_dks_mod_tap_and_toggle_sends_the_captured_slots_after_the_keymaps() {
     // profile switch for a persistence check.
     assert!(report.persistence.is_none());
     assert!(selects(&sim).is_empty());
-    // What is not verified on hardware is said so.
-    for what in ["Mod-Tap hold path", "second Toggle press releases the key"] {
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| matches!(w, EditWarning::Unverified(n) if n.what == what)),
-            "{what}: {:?}",
-            report.warnings
-        );
-    }
+    // H20 (2026-10-27) confirmed these three on hardware: no "not yet
+    // verified" note.
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, EditWarning::Unverified(_))),
+        "{:?}",
+        report.warnings
+    );
     assert!(report.warnings.contains(&EditWarning::TransientBinding {
         slot: SlotRef::Advanced(AdvancedSlotId::new(0).expect("slot"))
     }));
@@ -237,7 +236,7 @@ fn binding_dks_mod_tap_and_toggle_sends_the_captured_slots_after_the_keymaps() {
 }
 
 #[test]
-fn binding_a_macro_sends_the_captured_slot_and_checks_that_the_keyboard_kept_it() {
+fn binding_a_macro_sends_the_captured_slot_and_needs_no_persistence_check() {
     let mut sim = sim();
     let report = run(
         &mut sim,
@@ -245,7 +244,9 @@ fn binding_a_macro_sends_the_captured_slot_and_checks_that_the_keyboard_kept_it(
             layer: Layer::Base,
             pos: key("Caps Lock"),
             program: c13_program(),
-            slot: None,
+            // The capture's slot (a new macro takes slot 1 by itself);
+            // every other slot is empty, so nothing is re-sent after it.
+            slot: Some(MacroSlotId::new(0).expect("slot")),
         }]),
     );
     assert!(report.is_success(), "{:#?}", report.error);
@@ -261,17 +262,24 @@ fn binding_a_macro_sends_the_captured_slot_and_checks_that_the_keyboard_kept_it(
         entry(&sim, Layer::Base, key("Caps Lock")),
         [0x10, 0x39, 0, 0]
     );
-    // Macro slots are not known to be kept: the edit switched to profile 2
-    // and back and found it saved.
-    assert_eq!(selects(&sim), [2, 1]);
-    let check = report.persistence.as_ref().expect("checked");
-    assert_eq!((check.persisted, check.lost), (2, 0));
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|w| matches!(w, EditWarning::PowerLossUntested { .. }))
+    // Macro slots are known to be kept (H19, 2026-10-27), and so are the
+    // keymap layers: no profile switch to check them.
+    assert!(selects(&sim).is_empty());
+    assert_eq!(report.persistence, None);
+    assert_eq!(
+        sim.persisted_table(
+            profile(1),
+            SimTable::Macro(MacroSlotId::new(0).expect("slot"))
+        )
+        .map(|b| b[..24].to_vec()),
+        sim.table(
+            profile(1),
+            SimTable::Macro(MacroSlotId::new(0).expect("slot"))
+        )
+        .map(|b| b[..24].to_vec())
     );
+    // Macro slots survive a power cycle too (H22, 2026-10-27): no note.
+    assert_eq!(report.warnings, []);
     let state = KeymapGroupState::read(&mut Session::new(&mut sim)).expect("state");
     assert_eq!(
         state.macro_program(MacroSlotId::new(0).expect("slot")),
@@ -469,14 +477,20 @@ fn one_slot_per_key_and_no_binding_to_an_empty_slot() {
         }]),
     );
     assert!(report.is_success(), "{:#?}", report.error);
-    let slot0 = MacroSlotId::new(0).expect("slot");
-    // Another key on slot 0: refused (the site keeps one slot per key).
+    // The first free slot in 1-9 (slot 0 would make the keyboard empty the
+    // others).
+    let slot1 = MacroSlotId::new(1).expect("slot");
+    assert_eq!(
+        entry(&sim, Layer::Base, key("Caps Lock")),
+        [0x10, 0x39, 0x01, 0x00]
+    );
+    // Another key on slot 1: refused (the site keeps one slot per key).
     let shared = plan(
         &mut sim,
         &edit(vec![KeymapChange::Assign {
             layer: Layer::Fn,
             pos: key("J"),
-            assignment: KeyAssignment::Macro(slot0),
+            assignment: KeyAssignment::Macro(slot1),
         }]),
     );
     assert!(
@@ -506,7 +520,7 @@ fn one_slot_per_key_and_no_binding_to_an_empty_slot() {
         plan(
             &mut sim,
             &edit(vec![KeymapChange::SetMacroSlot {
-                slot: slot0,
+                slot: slot1,
                 program: None,
             }])
         ),
@@ -541,7 +555,7 @@ fn one_slot_per_key_and_no_binding_to_an_empty_slot() {
     assert_eq!(
         macro_writes,
         [TableId::Macro {
-            slot: MacroSlotId::new(1).expect("slot")
+            slot: MacroSlotId::new(2).expect("slot")
         }]
     );
     sim.assert_clean();
@@ -590,7 +604,7 @@ fn unbinding_clears_the_orphan_slot_first_and_never_leaves_a_dangling_key() {
         [
             (
                 TableId::Macro {
-                    slot: MacroSlotId::new(0).expect("slot")
+                    slot: MacroSlotId::new(1).expect("slot")
                 },
                 false
             ),
@@ -606,7 +620,7 @@ fn unbinding_clears_the_orphan_slot_first_and_never_leaves_a_dangling_key() {
     );
     let report = apply(&mut sim, &planned, &saved, &EditOptions::default());
     assert!(report.is_success(), "{:#?}", report.error);
-    let mut expected = vec![(0x19, 0x00); 5];
+    let mut expected = vec![(0x19, 0x01); 5];
     expected.extend(vec![(0x18, 0x00); 10]);
     expected.extend(vec![(0x18, 0x02); 10]);
     expected.push((0x22, 0x00));
@@ -614,7 +628,7 @@ fn unbinding_clears_the_orphan_slot_first_and_never_leaves_a_dangling_key() {
     assert_eq!(
         sim.table(
             profile(1),
-            SimTable::Macro(MacroSlotId::new(0).expect("slot"))
+            SimTable::Macro(MacroSlotId::new(1).expect("slot"))
         ),
         Some(&[0u8; 256][..])
     );
@@ -644,13 +658,13 @@ fn unbinding_clears_the_orphan_slot_first_and_never_leaves_a_dangling_key() {
             .all(|w| !matches!(w.table, TableId::Macro { .. }))
     );
     assert!(planned.warnings().contains(&EditWarning::OrphanSlotKept {
-        slot: SlotRef::Macro(MacroSlotId::new(0).expect("slot"))
+        slot: SlotRef::Macro(MacroSlotId::new(1).expect("slot"))
     }));
     sim.assert_clean();
 }
 
 #[test]
-fn slot_only_writes_get_the_fn_keymap_between_macros_and_advanced_keys() {
+fn slot_only_writes_get_the_fn_keymap_before_the_advanced_keys() {
     let mut sim = sim();
     let report = run(
         &mut sim,
@@ -672,7 +686,12 @@ fn slot_only_writes_get_the_fn_keymap_between_macros_and_advanced_keys() {
     assert_eq!(heads(&sim, 0), expected);
     assert_eq!(
         report.items[1].commit_trigger,
-        Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+        Some(CommitTriggerReason::AdvancedKeys)
+    );
+    assert_eq!(
+        report.items[1].summary,
+        "Fn keymap (18 02) re-sent unchanged before the advanced-key slots to make the \
+         keyboard save them"
     );
     // Unbound slots are orphans (kept by the keyboard).
     let state = KeymapGroupState::read(&mut Session::new(&mut sim)).expect("state");
@@ -680,50 +699,122 @@ fn slot_only_writes_get_the_fn_keymap_between_macros_and_advanced_keys() {
     sim.assert_clean();
 }
 
+/// A macro slot is kept without an Fn keymap (H19 step 2, 2026-10-27,
+/// `hw/v02/h19-2.txt`): a macro-only edit writes no `18 02`, and macro
+/// slots are known to be kept, so the default edit does not switch
+/// profiles to check.
 #[test]
-fn without_the_fn_keymap_a_lost_macro_is_reported_by_the_forced_check() {
-    let slot_only = KeymapEdit {
-        commit_trigger: CommitTriggerMode::OmitForSlotsOnly,
-        ..edit(vec![KeymapChange::SetMacroSlot {
+fn a_macro_only_edit_writes_no_fn_keymap() {
+    let mut sim = sim();
+    let report = run(
+        &mut sim,
+        &edit(vec![KeymapChange::SetMacroSlot {
             slot: MacroSlotId::new(3).expect("slot"),
             program: Some(c13_program()),
-        }])
+        }]),
+    );
+    assert!(report.is_success(), "{:#?}", report.error);
+    assert_eq!(heads(&sim, 0), vec![(0x19, 0x03); 5]);
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].commit_trigger, None);
+    assert_eq!(report.persistence, None);
+    assert!(selects(&sim).is_empty());
+    let kept = sim.persisted_table(
+        profile(1),
+        SimTable::Macro(MacroSlotId::new(3).expect("slot")),
+    );
+    assert!(kept.is_some_and(|b| b.iter().any(|x| *x != 0 && *x != 0xff)));
+    sim.assert_clean();
+}
+
+/// H20 step 2 (2026-10-27, `hw/v02/h20-2.txt`, `h20-2b.txt`): an
+/// advanced-key slot written alone (`--commit-trigger skip`, one `22`
+/// packet) read back fine but was gone after the forced profile switch;
+/// the same edit with the Fn keymap before it (`18 02`, then `22`) was
+/// kept. Macro slots written alone are kept (H19 step 2).
+#[test]
+fn without_the_fn_keymap_a_lone_advanced_key_slot_is_reported_lost() {
+    let lone = |change: KeymapChange| KeymapEdit {
+        commit_trigger: CommitTriggerMode::OmitForSlotsOnly,
+        ..edit(vec![change])
     };
-    // If macros needed the Fn keymap after them (untested; the simulator's
-    // switch), the slot written alone is gone after the switch away and
-    // back: the check, forced by the hardware-test mode, says so.
-    let mut sim = sim();
-    sim.set_keymap_commit(KeymapCommit {
-        macros_need_fn_write: true,
-        ..KeymapCommit::default()
-    });
-    let dir = temp_dir();
-    let saved = safety(&mut sim, &dir);
-    let planned = plan(&mut sim, &slot_only).expect("plan");
-    assert!(planned.forces_persistence_check());
-    assert_eq!(planned.writes().len(), 1);
+    let dks = KeymapChange::SetAdvancedSlot {
+        slot: AdvancedSlotId::new(0).expect("slot"),
+        def: Some(c16_dks()),
+    };
     let never = EditOptions {
         persistence: PersistenceCheckMode::Never,
         ..EditOptions::default()
     };
+
+    // The lone 22: the check, forced by the hardware-test mode, says lost.
+    let mut sim = sim();
+    let dir = temp_dir();
+    let saved = safety(&mut sim, &dir);
+    let planned = plan(&mut sim, &lone(dks.clone())).expect("plan");
+    assert!(planned.forces_persistence_check());
+    assert_eq!(planned.writes().len(), 1);
     let report = apply(&mut sim, &planned, &saved, &never);
+    assert_eq!(heads(&sim, 0), vec![(0x22, 0x00)]);
     assert_eq!(report.outcome, Outcome::Failed);
     assert_eq!(
         report.error.as_ref().map(|e| e.kind),
         Some(ErrorKind::NotPersisted)
     );
     assert_eq!(report.lost(), 1);
-    assert_eq!(heads(&sim, 0), vec![(0x19, 0x03); 5]);
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::AdvancedKeys)
+            .map(|b| b[..40].iter().all(|x| *x == 0)),
+        Some(true)
+    );
     sim.assert_clean();
 
-    // In the default model it is kept, and the check says so.
+    // The default mode: 18 02, then 22, kept; the check (an advanced-key
+    // slot after a complete Fn keymap is known to be kept) does not run.
+    let mut sim = self::sim();
+    let report = run(&mut sim, &edit(vec![dks]));
+    assert!(report.is_success(), "{:#?}", report.error);
+    let mut expected = vec![(0x18, 0x02); 10];
+    expected.push((0x22, 0x00));
+    assert_eq!(heads(&sim, 0), expected);
+    assert_eq!(report.persistence, None);
+    assert_eq!(
+        sim.persisted_table(profile(1), SimTable::AdvancedKeys)
+            .map(|b| b[0]),
+        Some(0x01)
+    );
+    sim.assert_clean();
+
+    // A lone macro slot is kept, and the forced check says so.
+    let macro3 = KeymapChange::SetMacroSlot {
+        slot: MacroSlotId::new(3).expect("slot"),
+        program: Some(c13_program()),
+    };
     let mut sim = self::sim();
     let dir = temp_dir();
     let saved = safety(&mut sim, &dir);
-    let planned = plan(&mut sim, &slot_only).expect("plan");
+    let planned = plan(&mut sim, &lone(macro3.clone())).expect("plan");
     let report = apply(&mut sim, &planned, &saved, &never);
     assert!(report.is_success(), "{:#?}", report.error);
     assert_eq!(report.persistence.as_ref().map(|c| c.persisted), Some(1));
+
+    // If macros needed the Fn keymap after them (the simulator's switch),
+    // the same lone slot would be reported lost.
+    let mut sim = self::sim();
+    sim.set_keymap_commit(KeymapCommit {
+        macros_need_fn_write: true,
+        ..KeymapCommit::default()
+    });
+    let dir = temp_dir();
+    let saved = safety(&mut sim, &dir);
+    let planned = plan(&mut sim, &lone(macro3)).expect("plan");
+    let report = apply(&mut sim, &planned, &saved, &never);
+    assert_eq!(
+        report.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::NotPersisted)
+    );
+    assert_eq!(report.lost(), 1);
+    assert_eq!(heads(&sim, 0), vec![(0x19, 0x03); 5]);
 
     // The mode is refused when a layer changes.
     let with_layer = KeymapEdit {
@@ -760,7 +851,7 @@ fn mixed_edit() -> KeymapEdit {
 fn a_cancellation_at_any_table_never_leaves_a_dangling_key_or_an_unsaved_base_keymap() {
     let tables = [
         TableId::Macro {
-            slot: MacroSlotId::new(0).expect("slot"),
+            slot: MacroSlotId::new(1).expect("slot"),
         },
         TableId::Keymap { layer: Layer::Base },
         TableId::Keymap { layer: Layer::Fn },
@@ -797,9 +888,10 @@ fn a_cancellation_at_any_table_never_leaves_a_dangling_key_or_an_unsaved_base_ke
         match k {
             0 => assert!(sent.is_empty(), "{sent:?}"),
             // After the macro: the base keymap is skipped (it is not needed
-            // by what was sent), the Fn keymap still goes out, and the DKS
+            // by what was sent), and so is the Fn keymap (a macro slot is
+            // kept without it, only a sent base keymap needs it); the DKS
             // fill is not needed either (its binding was not written).
-            1 => assert_eq!(sent, [tables[0], tables[2]], "{k}"),
+            1 => assert_eq!(sent, [tables[0]], "{k}"),
             // From the Fn keymap on, the DKS fill completes the binding.
             _ => assert_eq!(sent, tables, "{k}"),
         }
@@ -928,7 +1020,7 @@ fn a_change_after_planning_stops_before_writing() {
     // The macro slot went out first; the base keymap was refused, and the
     // keyboard holds no new binding.
     assert!(sim.dangling_references(profile(1), false).is_empty());
-    assert_eq!(heads(&sim, 0), vec![(0x19, 0x00); 5]);
+    assert_eq!(heads(&sim, 0), vec![(0x19, 0x01); 5]);
     sim.assert_clean();
 }
 

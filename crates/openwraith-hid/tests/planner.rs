@@ -5,7 +5,8 @@ mod common;
 
 use common::{c06_backup, fixed_options, pos};
 use openwraith_hid::protocol::{
-    CustomTable, KeyPos, Layer, MacroSlotId, RawResponse, ReadRequest, Report, TableId,
+    AdvancedSlotId, CustomTable, KeyPos, Layer, MacroSlotId, RawResponse, ReadRequest, Report,
+    TableId,
 };
 use openwraith_hid::{
     Backup, BackupEntry, BlockCause, CommitTriggerReason, PlanAction, PlanWarning, RestoreOptions,
@@ -374,41 +375,25 @@ fn device_constants_that_differ_are_warnings() {
 }
 
 #[test]
-fn writing_a_table_of_unknown_scope_warns_about_the_other_profiles() {
-    // A single-profile backup that changes the dead band, whose profile
-    // scope is unknown (key index 0 top = report byte 5 of chunk 0).
-    let target = edited(&c06_backup(), ReadRequest::DeadBand, 0, |b| b[5] = 0x05);
-    let plan = plan_for(&target);
-    assert!(
-        plan.warnings
-            .contains(&PlanWarning::SharedTablesMayChangeOtherProfiles {
-                tables: vec![TableId::DeadBand],
-                profiles: vec![2, 3, 4],
-            }),
-        "{:?}",
-        plan.warnings
-    );
-    // Custom colour table 1 is per profile (OBSERVED, spec 7.3): no warning.
-    let target = edited(
-        &c06_backup(),
-        ReadRequest::CustomColors(CustomTable::Custom1),
-        0,
-        |b| b[5] ^= 0xff,
-    );
-    assert!(
-        plan_for(&target)
-            .warnings
-            .iter()
-            .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. }))
-    );
-    // A change of a per-profile table only (the main light) does not warn.
-    let target = edited(&c06_backup(), ReadRequest::MainLight, 0, |b| b[6] = 1);
-    assert!(
-        plan_for(&target)
-            .warnings
-            .iter()
-            .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. }))
-    );
+fn per_profile_tables_do_not_warn_about_the_other_profiles() {
+    // The dead band is per profile (H16, 2026-10-27): a single-profile
+    // backup that changes it (key index 0 top = report byte 5 of chunk 0)
+    // plans a write and no warning; so do custom colour table 1 (OBSERVED,
+    // spec 7.3) and the main light.
+    for target in [
+        edited(&c06_backup(), ReadRequest::DeadBand, 0, |b| b[5] = 0x05),
+        edited(
+            &c06_backup(),
+            ReadRequest::CustomColors(CustomTable::Custom1),
+            0,
+            |b| b[5] ^= 0xff,
+        ),
+        edited(&c06_backup(), ReadRequest::MainLight, 0, |b| b[6] = 1),
+    ] {
+        let plan = plan_for(&target);
+        assert_eq!(plan.write_count(), 1);
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    }
 }
 
 /// The backup's Fn keymap reply cannot be written (chunk 9 declares 56
@@ -457,7 +442,32 @@ fn the_base_keymap_is_never_planned_without_the_fn_keymap_after_it() {
         "{json}"
     );
 
-    // Macro slots alone: blocked the same way (the precaution).
+    // An advanced-key slot alone (a Toggle of A in slot 0 of the backup):
+    // blocked the same way, the keyboard keeps it only with the Fn keymap
+    // (H20, 2026-10-27).
+    let advanced = TableId::AdvancedKey {
+        slot: AdvancedSlotId::new(0).expect("slot 0"),
+    };
+    let toggle = edited(&c06_backup(), ReadRequest::AdvancedKeys, 0, |b| {
+        b[5] = 0x03;
+        b[7] = 0x04;
+    });
+    let plan = plan_restore(
+        &unusable_fn(&toggle),
+        &unusable_fn(&c06_backup()),
+        &options(),
+    )
+    .expect("plan");
+    assert_eq!(
+        reason(&plan, advanced, None),
+        SkipReason::KeymapGroupBlocked {
+            cause: BlockCause::FnKeymapNotWritable {
+                reason: CommitTriggerReason::AdvancedKeys
+            }
+        }
+    );
+    assert!(!plan.has_writes());
+    // Macro slots alone need no Fn keymap (H19): written without it.
     let with_macro = edited(&c06_backup(), ReadRequest::Macro(slot0()), 0, |b| b[5] = 0);
     let plan = plan_restore(
         &unusable_fn(&c06_backup()),
@@ -465,15 +475,11 @@ fn the_base_keymap_is_never_planned_without_the_fn_keymap_after_it() {
         &options(),
     )
     .expect("plan");
-    assert_eq!(
-        reason(&plan, TableId::Macro { slot: slot0() }, None),
-        SkipReason::KeymapGroupBlocked {
-            cause: BlockCause::FnKeymapNotWritable {
-                reason: CommitTriggerReason::MacrosOrAdvancedKeys
-            }
-        }
-    );
-    assert!(!plan.has_writes());
+    let written: Vec<(TableId, Option<CommitTriggerReason>)> = plan
+        .writes()
+        .map(|(_, item, w)| (item.table, w.commit_trigger))
+        .collect();
+    assert_eq!(written, [(TableId::Macro { slot: slot0() }, None)]);
 
     // The keyboard did not report its Fn keymap: blocked too.
     let missing = plan_restore(
@@ -508,14 +514,7 @@ fn the_fn_keymap_follows_the_base_keymap_changed_or_not() {
         ]
     );
     assert_eq!(plan.packet_count(), 20);
-    // Re-sending unchanged bytes changes no other profile: no warning.
-    assert!(
-        plan.warnings
-            .iter()
-            .all(|w| !matches!(w, PlanWarning::SharedTablesMayChangeOtherProfiles { .. })),
-        "{:?}",
-        plan.warnings
-    );
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
 
     // Both differ (Fn index 130 = chunk 9, report byte 21): the Fn write
     // is a real change and still the trigger.
@@ -542,12 +541,8 @@ fn the_fn_keymap_follows_the_base_keymap_changed_or_not() {
         .expect("Fn write");
     assert_eq!(fn_write.summary, "Fn keymap (18 02)");
     assert_eq!(fn_write.changes.len(), 1);
-    // The Fn keymap is per profile (OBSERVED, spec 7.4): no warning about
-    // the other profiles.
-    assert!(plan.warnings.iter().all(|w| !matches!(
-        w,
-        PlanWarning::SharedTablesMayChangeOtherProfiles { tables, .. } if tables.contains(&fn_layer)
-    )));
+    // The Fn keymap is per profile (OBSERVED, spec 7.4): no warning.
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
 
     // Only the Fn keymap differs: a plain write, no trigger.
     let target = edited(&c06_backup(), ReadRequest::Keymap(Layer::Fn), 9, |b| {

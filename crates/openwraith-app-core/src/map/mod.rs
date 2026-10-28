@@ -18,7 +18,7 @@ use openwraith_protocol::{CustomTable, KeyPos, Layer, LightMode, MATRIX_COLS, Ta
 
 use crate::dto::{
     CommitTriggerReasonView, ForeignActivityView, KeyRef, LayerView, LightModeKey, LightModeView,
-    TableRef,
+    ResendReasonView, TableRef,
 };
 
 /// `usize` as `u16`, saturating.
@@ -118,9 +118,14 @@ pub(crate) fn commit_reason(
 ) -> CommitTriggerReasonView {
     match reason {
         openwraith_hid::CommitTriggerReason::BaseKeymap => CommitTriggerReasonView::BaseKeymap,
-        openwraith_hid::CommitTriggerReason::MacrosOrAdvancedKeys => {
-            CommitTriggerReasonView::MacrosOrAdvancedKeys
-        }
+        openwraith_hid::CommitTriggerReason::AdvancedKeys => CommitTriggerReasonView::AdvancedKeys,
+    }
+}
+
+/// A re-send reason.
+pub(crate) fn resend_reason(reason: openwraith_hid::ResendReason) -> ResendReasonView {
+    match reason {
+        openwraith_hid::ResendReason::MacroSlot0Clears => ResendReasonView::MacroSlot0Clears,
     }
 }
 

@@ -187,8 +187,19 @@ pub enum LayerView {
 pub enum CommitTriggerReasonView {
     /// The base keymap is written right before it (confirmed rule).
     BaseKeymap,
-    /// Macro or advanced-key slots are written (precaution).
-    MacrosOrAdvancedKeys,
+    /// Advanced-key slots are written after it (confirmed rule: the
+    /// keyboard keeps them only with the Fn keymap in the same save).
+    AdvancedKeys,
+}
+
+/// Why a write re-sends content the plan does not change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ResendReasonView {
+    /// A macro slot 1-9 written again right after macro slot 0: writing
+    /// slot 0 makes the keyboard clear slots 1-9 (confirmed on hardware).
+    MacroSlot0Clears,
 }
 
 /// A table of the keyboard.

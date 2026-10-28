@@ -33,20 +33,24 @@ depths.
 | `openwraith restore`: restore a backup, with a plan, a confirmation and read-back verification | |
 | `openwraith set trigger` / `set light`: actuation, Rapid Trigger (also presets), main light | |
 | `openwraith profile [select N]`: show or switch the active profile | |
-| **v0.2, simulator-tested:** `set key` / `set macro` / `set advanced` / `set colors` / `set deadband` / `set socd`, `travel` (live key depth), `monitor`, `profile export` / `profile import` | |
+| **v0.2, hardware-tested (H12-H24):** `set key` / `set macro` / `set advanced` / `set colors` / `set deadband` / `set socd`, `travel` (live key depth), `monitor`, `profile export` / `profile import` | |
 
 Supported hardware: Wraith W75 (product code `W75HEARGB`) connected with the
 USB cable, firmware `V3.22.07` (USB `2e3c:c368`). The read-only commands were
 checked on the maintainer's keyboard, and so were the commands that write
 (the results log in [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
 The desktop app's hardware checks (A1-A10 in the same file) were run on
-2026-10-27. **The v0.2 editors of the CLI (the last row) have so far only
-run against the device simulator; their hardware checks (H12-H25) are still
-to be done.** Their packets use the command forms the vendor site sent and
-the keyboard accepted in the captures, built the way the site's code builds
-them; the cases captured in sessions 2-3 match byte for byte (tests compare
-them), and values never seen on the wire are marked "not yet verified on a
-W75" in the plan. The product IDs `2e3c:c365`
+2026-10-27. **The v0.2 editors of the CLI (the last row) were checked on
+the keyboard on 2026-10-27 (H12-H24).** That session found two things the
+keyboard does that OpenWraith had not modelled (writing macro slot 0 empties
+the other macros; SOCD on/off is one setting for all profiles); both are
+handled now and simulator-tested, and their short re-check on the keyboard
+(H26, H27) is still to be done, as is the optional H25. The packets use the
+command forms the vendor site sent and the keyboard accepted in the
+captures, built the way the site's code builds them; the cases captured in
+sessions 2-3 match byte for byte (tests compare them), and values whose
+effect is still untested are marked "not yet verified on a W75" in the
+plan. The product IDs `2e3c:c365`
 to `2e3c:c367` are accepted as the spec allows, but unverified.
 
 ## Desktop app
@@ -157,9 +161,9 @@ alike.
   test's open and close). They can only send the write commands that the
   vendor site sent and the keyboard accepted in the captures
   (docs/PROTOCOL.md section 3), in the captured command form (table
-  contents the captures did not show are marked "not yet verified on a W75"
-  in the plan); every packet also passes an allowlist right before it is
-  sent. Reset,
+  contents whose effect neither the captures nor OpenWraith's hardware tests
+  have shown are marked "not yet verified on a W75" in the plan); every
+  packet also passes an allowlist right before it is sent. Reset,
   calibration, switch types, side light, custom colour table 2, polling rate,
   gamepad and Win-Lock writes cannot even be built.
 - **A safety backup comes first.** Before changing any setting (`set`,
@@ -208,9 +212,22 @@ alike.
   Change column ("unchanged, re-sent: the keyboard keeps the base keymap only
   when the Fn keymap is written after it"); the report lists it as "Fn keymap
   (18 02) re-sent unchanged to make the keyboard save the base keymap", and
-  every one of its packets must be acknowledged. A restore or an edit that
-  writes only macro or advanced-key slots sends the unchanged Fn keymap
-  between them, as the vendor site does.
+  every one of its packets must be acknowledged. The keyboard keeps an
+  advanced key when the Fn keymap is written before it in the same save,
+  and loses one written without it (found on real hardware, hardware test
+  H20), so a restore or an edit that writes advanced-key slots while
+  neither keymap changes sends the unchanged Fn keymap before them, as the
+  vendor site does. Macro slots are kept on
+  their own and need no Fn keymap.
+- **Macro slot 0 is special.** Writing macro slot 0 makes the keyboard empty
+  macro slots 1-9 of that profile (found on real hardware, docs/PROTOCOL.md
+  4.9.2; the vendor site never shows it because it always writes all ten).
+  So whenever OpenWraith writes slot 0, it writes every other macro that
+  should stay right after it ("re-sent: writing macro slot 0 makes the
+  keyboard clear slots 1-9"), also after Ctrl+C. A new macro gets the
+  lowest free slot from 1 to 9, and slot 0 only when they are all used. If
+  a re-send fails, the report names the macros that were left empty and
+  the keys that now do nothing.
 - **The keyboard saves a change about 1 second after it is written.** Until
   then it keeps it only in memory: a profile switch (or unplugging the cable)
   in that second loses it, and reading it back cannot tell (found on real
@@ -220,11 +237,11 @@ alike.
   ..."). A restore then proves it: it switches away from every profile it
   wrote and back, reads the written tables again and reports them as
   "persisted"; a write the keyboard did not keep is reported as LOST and the
-  restore fails (run it again, or undo it). `set` does the same only for
-  tables whose keeping is not proven on hardware yet (macro slots, SOCD,
-  advanced-key slots written without the Fn keymap before them; change it
-  with `--check-persistence auto|always|never`); for the others it only
-  waits, so that the lighting does not change for a small edit.
+  restore fails (run it again, or undo it). Hardware tests showed that the
+  keyboard keeps every table `set` writes, across a profile switch and a
+  USB power cycle, so `set` only waits and the lighting does not change for
+  a small edit; `--check-persistence always` checks anyway
+  (`auto|always|never`).
 - **Do not switch profiles on the keyboard while OpenWraith runs.** It checks
   the active profile before every table and stops if it changed. Also do not
   switch profiles or unplug the keyboard while a command is still waiting for
@@ -233,13 +250,16 @@ alike.
   "MAY BE LOST" with exit code 1, never as done. Check the values, then run
   the command again or undo it. Ctrl+C during that wait stops a restore
   before it selects the next profile.
-- **Shared tables are checked at the end.** For the dead band and SOCD it is
-  not known yet whether each profile has its own copy (the other tables
-  OpenWraith writes were seen per profile). When a restore writes one of
-  them and covers several profiles, it reads every profile again at the end
-  and fails if a table no longer holds the backup's values (the "final
-  check"). A restore limited to some profiles, and `set deadband` / `set
-  socd`, warn that such a write may change the other profiles.
+- **SOCD on/off is one switch for all profiles.** The keyboard has a single
+  SOCD power setting for all four profiles (Fn + Right Shift switches it
+  too), while each profile has its own SOCD key pairs and its own dead band
+  (found on real hardware, docs/PROTOCOL.md 4.15). `set socd --on` / `--off`
+  says that it changes every profile. A restore writes the power once, the
+  backup's setting of the profile that was active when the backup was made,
+  and shows it once ("SOCD power (all profiles): on -> off"); when it wrote
+  the power in another profile than the one it ends in, it reads the power
+  once more there at the end (the "final check"). Importing a profile takes
+  only its SOCD pairs and leaves the keyboard's power as it is.
 - **Key assignments are guarded.** The knob's entries and the Fn key are
   never changed; an Fn-layer entry that would hide one of the keyboard's
   built-in Fn functions (`openwraith show keymap` lists them) needs
@@ -257,13 +277,17 @@ alike.
 - Press **Ctrl+C** to stop: OpenWraith finishes the current table, switches
   back to the original profile and reports what was written. Inside the
   keymap group (macros, keymaps, advanced keys) it skips the group's other
-  tables but still writes the Fn keymap, without which the keyboard would
-  not keep what was already written, and any macro or advanced-key slot
-  that an already written key refers to (or a keymap that moves a key away
-  from a slot already rewritten), then stops. When those were the last
-  planned writes, everything planned was written: the report says
-  "Ctrl+C received" and the exit code stays 0. A second Ctrl+C stops
-  immediately. The final check of a restore is not interrupted.
+  tables but still writes what the group needs: the Fn keymap once the
+  base keymap was written (the keyboard would not keep the base keymap
+  otherwise; macro slots alone need none), any macro or advanced-key slot
+  that a key written or still to be written refers to (or a keymap that
+  moves a key away from a slot already rewritten), and, once macro slot 0
+  was written, the other macros it would otherwise leave empty (up to nine
+  more slots), then stops. When those were the last planned writes,
+  everything planned was written: the report says "Ctrl+C received" and
+  the exit code stays 0. A second Ctrl+C stops immediately; macros not yet
+  written again after slot 0 then stay empty until you undo. The final
+  check of a restore is not interrupted.
 
 ## Build (Windows)
 
@@ -399,28 +423,36 @@ Light modes are the ones the keyboard lists (`static`, `breath`, `wave`,
 
 `set key` actions: `default`, a key name (`A`, `L-Ctrl`, `F13`, `"KP 1"`),
 `usage:0xNN`, `media:NAME` (`mute`, `volume-up`, `volume-down`,
-`play-pause`, `next`, `previous`, `stop`, `calculator`, ...; `0x24` and
-`0x25`: browser back and forward in some order, which is which is not
-verified, Q14),
-`mouse:left|right|middle|0x08|0x10|wheel-up|wheel-down`,
+`play-pause`, `next`, `previous`, `stop`, `calculator`, `browser-back`,
+`browser-forward`, ...) or `media:0xNN`,
+`mouse:left|right|middle|back|forward|wheel-up|wheel-down` (`back` is the
+mouse's back button X1, `0x08`, and `forward` X2, `0x10`; the vendor site
+labels these two the other way round),
 `combo:MOD[+MOD]+KEY`, `macro:N` and `advanced:N` (bind an existing slot). Several `KEY=ACTION` pairs are written
 together. Macro steps: `KEY+` presses, `KEY-` releases, then the delay
 after the step in ms (the last step has none); at most 40 steps, every
 pressed key released; `--play once|times:N|toggle|while-held`. DKS rows:
 `KEY:STAGES`, four characters for press, bottom-out, lift and release:
-`.` nothing, `t` tap, `h` hold to the next stage, `r` release and press
-again. SOCD modes (what happens while both keys are held): 1 the last input
+`.` nothing, `t` tap, `h` held (with auto-repeat) until the key reaches the next stage, `r`
+release and press again. SOCD modes (what happens while both keys are held): 1 the last input
 wins (default), 2 key 1 wins, 3 key 2 wins, 4 the later key only
 interrupts the first. Values the plan marks "not yet verified on a W75"
-are the vendor site's bytes whose effect OpenWraith has not tested yet.
+are the vendor site's bytes whose effect OpenWraith has not tested yet:
+since the hardware tests of 2026-10-27 only rarer ones, such as SOCD modes
+2 and 3, a DKS tap at the release stage, "hold again", Mod-Tap hold times
+other than 300 ms, advanced keys on the Fn layer, combinations with a
+right-side modifier (R-Ctrl, R-Shift, R-Alt, R-GUI) and most multimedia
+keys.
 
 `set` options: `--dry-run` (plan only, read-only), `--packets` (the hex of
 every packet), `--json`, `--yes`; for the v0.2 editors also
 `--check-persistence auto|always|never` (switch to another profile and back
 after writing to check that the keyboard kept it; `auto`, the default, only
-for tables not proven on hardware yet) and, for `set macro` / `set
-advanced`, `--layer base|fn`, `--slot N` and `--commit-trigger skip` (a
-hardware test: slots without the Fn keymap after them; always checked).
+for tables not proven on hardware, which since 2026-10-27 means only
+advanced-key slots written without the Fn keymap) and, for `set macro` /
+`set advanced`, `--layer base|fn`, `--slot N` and `--commit-trigger skip` (a
+hardware test: advanced-key slots without the Fn keymap before them, which
+the keyboard does not keep; always checked).
 
 `restore` options: `--dry-run` only compares (it reads the active profile and
 never writes; add `--against FILE` to compare with another backup instead of
@@ -538,12 +570,12 @@ There are two kinds:
   serial number, to share; `openwraith profile import` writes it into any
   profile. Files above 8 MiB are refused.
 
-Triggers, the main light, both keymap layers, the macros, the advanced keys
-and custom colour table 1 are per profile (seen in the captures); for the
-dead band, SOCD and the tables OpenWraith does not write the scope is not
-known yet, so restore re-reads such a table before writing it, skips it when
-it already matches, and checks every profile again at the end (PROTOCOL.md
-open question Q3).
+Triggers, the main light, both keymap layers, the macros, the advanced keys,
+custom colour table 1, the dead band and the SOCD key pairs are per profile;
+the SOCD power (on/off) is one setting of the whole keyboard (seen in the
+captures and OpenWraith's hardware tests, PROTOCOL.md 4.5.4). For the tables
+OpenWraith does not write the scope is not known yet (open question Q3); a
+restore only compares them.
 
 ### Trying it without a keyboard
 
@@ -569,7 +601,7 @@ cargo run -p openwraith-cli -- restore sample.owbackup.json --dry-run --against 
 | `app/src` | The desktop app's frontend (React, TypeScript); `ipc/bindings` and `preview/fixtures` are generated by `cargo test -p openwraith-app-core` (`UPDATE_BINDINGS=1`, `UPDATE_FIXTURES=1`). |
 | `docs/PROTOCOL.md` | The protocol specification, with a confidence label on every fact. |
 | `docs/ARCHITECTURE.md` | Crate layout, how read-only paths and writes are guarded, data flow, backup format, adding a model. |
-| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's Phase 2 writes, H12-H25 for its v0.2 editors, A1-A10 for the desktop app, and the results log. |
+| `docs/HARDWARE_TESTS.md` | The hardware test checklist, run by hand: H0-H11 for the CLI's Phase 2 writes, H12-H25 for its v0.2 editors, H26-H27 for the fixes after them, A1-A10 for the desktop app, and the results log. |
 | `captures/` | Real USB traffic of the maintainer's W75, used by the tests. |
 
 ```text
@@ -689,10 +721,14 @@ v0.2 ile gelen yazan komutlar (`set key`, `set macro`, `set advanced`,
 `travel`, `profile export` ve `profile import`) sitenin gönderip klavyenin
 kabul ettiği komut biçimlerini, sitenin kodunun kurduğu gibi kullanır;
 kayıt oturumları 2-3'te görülen durumlar bayt bayt aynıdır (testler
-karşılaştırır), kabloda hiç görülmemiş değerler ise planda "not yet verified
-on a W75" diye işaretlenir. Bu komutlar
-**şimdiye kadar yalnızca cihaz simülatörüne karşı çalıştırıldı; donanım
-denetimleri (aynı dosyada H12-H25) henüz yapılmadı.** Masaüstü uygulamasının
+karşılaştırır), etkisi henüz denenmemiş değerler ise planda "not yet
+verified on a W75" diye işaretlenir. **Bu komutlar 2026-10-27'de gerçek
+klavyede denendi (aynı dosyada H12-H24).** Bu denemede OpenWraith'in
+hesaba katmadığı iki klavye davranışı çıktı: 0 numaralı makro yuvasına
+yazmak diğer makroları siler, SOCD'nin açık/kapalı ayarı ise tüm profiller
+için tektir. İkisi de artık ele alınıyor ve simülatörde sınanıyor; bunların
+klavyedeki kısa yeniden denemesi (H26, H27) ve isteğe bağlı H25 henüz
+yapılmadı. Masaüstü uygulamasının
 donanım denetimleri (A1-A10) 2026-10-27'de yapıldı. Switch tipi, yan ışık,
 polling rate ve Win-Lock yazmaları için doğrulanmış bir komut henüz yok.
 
@@ -809,8 +845,9 @@ ikisi de bunlara uyar.
   (yalnızca profil geçişi) ve `travel` (yalnızca tuş yolu testinin açılması
   ve kapanması). Bu komutlar yalnızca sitenin gönderip klavyenin kabul
   ettiği, kayıtlarda görülen yazma komutlarını, kayıttaki komut biçimiyle
-  gönderebilir (kayıtlarda görülmemiş tablo içerikleri planda "not yet
-  verified on a W75" diye işaretlenir); her paket gönderilmeden hemen önce
+  gönderebilir (etkisi ne kayıtlarda ne de OpenWraith'in donanım
+  denemelerinde görülmüş tablo içerikleri planda "not yet verified on a W75"
+  diye işaretlenir); her paket gönderilmeden hemen önce
   bir izin listesinden de geçer. Sıfırlama, kalibrasyon, switch tipi, yan ışık, 2 numaralı renk
   tablosu, polling rate, gamepad ve Win-Lock yazmaları kodda oluşturulamaz
   bile.
@@ -864,9 +901,22 @@ ikisi de bunlara uyar.
   "Fn keymap (18 02)" olarak, nedenini Change sütununda gösterir
   ("unchanged, re-sent: ..."); rapor "Fn keymap (18 02) re-sent unchanged to
   make the keyboard save the base keymap" olarak listeler ve paketlerinin her
-  birinin onaylanmasını şart koşar. Yalnızca makro ya da gelişmiş tuş yazan
-  bir geri yükleme ya da düzenleme, site gibi, değişmemiş Fn tuş tablosunu
-  bunların arasına yazar.
+  birinin onaylanmasını şart koşar. Klavye bir gelişmiş tuşu, aynı
+  kayıtta önce Fn tuş tablosu yazılırsa tutar, o olmadan yazılanı ise
+  kaybeder (gerçek klavyede bulundu, H20); bu yüzden tuş tabloları değişmeden gelişmiş tuş yuvası yazan bir geri yükleme
+  ya da düzenleme, site gibi, değişmemiş Fn tuş tablosunu bu yuvalardan önce
+  yazar. Makro yuvaları kendi başlarına da saklanır, Fn tuş tablosu
+  gerektirmez.
+- **0 numaralı makro yuvası özeldir.** 0 numaralı yuvaya yazmak, klavyenin
+  o profildeki 1-9 numaralı makro yuvalarını boşaltmasına yol açar (gerçek
+  klavyede bulundu, docs/PROTOCOL.md 4.9.2; site her seferinde on yuvanın
+  hepsini yazdığı için bu orada görünmez). Bu yüzden OpenWraith 0 numaralı
+  yuvayı her yazdığında, kalması gereken diğer makroları hemen ardından
+  yeniden yazar ("re-sent: writing macro slot 0 makes the keyboard clear
+  slots 1-9"), Ctrl+C'den sonra da. Yeni bir makro 1-9 arasındaki ilk boş
+  yuvaya yazılır; 0 numaralı yuva yalnızca bunların hepsi doluysa kullanılır.
+  Yeniden yazma başarısız olursa rapor, boş kalan makroları ve artık hiçbir
+  şey yapmayan tuşları listeler.
 - **Klavye bir değişikliği yazıldıktan yaklaşık 1 saniye sonra kaydeder.**
   O ana kadar değişiklik yalnızca bellektedir: bu bir saniye içinde profil
   değiştirmek (ya da kabloyu çıkarmak) değişikliği kaybettirir ve geri okuma
@@ -877,12 +927,12 @@ ikisi de bunlara uyar.
   yazdığı her profilden başka bir profile geçip geri döner, yazılan tabloları
   yeniden okur ve "persisted" (kalıcı) olarak bildirir; klavyenin tutmadığı
   bir yazma LOST (kayboldu) olarak bildirilir ve geri yükleme başarısız olur
-  (yeniden çalıştırın ya da geri alın). `set` bunu yalnızca saklandığı
-  donanımda henüz kanıtlanmamış tablolar için yapar (makro yuvaları, SOCD,
-  Fn tuş tablosundan önce yazılmayan gelişmiş tuş yuvaları;
-  `--check-persistence auto|always|never` ile değiştirilir); diğerleri için
-  yalnızca bekler, küçük bir değişiklik için ışıklar değişmesin diye profil
-  değiştirmez.
+  (yeniden çalıştırın ya da geri alın). Donanım denemeleri, klavyenin `set`
+  ile yazılan her tabloyu profil değişikliğinden ve kablonun çıkarılıp
+  takılmasından sonra da tuttuğunu gösterdi; bu yüzden `set` yalnızca
+  bekler, küçük bir değişiklik için ışıklar değişmesin diye profil
+  değiştirmez. `--check-persistence always` yine de denetler
+  (`auto|always|never`).
 - OpenWraith çalışırken klavyeden profil değiştirmeyin; her tablodan önce
   aktif profili denetler ve değiştiyse durur. Bir komut klavyenin kaydetmesini
   beklerken de profil değiştirmeyin ve kabloyu çıkarmayın: bekleme, aktif
@@ -891,14 +941,16 @@ ikisi de bunlara uyar.
   kodu 1 ile bildirilir, asla tamamlandı denmez. Değerleri denetleyin, sonra
   komutu yeniden çalıştırın ya da geri alın. Bu bekleme sırasında Ctrl+C,
   geri yüklemeyi bir sonraki profil seçilmeden önce durdurur.
-- **Paylaşılan tablolar sonda denetlenir.** Dead band ve SOCD için her
-  profilin kendi kopyası olup olmadığı henüz bilinmiyor (OpenWraith'in
-  yazdığı diğer tabloların profile özel olduğu görüldü). Geri yükleme
-  bunlardan birini yazar ve birden fazla profili kapsarsa, sonunda bütün
-  profilleri yeniden okur ve bir tablo artık yedekteki değerleri taşımıyorsa
-  hata verir ("final check"). Yalnızca bazı profillerle sınırlı bir geri
-  yükleme ile `set deadband` / `set socd`, böyle bir yazmanın diğer
-  profilleri de değiştirebileceği konusunda uyarır.
+- **SOCD'nin açık/kapalı ayarı tüm profiller için tektir.** Klavyede dört
+  profilin hepsi için tek bir SOCD açma/kapama ayarı vardır (Fn + Sağ Shift
+  de bunu değiştirir); SOCD tuş çiftleri ve dead band ise her profilin
+  kendinedir (gerçek klavyede bulundu, docs/PROTOCOL.md 4.15). `set socd
+  --on` / `--off` bunun her profili değiştirdiğini söyler. Geri yükleme bu
+  ayarı bir kez yazar (yedek alındığında etkin olan profilin ayarını) ve
+  planda bir kez gösterir ("SOCD power (all profiles): on -> off"); bu ayarı
+  bittiği profilden başka bir profilde yazdıysa, sonunda orada bir kez daha
+  okur ("final check"). Bir profili içe aktarmak yalnızca onun SOCD tuş
+  çiftlerini alır, klavyedeki açık/kapalı ayarını olduğu gibi bırakır.
 - **Tuş atamaları korunur.** Döner düğmenin girdileri ve Fn tuşu asla
   değiştirilmez; klavyenin yerleşik bir Fn işlevini (`openwraith show
   keymap` listeler) gizleyecek bir Fn katmanı girdisi `--allow-builtin TUŞ`,
@@ -916,12 +968,17 @@ ikisi de bunlara uyar.
 - **Ctrl+C** ile durdurabilirsiniz: OpenWraith o anki tabloyu bitirir, eski
   profile geri geçer ve neyin yazıldığını bildirir. Tuş grubunun (makrolar,
   tuş tabloları, gelişmiş tuşlar) içindeyse grubun diğer tablolarını atlar,
-  ama Fn tuş tablosunu (o olmadan klavye yazılmış olanları tutmaz) ve zaten
-  yazılmış bir tuşun başvurduğu makro ya da gelişmiş tuş yuvasını (veya bir
-  tuşu yeniden yazılmış bir yuvadan ayıran tuş tablosunu) yine de yazar,
+  ama grubun gerektirdiklerini yine de yazar: ana tuş tablosu yazıldıysa Fn
+  tuş tablosunu (o olmadan klavye ana tuş tablosunu tutmaz; tek başına
+  makro yuvaları onu gerektirmez), yazılmış ya da hâlâ yazılacak bir tuşun
+  başvurduğu makro ya da gelişmiş tuş yuvasını (veya bir tuşu yeniden
+  yazılmış bir yuvadan ayıran tuş tablosunu) ve 0 numaralı makro yuvası
+  yazıldıysa onun boşaltacağı diğer makroları (en çok dokuz yuva daha),
   sonra durur. Bunlar planın son yazmalarıysa planlanan her şey yazılmıştır:
   rapor "Ctrl+C received" der ve çıkış kodu 0 kalır. İkinci Ctrl+C hemen
-  durdurur. Geri yüklemenin son denetimi yarıda kesilmez.
+  durdurur; 0 numaralı yuvadan sonra henüz yeniden yazılmamış makrolar o
+  zaman geri alana kadar boş kalır. Geri yüklemenin son denetimi yarıda
+  kesilmez.
 - Metin çıktısında `*` ile işaretlenen değerlerin anlamı üreticinin sitesinin
   kodundan alınmıştır ve henüz USB trafiğinde doğrulanmamıştır; JSON
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.
@@ -990,31 +1047,40 @@ Mesafeler milimetredir ve 0,02 mm'nin katı olmalıdır (DKS basma noktası
 
 `set key` eylemleri: `default`, bir tuş adı (`A`, `L-Ctrl`, `F13`,
 `"KP 1"`), `usage:0xNN`, `media:AD` (`mute`, `volume-up`, `volume-down`,
-`play-pause`, `next`, `previous`, `stop`, `calculator`, ...; `0x24` ve
-`0x25`: tarayıcıda geri ve ileri, hangisinin hangisi olduğu doğrulanmadı,
-Q14),
-`mouse:left|right|middle|0x08|0x10|wheel-up|wheel-down`,
+`play-pause`, `next`, `previous`, `stop`, `calculator`, `browser-back`,
+`browser-forward`, ...) ya da `media:0xNN`,
+`mouse:left|right|middle|back|forward|wheel-up|wheel-down` (`back` farenin
+geri düğmesi X1, `0x08`; `forward` ileri düğmesi X2, `0x10`; site bu
+ikisini ters adlandırır),
 `combo:DEĞİŞTİRİCİ[+DEĞİŞTİRİCİ]+TUŞ`, `macro:N` ve `advanced:N` (var olan
 bir yuvayı bağlar). Birden çok `TUŞ=EYLEM` birlikte yazılır. Makro
 adımları: `TUŞ+` basar, `TUŞ-` bırakır, ardından adımdan sonraki bekleme
 ms cinsinden gelir (son adımda bekleme olmaz); en çok 40 adım, basılan her
 tuş bırakılmalı; `--play once|times:N|toggle|while-held`. DKS satırları
 `TUŞ:AŞAMALAR` biçimindedir; dört karakter sırayla basma, dibe vurma,
-dipten kalkma ve bırakma içindir: `.` hiçbir şey, `t` dokunma, `h` sonraki
-aşamaya kadar basılı tut, `r` bırakıp yeniden bas. SOCD kipleri (iki tuş
+dipten kalkma ve bırakma içindir: `.` hiçbir şey, `t` dokunma, `h` tuş
+sonraki aşamaya varana kadar basılı tut (otomatik tekrarla), `r` bırakıp
+yeniden bas. SOCD kipleri (iki tuş
 birden basılıyken): 1 son basılan kazanır (varsayılan), 2 birinci tuş
 kazanır, 3 ikinci tuş kazanır, 4 sonraki tuş yalnızca ilkini keser. Planda
 "not yet verified on a W75" diye işaretlenen değerler, sitenin de
-gönderdiği ama OpenWraith'in etkisini henüz denemediği baytlardır.
+gönderdiği ama OpenWraith'in etkisini henüz denemediği baytlardır;
+2026-10-27'deki donanım denemelerinden beri bunlar yalnızca daha seyrek
+kullanılanlardır: SOCD kipleri 2 ve 3, DKS'de bırakma aşamasında dokunma,
+"yeniden bas", 300 ms dışındaki Mod-Tap süreleri, Fn katmanındaki gelişmiş
+tuşlar, sağ taraftaki bir değiştirici tuşla (R-Ctrl, R-Shift, R-Alt, R-GUI)
+yapılan kombinasyonlar ve çoğu multimedya tuşu.
 
 `set` seçenekleri: `--dry-run` (yalnızca plan, salt okunur), `--packets`
 (her paketin hex'i), `--json`, `--yes`; v0.2 düzenleyicilerinde ayrıca
 `--check-persistence auto|always|never` (yazdıktan sonra başka bir profile
 geçip geri dönerek klavyenin sakladığını denetler; varsayılan `auto`
-yalnızca donanımda henüz kanıtlanmamış tabloları denetler) ve `set macro` /
-`set advanced` için `--layer base|fn`, `--slot N` ile `--commit-trigger
-skip` (bir donanım testi: ardından Fn tuş tablosu yazılmayan yuvalar; her
-zaman denetlenir). `profile import` için `--into N`, `--profile N`
+yalnızca donanımda kanıtlanmamış tabloları denetler, 2026-10-27'den beri
+bunlar yalnızca Fn tuş tablosu olmadan yazılan gelişmiş tuş yuvalarıdır) ve
+`set macro` / `set advanced` için `--layer base|fn`, `--slot N` ile
+`--commit-trigger skip` (bir donanım testi: önlerinde Fn tuş tablosu
+yazılmayan gelişmiş tuş yuvaları, klavye bunları tutmaz; her zaman
+denetlenir). `profile import` için `--into N`, `--profile N`
 (dosyanın profili), `--include` (varsayılan: triggers,lighting) ve
 `--allow-critical-fn-overrides`. `profile import --dry-run` yalnızca etkin
 profili okur: başka bir profile içe aktarmanın planını görmek için önce o
@@ -1049,10 +1115,11 @@ dosyalarını reddeder. `openwraith profile export` bir profili paylaşmak için
 `profile_export` kapsamlı bir şema 1 dosyasına yazar (USB seri numarası
 olmadan); `openwraith profile import` onu herhangi bir profile yazar. 8
 MiB'den büyük dosyalar reddedilir. Tetikleme ayarları, ana ışık, iki tuş
-tablosu, makrolar, gelişmiş tuşlar ve 1 numaralı özel renk tablosu profile
-özeldir (kayıtlarda görüldü); dead band, SOCD ve OpenWraith'in yazmadığı
-tabloların kapsamı henüz bilinmiyor, bu yüzden geri yükleme böyle bir
-tabloyu yazmadan önce yeniden okur ve zaten eşleşiyorsa atlar.
+tablosu, makrolar, gelişmiş tuşlar, 1 numaralı özel renk tablosu, dead band
+ve SOCD tuş çiftleri profile özeldir; SOCD'nin açık/kapalı ayarı ise tüm
+klavye için tektir (kayıtlarda ve OpenWraith'in donanım denemelerinde
+görüldü, PROTOCOL.md 4.5.4). OpenWraith'in yazmadığı tabloların kapsamı
+henüz bilinmiyor (Q3); geri yükleme onları yalnızca karşılaştırır.
 
 ### Geliştirme
 

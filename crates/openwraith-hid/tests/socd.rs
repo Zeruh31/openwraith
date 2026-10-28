@@ -72,17 +72,15 @@ fn edit(sim: &mut DeviceSim, edit: &SocdEdit, options: &EditOptions) -> openwrai
 }
 
 #[test]
-fn switching_socd_on_with_a_pair_sends_the_captured_burst_and_checks_the_save() {
+fn switching_socd_on_with_a_pair_sends_the_captured_burst_and_needs_no_check() {
     let mut sim = sim();
-    let report = edit(
-        &mut sim,
-        &SocdEdit {
-            allow_not_undoable: false,
-            power: Some(true),
-            pairs: Some(vec![a_d(SocdMode::M1)]),
-        },
-        &EditOptions::default(),
-    );
+    let socd = SocdEdit {
+        allow_not_undoable: false,
+        power: Some(true),
+        pairs: Some(vec![a_d(SocdMode::M1)]),
+    };
+    let mut checked = sim.clone();
+    let report = edit(&mut sim, &socd, &EditOptions::default());
     assert!(report.is_success(), "{:#?}", report.error);
     // c15 #145-#147: power on, A/D Model1 (wire 0), the empty chunk 1.
     let writes: Vec<[u8; 63]> = write_bytes(&sim)
@@ -90,9 +88,29 @@ fn switching_socd_on_with_a_pair_sends_the_captured_burst_and_checks_the_save() 
         .filter(|b| b[0] == 0x24)
         .collect();
     assert_eq!(writes, captured(&[145, 146, 147]));
-    // SOCD is not known to be kept after the settle: the edit switched to
-    // profile 2 and back and read it again.
-    assert_eq!(selects(&sim), [2, 1]);
+    // SOCD is known to be kept after the settle (H21 `persisted` twice, H22
+    // power cycle, 2026-10-27): no switch to profile 2 and back.
+    assert!(selects(&sim).is_empty());
+    assert!(report.persistence.is_none());
+    assert!(report.warnings.contains(&EditWarning::SocdPowerAllProfiles));
+    assert!(report.warnings.contains(&EditWarning::SocdHotkey));
+    // The power write and mode 1 behave as named (H21).
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, EditWarning::Unverified(_))),
+        "{:?}",
+        report.warnings
+    );
+    // --check-persistence always still switches away and back.
+    let always = EditOptions {
+        persistence: PersistenceCheckMode::Always,
+        ..EditOptions::default()
+    };
+    let report = edit(&mut checked, &socd, &always);
+    assert!(report.is_success(), "{:#?}", report.error);
+    assert_eq!(selects(&checked), [2, 1]);
     let check = report.persistence.as_ref().expect("checked");
     assert_eq!((check.persisted, check.lost), (1, 0));
     assert!(matches!(
@@ -102,16 +120,6 @@ fn switching_socd_on_with_a_pair_sends_the_captured_burst_and_checks_the_save() 
             ..
         }
     ));
-    assert!(report.warnings.contains(&EditWarning::ScopeUnknown {
-        table: TableId::Socd
-    }));
-    assert!(report.warnings.contains(&EditWarning::SocdHotkey));
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|w| matches!(w, EditWarning::Unverified(note) if note.question == "Q35"))
-    );
     let p1 = profile(1);
     assert_eq!(
         sim.persisted_table(p1, SimTable::SocdSettings)
@@ -122,6 +130,19 @@ fn switching_socd_on_with_a_pair_sends_the_captured_burst_and_checks_the_save() 
         sim.persisted_table(p1, SimTable::SocdPairs)
             .map(|b| b[..4].to_vec()),
         Some(vec![0x01, 0x00, 0x04, 0x07])
+    );
+    // The power is one setting of the whole keyboard; the pair belongs to
+    // profile 1 (H21).
+    let p2 = profile(2);
+    assert_eq!(
+        sim.persisted_table(p2, SimTable::SocdSettings)
+            .map(|b| b[0]),
+        Some(1)
+    );
+    assert_eq!(
+        sim.persisted_table(p2, SimTable::SocdPairs)
+            .map(|b| b[..4].to_vec()),
+        Some(vec![0; 4])
     );
     sim.assert_clean();
 }
@@ -395,11 +416,19 @@ fn pairs_in_another_form_can_only_be_replaced() {
     assert!(replace.warnings().contains(&EditWarning::NotUndoable {
         table: TableId::Socd
     }));
+    // The pairs alone belong to the active profile: no note about the
+    // other profiles.
     assert!(
-        replace
+        !replace
+            .warnings()
+            .contains(&EditWarning::SocdPowerAllProfiles)
+    );
+    // Mode 4 behaves as named (H21, 2026-10-27).
+    assert!(
+        !replace
             .warnings()
             .iter()
-            .any(|w| matches!(w, EditWarning::Unverified(n) if n.what.contains("modes 3 and 4")))
+            .any(|w| matches!(w, EditWarning::Unverified(_)))
     );
     // Site rules: the same key twice, a key in two pairs.
     let same = plan_socd_edit(
@@ -562,10 +591,15 @@ fn a_switch_on_the_keyboard_after_the_write_is_not_reported_lost() {
         power: None,
         pairs: Some(vec![a_d(SocdMode::M1)]),
     };
+    // SOCD is known to be kept: the check runs only when asked for.
+    let options = EditOptions {
+        persistence: PersistenceCheckMode::Always,
+        ..EditOptions::default()
+    };
     let base = sim();
     let mut copy = base.clone();
     let start = copy.written().len();
-    let report = edit(&mut copy, &socd, &EditOptions::default());
+    let report = edit(&mut copy, &socd, &options);
     assert!(report.is_success(), "{:#?}", report.error);
     let burst = last_socd_write_at(&copy, start);
     let end = copy.elapsed();
@@ -574,7 +608,7 @@ fn a_switch_on_the_keyboard_after_the_write_is_not_reported_lost() {
     while burst + offset < end + ms(200) {
         let mut sim = base.clone();
         sim.press_socd_hotkey_at(burst + offset - sim.elapsed());
-        let report = edit(&mut sim, &socd, &EditOptions::default());
+        let report = edit(&mut sim, &socd, &options);
         let kind = report.error.as_ref().map(|e| e.kind);
         assert_ne!(
             kind,

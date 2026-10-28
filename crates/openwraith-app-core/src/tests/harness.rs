@@ -6,8 +6,8 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use openwraith_hid::protocol::{KeyPos, ProfileId, REPORT_LEN};
-use openwraith_hid::{DeviceSim, SimPacket};
+use openwraith_hid::protocol::{KeyPos, Layer, ProfileId, REPORT_LEN};
+use openwraith_hid::{DeviceSim, SimPacket, SimTable};
 use tempfile::TempDir;
 
 use crate::backend::sim::{SimControl, SimDeviceBackend, SimOptions, make_devices};
@@ -518,4 +518,36 @@ impl Harness {
 /// Whether an event is the first packet of a write.
 pub(crate) fn is_write_start(event: &ProgressEvent) -> bool {
     matches!(event.step, ProgressStep::Writing { packet: 1, .. })
+}
+
+/// Whether an event is the first packet of the base keymap.
+pub(crate) fn is_base_keymap_start(event: &ProgressEvent) -> bool {
+    matches!(
+        event.step,
+        ProgressStep::Writing {
+            packet: 1,
+            table: crate::dto::TableRef::Keymap {
+                layer: crate::dto::LayerView::Base
+            },
+            ..
+        }
+    )
+}
+
+/// Profile 1 of the simulator after its backup: W's base-keymap entry and
+/// advanced-key slot 5 changed (a restore writes the base keymap, the Fn
+/// keymap after it and the slot's clear).
+pub(crate) fn base_keymap_and_advanced_slot_changed(s: &mut DeviceSim) {
+    let mut base = s
+        .table(profile(1), SimTable::Keymap(Layer::Base))
+        .unwrap()
+        .to_vec();
+    base[46 * 4 + 2] ^= 0x01;
+    s.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
+    let mut advanced = s
+        .table(profile(1), SimTable::AdvancedKeys)
+        .unwrap()
+        .to_vec();
+    advanced[5 * 40..5 * 40 + 3].copy_from_slice(&[0x01, 0x02, 0x03]);
+    s.set_table(profile(1), SimTable::AdvancedKeys, advanced);
 }

@@ -2,8 +2,11 @@
 //! the vendor site's whole burst (`24 03`, then both `24 00` chunks; c15).
 //! A power-only change re-sends the unchanged pairs, as the site's switch
 //! does. Only `24 02` and `24 01` are read: the status report does not hold
-//! the SOCD power (spec 7.4). SOCD can also be switched on the keyboard
-//! with Fn + Right Shift; such a switch during the write is detected
+//! the SOCD power (spec 7.4). The power is one setting of the whole
+//! keyboard (switching it changes every profile), the pairs belong to the
+//! active profile (OBSERVED on hardware, H21, 2026-10-27). SOCD can also be
+//! switched on the keyboard with Fn + Right Shift; such a switch during the
+//! write is detected
 //! ([`WriteError::ChangedOnKeyboard`](crate::WriteError::ChangedOnKeyboard)).
 
 use std::ops::ControlFlow;
@@ -28,11 +31,13 @@ use crate::writer::WriteConsent;
 /// The keyboard's SOCD state as read (`24 02`, `24 01`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SocdState {
-    /// Payload byte 0 of `24 02`: 1 = on.
+    /// Payload byte 0 of `24 02`: 1 = on (one setting of the whole
+    /// keyboard: every profile reads the same power).
     pub power: u8,
     /// Payload bytes 1-5 of `24 02` (the hotkey; never written).
     pub rest: HexBytes,
-    /// The pairs, when the table is in the vendor site's form.
+    /// The pairs of the active profile, when the table is in the vendor
+    /// site's form.
     pub pairs: Option<Vec<SocdPair>>,
     /// Why the pairs cannot be edited, when they are not in that form.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,9 +89,10 @@ impl SocdState {
 /// table; `None` keeps what the keyboard holds).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SocdEdit {
-    /// Switch SOCD on or off.
+    /// Switch SOCD on or off (in every profile: the power is one setting
+    /// of the whole keyboard).
     pub power: Option<bool>,
-    /// The pairs after the edit, in order.
+    /// The pairs of the active profile after the edit, in order.
     pub pairs: Option<Vec<SocdPair>>,
     /// Replace pairs that are not in the vendor site's form although the
     /// undo (a restore of the safety backup) cannot write them back
@@ -173,12 +179,11 @@ pub fn plan_socd_edit<T: Transport>(
             });
         }
     };
-    let mut warnings = vec![
-        EditWarning::ScopeUnknown {
-            table: TableId::Socd,
-        },
-        EditWarning::SocdHotkey,
-    ];
+    let mut warnings = Vec::new();
+    if edit.power.is_some() {
+        warnings.push(EditWarning::SocdPowerAllProfiles);
+    }
+    warnings.push(EditWarning::SocdHotkey);
     if let (Some(_), Some(reason)) = (&edit.pairs, current.unwritable) {
         if !edit.allow_not_undoable {
             return Err(EditError::UnsupportedCurrentTable {
@@ -213,9 +218,6 @@ pub fn plan_socd_edit<T: Transport>(
         let request = WriteRequest::Socd(write);
         let planned = state_of(&request, &[settings_raw, pairs_raw]);
         writes.push(PlannedEditWrite::new(request, None, planned));
-        warnings.push(EditWarning::PowerLossUntested {
-            tables: vec![TableId::Socd],
-        });
     }
     Ok(SocdEditPlan {
         profile,

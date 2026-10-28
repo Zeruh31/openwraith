@@ -239,7 +239,8 @@ impl Default for WriteOptions {
 /// because it reads the working copy. Measured on hardware (spec 4.5.3,
 /// "Delayed commit"): a trigger write was lost when the next select followed
 /// it within 0, 150, 400 or 800 ms, and kept from 1000 ms on. A power loss in
-/// that window very likely loses it too (untested).
+/// that window loses it too (desktop-app hardware test A10: an unplug during
+/// the wait lost the write).
 ///
 /// The default is 2 s, twice the measured threshold. A caller may choose a
 /// longer settle, or a shorter one down to [`CommitSettle::MINIMUM`]; there
@@ -849,8 +850,8 @@ impl<T: WriteTransport> Writer<'_, T> {
     /// since it, another profile became active (seen in a report, in a
     /// `21/11` read, or at the end of a wait; see
     /// [`WriteError::ProfileChangedBeforeSave`]) or the connection was lost
-    /// (an unplugged keyboard very likely loses unsaved edits; spec 4.5.3,
-    /// "Delayed commit"). Such a write was verified, but only in the
+    /// (an unplugged keyboard loses unsaved edits, hardware test A10; spec
+    /// 4.5.3, "Delayed commit"). Such a write was verified, but only in the
     /// keyboard's working copy. The writes concerned are those made to
     /// [`Session::last_write_profile`] since that profile was last selected.
     /// A reset notification is not counted here: it reports a reset of the

@@ -29,9 +29,9 @@ const TYPE_DKS: u8 = 1;
 const TYPE_MT: u8 = 2;
 /// Type byte of a Toggle slot.
 const TYPE_TGL: u8 = 3;
-/// The DKS press point the vendor UI starts with (1.5 mm), the only one
-/// whose unit is supported by a typing test.
-const DKS_DEFAULT_POINT: u8 = 15;
+/// The Mod-Tap hold threshold tested on hardware (300 ms, H20; the CLI's
+/// default).
+const MT_TESTED_THRESHOLD: u8 = 30;
 
 /// The 40 bytes of a non-empty advanced-key slot that OpenWraith may write
 /// (write `22 SS 00 00 32` + these bytes + 10 zero bytes).
@@ -229,16 +229,22 @@ pub struct DksRow {
 }
 
 /// What a DKS row does at one stage (step byte values of the site's UI,
-/// `wmIndex.js:3725-3779`). Only `Tap` at stages 1 and 2 is CONFIRMED (c16).
+/// `wmIndex.js:3725-3779`). `Tap` at stages 1 and 2 is CONFIRMED by c16,
+/// `Tap` at stage 3 and `Hold` at stages 1-3 by hardware test H20
+/// (2026-10-27); `Tap` at stage 4 and `HoldAgain` are untested (Q19).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum DksStep {
     /// 0: nothing.
     None = 0,
-    /// 1: a single tap.
+    /// 1: a single short press, no auto-repeat while the key stays in the
+    /// stage (CONFIRMED, H20).
     Tap = 1,
-    /// 2: held through to the next stage (GUESS).
+    /// 2: held, with the host's auto-repeat, while the key stays in this
+    /// stage; reaching the next stage releases it (CONFIRMED, H20: a hold at
+    /// stage 1 ends at the bottom-out, holds at stages 1-3 repeat while the
+    /// key rests at the bottom).
     Hold = 2,
     /// 3: released, then pressed and held again right after a held stage
     /// (GUESS).
@@ -276,8 +282,8 @@ pub struct ModTap {
     pub threshold_10ms: u8,
 }
 
-/// A Toggle: one press holds the key down, the next releases it (GUESS for
-/// the release).
+/// A Toggle: one press holds the key down, the next releases it
+/// (CONFIRMED, hardware test H20).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Toggle {
@@ -323,34 +329,32 @@ impl AdvancedKeyDef {
 
     /// What about this definition is not verified on hardware (empty when
     /// everything is CONFIRMED). Open question Q19.
+    ///
+    /// Hardware test H20 (2026-10-27) confirmed the DKS press point unit
+    /// (0.1 mm), taps at stages 1-3, holds at stages 1-3, the Mod-Tap tap and
+    /// hold paths with a 300 ms hold time, and the Toggle release. Still
+    /// untested: a DKS tap at stage 4, the "hold again" step and other
+    /// Mod-Tap hold times.
     pub fn evidence(&self) -> Vec<UnverifiedNote> {
         match self {
             AdvancedKeyDef::Dks(dks) => {
+                let rows = || dks.rows.iter().flatten();
                 let mut notes = Vec::new();
-                let beyond_tap = dks.rows.iter().flatten().any(|row| {
-                    row.steps.iter().enumerate().any(|(stage, step)| {
-                        matches!(step, DksStep::Hold | DksStep::HoldAgain)
-                            || (stage >= 2 && *step != DksStep::None)
-                    })
-                });
-                if beyond_tap {
-                    notes.push(UnverifiedNote::new("DKS hold steps and stages 3-4", "Q19"));
+                if rows().any(|row| row.steps[3] == DksStep::Tap) {
+                    notes.push(UnverifiedNote::new("DKS tap at stage 4", "Q19"));
                 }
-                if dks.first_point != DKS_DEFAULT_POINT {
-                    notes.push(UnverifiedNote::new(
-                        "0.1 mm unit of the DKS press point",
-                        "Q19",
-                    ));
+                if rows().any(|row| row.steps.contains(&DksStep::HoldAgain)) {
+                    notes.push(UnverifiedNote::new("DKS \"hold again\" step", "Q19"));
                 }
                 notes
             }
-            AdvancedKeyDef::ModTap(_) => vec![UnverifiedNote::new("Mod-Tap hold path", "Q19")],
-            AdvancedKeyDef::Toggle(_) => {
+            AdvancedKeyDef::ModTap(mt) if mt.threshold_10ms != MT_TESTED_THRESHOLD => {
                 vec![UnverifiedNote::new(
-                    "second Toggle press releases the key",
+                    "Mod-Tap hold time other than 300 ms",
                     "Q19",
                 )]
             }
+            AdvancedKeyDef::ModTap(_) | AdvancedKeyDef::Toggle(_) => Vec::new(),
         }
     }
 }
@@ -792,20 +796,35 @@ mod tests {
     #[test]
     fn evidence_notes() {
         assert!(c16_dks().evidence().is_empty());
+        // H20: taps at stages 1-3, holds at stages 1-3 and press points
+        // other than 1.5 mm are confirmed.
+        for (point, steps) in [(5, [1, 0, 0, 0]), (7, [2, 0, 0, 0]), (15, [2, 2, 2, 0])] {
+            let dks = AdvancedKeyDef::Dks(Dks {
+                first_point: point,
+                rows: [row(4, steps), row(5, [0, 0, 1, 0]), None, None],
+            });
+            assert!(dks.evidence().is_empty(), "{dks}");
+        }
+        // Not tested: a tap at stage 4 and "hold again".
         let deep = AdvancedKeyDef::Dks(Dks {
             first_point: 5,
             rows: [row(4, [2, 3, 0, 1]), None, None, None],
         });
         let notes: Vec<&str> = deep.evidence().iter().map(|n| n.what).collect();
-        assert_eq!(
-            notes,
-            [
-                "DKS hold steps and stages 3-4",
-                "0.1 mm unit of the DKS press point"
-            ]
-        );
+        assert_eq!(notes, ["DKS tap at stage 4", "DKS \"hold again\" step"]);
+        // Mod-Tap: tested with a 300 ms hold time only.
+        let mt = |threshold_10ms| {
+            AdvancedKeyDef::ModTap(ModTap {
+                hold: usage(0xE0),
+                tap: usage(0x0A),
+                threshold_10ms,
+            })
+        };
+        assert!(mt(30).evidence().is_empty());
+        let notes: Vec<&str> = mt(20).evidence().iter().map(|n| n.what).collect();
+        assert_eq!(notes, ["Mod-Tap hold time other than 300 ms"]);
         let tgl = AdvancedKeyDef::Toggle(Toggle { key: usage(0x0B) });
-        assert_eq!(tgl.evidence().len(), 1);
+        assert!(tgl.evidence().is_empty());
     }
 
     #[cfg(feature = "serde")]

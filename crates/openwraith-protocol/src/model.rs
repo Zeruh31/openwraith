@@ -51,7 +51,7 @@ pub struct Model {
 /// 4.8.4).
 ///
 /// The labels come from the vendor site (`fnKeys.json`) and are GUESS,
-/// except where the table of the model says CONFIRMED.
+/// except where [`confirmed`](Self::confirmed) is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct FnBuiltin {
@@ -63,6 +63,8 @@ pub struct FnBuiltin {
     /// that has no other way back on the keyboard (profile switch, reset).
     /// Such an override needs a separate acknowledgement.
     pub critical: bool,
+    /// Whether a hardware test confirmed the label on this model.
+    pub confirmed: bool,
 }
 
 /// Absolute value ceilings for writes to one model, compiled into this
@@ -131,23 +133,39 @@ pub const W75_WRITE_CEILINGS: WriteCeilings = WriteCeilings {
     socd_max_pairs: 20,
 };
 
-/// Shorthand for the [`W75_FN_BUILTINS`] table.
+/// Shorthand for the [`W75_FN_BUILTINS`] table: a label from the vendor
+/// site (GUESS).
 const fn builtin(index: u8, function: &'static str, critical: bool) -> FnBuiltin {
     FnBuiltin {
         index,
         function,
         critical,
+        confirmed: false,
+    }
+}
+
+/// Shorthand for the [`W75_FN_BUILTINS`] table: a label a hardware test
+/// confirmed (none of these is critical).
+const fn confirmed(index: u8, function: &'static str) -> FnBuiltin {
+    FnBuiltin {
+        index,
+        function,
+        critical: false,
+        confirmed: true,
     }
 }
 
 /// The W75's built-in Fn functions (spec section 4.8.4). Labels GUESS,
-/// except R-Shift (SOCD on/off, CONFIRMED by c15). Fn + 1..4 (profiles) and
-/// Fn + Space (reset) are critical.
+/// except F1-F4 (media player, volume -, volume +, mute: CONFIRMED by
+/// hardware test H18, 2026-10-27, which also showed that an Fn-layer entry
+/// hides them and `default` brings them back) and R-Shift (SOCD on/off,
+/// CONFIRMED by c15 and H12). Fn + 1..4 (profiles) and Fn + Space (reset)
+/// are critical.
 pub static W75_FN_BUILTINS: [FnBuiltin; 31] = [
-    builtin(2, "media player", false),
-    builtin(3, "volume -", false),
-    builtin(4, "volume +", false),
-    builtin(5, "mute", false),
+    confirmed(2, "media player"),
+    confirmed(3, "volume -"),
+    confirmed(4, "volume +"),
+    confirmed(5, "mute"),
     builtin(6, "stop", false),
     builtin(7, "previous", false),
     builtin(8, "play/pause", false),
@@ -168,7 +186,7 @@ pub static W75_FN_BUILTINS: [FnBuiltin; 31] = [
     builtin(58, "all lighting", false),
     builtin(68, "Windows mode", false),
     builtin(69, "Mac mode", false),
-    builtin(101, "SOCD on/off", false),
+    confirmed(101, "SOCD on/off"),
     builtin(102, "brightness +", false),
     builtin(111, "Win-key lock", false),
     builtin(116, "reset", true),
@@ -322,6 +340,14 @@ mod tests {
             .map(|b| W75.key(b.index).map_or("?", |k| k.name))
             .collect();
         assert_eq!(critical, ["1", "2", "3", "4", "Space"]);
+        // H18 (F1-F4) and c15/H12 (R-Shift).
+        let confirmed: Vec<&str> = W75
+            .fn_builtins
+            .iter()
+            .filter(|b| b.confirmed)
+            .map(|b| W75.key(b.index).map_or("?", |k| k.name))
+            .collect();
+        assert_eq!(confirmed, ["F1", "F2", "F3", "F4", "R-Shift"]);
         assert_eq!(W75.fn_builtin(101).map(|b| b.function), Some("SOCD on/off"));
         assert_eq!(W75.fn_builtin(46), None);
     }

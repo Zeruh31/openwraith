@@ -1,7 +1,7 @@
 //! Dead-band edits (W9, `26 01`): top and bottom dead zones per key, in the
 //! keyboard's 0.02 mm unit (spec 4.12). The whole 264-byte table is
-//! written; keys not listed keep their bytes as read. Its profile scope is
-//! unknown (it may change every profile).
+//! written; keys not listed keep their bytes as read. Each profile has its
+//! own dead band (OBSERVED on hardware, H16, 2026-10-27).
 
 use std::ops::ControlFlow;
 
@@ -141,25 +141,19 @@ pub fn plan_dead_band_edit<T: Transport>(
     }
     let write = DeadBandWrite::new(model, target, DeadBandData::max_units(unit))?;
     let mut writes = Vec::new();
-    let mut warnings = vec![EditWarning::ScopeUnknown {
-        table: TableId::DeadBand,
-    }];
     if write.data() != &current {
         writes.push(PlannedEditWrite::new(
             WriteRequest::DeadBand(write),
             None,
             vec![Some(current.as_bytes().to_vec())],
         ));
-        warnings.push(EditWarning::PowerLossUntested {
-            tables: vec![TableId::DeadBand],
-        });
     }
     Ok(DeadBandEditPlan {
         profile,
         product: info.product,
         changes,
         writes,
-        warnings,
+        warnings: Vec::new(),
     })
 }
 

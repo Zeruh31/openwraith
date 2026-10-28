@@ -18,7 +18,9 @@
 //! One slot per key, as the vendor site does: binding a macro or an
 //! advanced key reuses the slot only this key refers to, or takes the lowest
 //! slot that is empty and unreferenced in both layers
-//! (`getAdvIndex`, `wmIndex.js:3790-3803`). A bound slot whose content
+//! (`getAdvIndex`, `wmIndex.js:3790-3803`); for a macro the lowest such slot
+//! in 1-9, and slot 0 only when 1-9 are taken (writing slot 0 makes the
+//! keyboard empty slots 1-9, see below). A bound slot whose content
 //! changes is rewritten in place, as the site does on every Apply. A slot
 //! whose last binding the edit removes is cleared in the same group unless
 //! [`KeymapEdit::keep_orphans`] (the keyboard keeps unbound slots, c16).
@@ -38,12 +40,24 @@
 //!
 //! Changed macro slots ascending, the base keymap, the Fn keymap, changed
 //! advanced-key slots ascending (the site's order, spec 4.8.2). The Fn
-//! keymap follows every base keymap (re-sent unchanged if need be, the
-//! keyboard's commit trigger) and sits between the macro and the
-//! advanced-key slots when only slots change. With
+//! keymap is the keyboard's commit trigger (re-sent unchanged if need be):
+//! it follows every base keymap, and comes before advanced-key slots when
+//! no layer changes, because the keyboard keeps an advanced-key slot only
+//! with a complete Fn keymap in the same save (CONFIRMED on hardware, H20,
+//! 2026-10-27). Macro slots are kept without it (CONFIRMED, H19): a
+//! macro-only group has no Fn keymap. With
 //! [`CommitTriggerMode::OmitForSlotsOnly`] (hardware tests only) a
 //! slot-only group is written without it, and the persistence check is
 //! forced on.
+//!
+//! Writing macro slot 0 (content or a clear) makes the keyboard empty macro
+//! slots 1-9 (CONFIRMED on hardware, `hw/v02/macro-exp.txt`; see
+//! [`crate::group`]). An edit that writes slot 0 therefore writes every
+//! slot 1-9 that keeps content right after it, ascending, also when the
+//! edit does not change it ([`PlannedEditWrite::resent`]); these writes go
+//! out even after a cancellation once slot 0 did. A slot whose content the
+//! edit cannot write again is lost that way: it is refused unless
+//! [`KeymapEdit::allow_not_undoable`] ([`EditWarning::NotUndoable`]).
 
 use std::ops::ControlFlow;
 
@@ -62,8 +76,11 @@ use super::{
     PlannedEditWrite, run_edit,
 };
 use crate::backup::SnapshotView;
-use crate::group::{GroupView, SlotRef, layer_index};
-use crate::restore::{CommitTriggerReason, WriteProgress, state_of};
+use crate::group::{
+    GroupView, ResendReason, SlotRef, clears_other_macros, layer_index, link_new_references,
+    new_macro_references, slots_cleared_by_slot0,
+};
+use crate::restore::{CommitTriggerReason, WriteProgress, kept_macros, state_of};
 use crate::safety::SavedBackup;
 use crate::session::Session;
 use crate::transport::{Transport, WriteTransport};
@@ -137,13 +154,17 @@ pub enum KeymapChange {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitTriggerMode {
-    /// The site's order: the unchanged Fn keymap between the macro and the
-    /// advanced-key slots when only slots change.
+    /// The site's order: the unchanged Fn keymap before the advanced-key
+    /// slots (after the macro slots) when only slots change and advanced-key
+    /// slots are among them (the keyboard keeps an advanced-key slot when a
+    /// complete Fn keymap is written in the same save, and loses it
+    /// without).
     #[default]
     Auto,
-    /// Hardware tests only: a slot-only group without the Fn keymap (does
-    /// the keyboard keep macros or a lone advanced-key slot without it?).
-    /// Refused when a layer changes; forces the persistence check.
+    /// Hardware tests only: a slot-only group without the Fn keymap (H20
+    /// showed that the keyboard drops a lone advanced-key slot; macro slots
+    /// are kept). Refused when a layer changes; forces the persistence
+    /// check.
     OmitForSlotsOnly,
 }
 
@@ -488,6 +509,16 @@ impl KeymapGroupState {
         self.advanced
             .get(start..start + ADVANCED_SLOT_LEN)
             .unwrap_or_default()
+    }
+
+    /// The current content of macro slot `slot` in the form it is written,
+    /// if OpenWraith can write it.
+    fn macro_data(&self, slot: MacroSlotId) -> Option<MacroData> {
+        self.raws
+            .iter()
+            .find(|r| r.request() == ReadRequest::Macro(slot))
+            .and_then(|raw| MacroData::from_response(raw).ok())
+            .map(|(_, data)| data)
     }
 
     /// Whether a restore of a backup of this group could write the current
@@ -919,6 +950,46 @@ pub fn plan_keymap_edit_on(
             _ => {}
         }
     }
+    // Writing macro slot 0 makes the keyboard empty slots 1-9: every slot
+    // 1-9 that keeps content is written again right after it (a re-send
+    // when the edit does not change it). One whose content cannot be
+    // written again is lost that way, like an overwritten one.
+    let mut resends: Vec<(MacroSlotId, MacroData)> = Vec::new();
+    let mut lost_by_slot0: Vec<MacroSlotId> = Vec::new();
+    if macro_writes
+        .iter()
+        .any(|request| clears_other_macros(request.table()))
+    {
+        for slot in slots_cleared_by_slot0() {
+            let written = macro_writes
+                .iter()
+                .any(|request| request.table() == (TableId::Macro { slot }));
+            if written || !target.macro_full(state, slot) {
+                continue;
+            }
+            let data = match &target.macros[usize::from(slot.get())] {
+                Some(data) => Some(data.clone()),
+                None => state.macro_data(slot),
+            };
+            match data {
+                Some(data) => resends.push((slot, data)),
+                None => lost_by_slot0.push(slot),
+            }
+        }
+    }
+    for slot in lost_by_slot0 {
+        let table = TableId::Macro { slot };
+        if !edit.allow_not_undoable {
+            return Err(EditError::UnsupportedCurrentTable {
+                table,
+                reason: "writing macro slot 0 makes the keyboard clear it, and its content is not \
+                         in a form OpenWraith can write again, so it would be lost and a restore \
+                         of the safety backup could not bring it back"
+                    .to_string(),
+            });
+        }
+        push_warning(&mut warnings, EditWarning::NotUndoable { table });
+    }
     // Every slot written must be one the undo can write back.
     let written_slots = macro_writes
         .iter()
@@ -948,7 +1019,6 @@ pub fn plan_keymap_edit_on(
     }
     let base_changed = target.layers[0] != state.layers[0];
     let fn_changed = target.layers[1] != state.layers[1];
-    let slots_written = !macro_writes.is_empty() || !advanced_writes.is_empty();
     if edit.commit_trigger == CommitTriggerMode::OmitForSlotsOnly && (base_changed || fn_changed) {
         return Err(EditError::Invalid {
             reason: "the Fn keymap can only be left out when no keymap layer changes (a hardware \
@@ -956,18 +1026,35 @@ pub fn plan_keymap_edit_on(
                 .to_string(),
         });
     }
+    // The keyboard keeps a base keymap only with the Fn keymap after it, an
+    // advanced-key slot only with a complete Fn keymap in the same save
+    // window (written before it here, the order H20 tested; after it is
+    // untested), and a macro slot without one (CONFIRMED: spec 4.8.2; H20
+    // and H19, 2026-10-27).
     let reason = if base_changed {
         Some(CommitTriggerReason::BaseKeymap)
-    } else if slots_written && edit.commit_trigger == CommitTriggerMode::Auto {
-        Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+    } else if !advanced_writes.is_empty() && edit.commit_trigger == CommitTriggerMode::Auto {
+        Some(CommitTriggerReason::AdvancedKeys)
     } else {
         None
     };
     let planned = |request: &WriteRequest| state_of(request, &state.raws);
     let mut writes: Vec<PlannedEditWrite> = Vec::new();
-    for request in macro_writes {
-        let p = planned(&request);
-        writes.push(PlannedEditWrite::new(request, None, p));
+    // Ascending, the re-sends after slot 0 among them.
+    for slot in MacroSlotId::all() {
+        let table = TableId::Macro { slot };
+        if let Some(request) = macro_writes.iter().find(|r| r.table() == table) {
+            let p = planned(request);
+            writes.push(PlannedEditWrite::new(request.clone(), None, p));
+        } else if let Some((_, data)) = resends.iter().find(|(s, _)| *s == slot) {
+            let request = WriteRequest::Macro(slot, data.clone());
+            let p = planned(&request);
+            writes.push(PlannedEditWrite::resend(
+                request,
+                ResendReason::MacroSlot0Clears,
+                p,
+            ));
+        }
     }
     if base_changed {
         let request = WriteRequest::Keymap(Layer::Base, target.layers[0].clone());
@@ -982,17 +1069,7 @@ pub fn plan_keymap_edit_on(
             write.commit_trigger = Some(reason);
             write.resent_unchanged = !fn_changed;
             if !fn_changed {
-                write.summary = match reason {
-                    CommitTriggerReason::BaseKeymap => {
-                        "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base \
-                         keymap"
-                    }
-                    CommitTriggerReason::MacrosOrAdvancedKeys => {
-                        "Fn keymap (18 02) re-sent unchanged after the macro slots, as the vendor \
-                         site does (precaution)"
-                    }
-                }
-                .to_string();
+                write.summary = reason.resent_summary().to_string();
             }
         }
         writes.push(write);
@@ -1019,23 +1096,6 @@ pub fn plan_keymap_edit_on(
                 );
             }
         }
-    }
-    let untested: Vec<TableId> = {
-        let mut tables: Vec<TableId> = Vec::new();
-        for write in &writes {
-            let table = match write.table {
-                TableId::Macro { .. } => write.table,
-                TableId::AdvancedKey { .. } => write.table,
-                _ => continue,
-            };
-            if !tables.contains(&table) {
-                tables.push(table);
-            }
-        }
-        tables
-    };
-    if !untested.is_empty() {
-        warnings.push(EditWarning::PowerLossUntested { tables: untested });
     }
     let mut entry_changes = Vec::new();
     for layer in Layer::ALL {
@@ -1082,6 +1142,8 @@ fn slot_changes(state: &KeymapGroupState, writes: &[PlannedEditWrite]) -> Vec<Sl
     };
     writes
         .iter()
+        // A re-send writes what the slot holds now.
+        .filter(|write| write.resent.is_none())
         .filter_map(|write| match write.request() {
             WriteRequest::Macro(slot, data) => Some(SlotChangeView {
                 slot: SlotRef::Macro(*slot),
@@ -1111,15 +1173,23 @@ fn slot_changes(state: &KeymapGroupState, writes: &[PlannedEditWrite]) -> Vec<Sl
 
 /// Flags the writes that complete a binding: an advanced-key slot written
 /// with content that a written layer refers to (a [`EditWarning::TransientBinding`]
-/// in the site's order), and a layer write that changes an entry referring
-/// to a macro slot written in this group (cleared or rewritten), so that a
-/// cancellation never leaves the old key on the slot's new content.
+/// in the site's order), a layer write that changes an entry referring to a
+/// macro slot written in this group (cleared or rewritten) or emptied by
+/// its macro slot-0 write, so that a cancellation never leaves the old key
+/// on the slot's new content or on an empty slot, and every macro slot 1-9
+/// written with content after macro slot 0 (see [`crate::group`]).
 fn mark_bindings(
     state: &KeymapGroupState,
     target: &Target,
     writes: &mut [PlannedEditWrite],
     warnings: &mut Vec<EditWarning>,
 ) {
+    let kept = kept_macros(writes.iter().map(PlannedEditWrite::request));
+    // The group's macro slot-0 write, if any.
+    let slot0: Option<TableId> = writes
+        .iter()
+        .map(|w| w.table)
+        .find(|t| clears_other_macros(*t));
     let written_layers: Vec<Layer> = writes
         .iter()
         .filter(|w| !w.resent_unchanged)
@@ -1133,8 +1203,11 @@ fn mark_bindings(
         .filter(|(layer, _, _)| written_layers.contains(layer))
         .map(|(layer, _, slot)| (slot, layer))
         .collect();
+    // A re-send keeps the slot's content: the keys bound to it are not
+    // affected.
     let written_macros: Vec<SlotRef> = writes
         .iter()
+        .filter(|w| w.resent.is_none())
         .filter_map(|w| match w.request() {
             WriteRequest::Macro(slot, _) => Some(SlotRef::Macro(*slot)),
             _ => None,
@@ -1153,18 +1226,34 @@ fn mark_bindings(
                 .filter(|(s, _)| *s == SlotRef::Advanced(*slot))
                 .map(|(_, layer)| TableId::Keymap { layer: *layer })
                 .collect(),
+            // Written again after slot 0, which emptied it.
+            WriteRequest::Macro(slot, _) if kept.contains(slot) => slot0.into_iter().collect(),
             WriteRequest::Keymap(layer, _) if !write.resent_unchanged => before
                 .iter()
-                .filter(|(l, _, slot)| l == layer && written_macros.contains(slot))
-                .filter(|(l, index, _)| entry_changes(*l, *index))
-                .filter_map(|(_, _, slot)| match slot {
-                    SlotRef::Macro(slot) => Some(TableId::Macro { slot: *slot }),
-                    SlotRef::Advanced(_) => None,
+                .filter(|(l, index, _)| l == layer && entry_changes(*l, *index))
+                .flat_map(|(_, _, slot)| match slot {
+                    SlotRef::Macro(slot) => {
+                        let mut needs = Vec::new();
+                        if written_macros.contains(&SlotRef::Macro(*slot)) {
+                            needs.push(TableId::Macro { slot: *slot });
+                        }
+                        // Emptied by slot 0 and not written again.
+                        if slot.get() != 0 && !kept.contains(slot) {
+                            needs.extend(slot0);
+                        }
+                        needs
+                    }
+                    SlotRef::Advanced(_) => Vec::new(),
                 })
                 .collect(),
             _ => Vec::new(),
         };
-        tables.dedup();
+        let mut seen = Vec::with_capacity(tables.len());
+        tables.retain(|t| {
+            let new = !seen.contains(t);
+            seen.push(*t);
+            new
+        });
         write.completes_binding = !tables.is_empty();
         write.binding_tables = tables;
         if let (true, WriteRequest::AdvancedKey(slot, _)) =
@@ -1178,11 +1267,30 @@ fn mark_bindings(
             }
         }
     }
+
+    // A macro slot that a written layer newly refers to goes out whenever
+    // that layer does (see `crate::group`, rule 3).
+    let tables: Vec<TableId> = writes.iter().map(|w| w.table).collect();
+    let newly: Vec<Vec<MacroSlotId>> = writes
+        .iter()
+        .map(|w| match w.request() {
+            WriteRequest::Keymap(layer, data) if !w.resent_unchanged => {
+                new_macro_references(Some(state.layer(*layer)), data)
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    let mut binding: Vec<Vec<TableId>> = writes.iter().map(|w| w.binding_tables.clone()).collect();
+    link_new_references(&tables, &newly, &mut binding);
+    for (write, tables) in writes.iter_mut().zip(binding) {
+        write.completes_binding = !tables.is_empty();
+        write.binding_tables = tables;
+    }
 }
 
 /// The macro slot for a binding at `(layer, pos)`: the slot only this key
 /// refers to (when the undo can write its content back), else the lowest
-/// slot that is empty and unreferenced.
+/// slot in 1-9 that is empty and unreferenced, else slot 0 if it is.
 fn choose_macro_slot(
     state: &KeymapGroupState,
     target: &Target,
@@ -1204,7 +1312,10 @@ fn choose_macro_slot(
             return Ok(slot);
         }
     }
-    MacroSlotId::all()
+    // Slots 1-9 first: writing slot 0 makes the keyboard empty them, so it
+    // costs a re-send of every other macro (see `crate::group`).
+    slots_cleared_by_slot0()
+        .chain(MacroSlotId::all().filter(|slot| slot.get() == 0))
         .find(|slot| {
             !target.macro_full(state, *slot)
                 && !target.explicitly_set(SlotRef::Macro(*slot))

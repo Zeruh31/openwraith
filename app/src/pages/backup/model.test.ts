@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { ItemReportView, RestorePreview, RestoreReportView, TableRef } from "../../ipc/bindings";
+import type { ItemReportView, PlanItemView, RestorePreview, RestoreReportView, TableRef } from "../../ipc/bindings";
 import { FIXTURES } from "../../preview/registry";
 import {
   buildRestoreIntent,
@@ -39,6 +39,7 @@ const item = (result: ItemReportView["result"], extra: Partial<ItemReportView> =
   key: null,
   commit_trigger: null,
   resent_unchanged: false,
+  resent: null,
   result,
   ...extra,
 });
@@ -148,6 +149,30 @@ describe("plan grouping", () => {
     expect(three?.changes).toBe(0);
     expect(planChanges(groups)).toBe(3);
     expect(profilesWithChanges(groups)).toEqual([1, 2]);
+  });
+
+  it("does not count a macro written again after Macro 1 as a change", () => {
+    const preview = lastOk("restore_preview", "prepare_restore");
+    const write = (slot: number, resent: boolean): PlanItemView => ({
+      table: { table: "macro", slot },
+      key: null,
+      action: {
+        action: "write",
+        packets: 5,
+        changes: [],
+        more_changes: 0,
+        commit_trigger: null,
+        resent_unchanged: false,
+        resent: resent ? "macro_slot0_clears" : null,
+      },
+    });
+    const profiles = preview.plan.profiles.map((p) =>
+      p.profile === 3 ? { ...p, items: [write(0, false), write(2, true), ...p.items] } : p,
+    );
+    const three = groupPlan({ ...preview.plan, profiles }).find((g) => g.profile === 3);
+    expect(three?.writes.map((w) => w.action.resent)).toEqual([null, "macro_slot0_clears"]);
+    expect(three?.changes).toBe(1);
+    expect(three?.packets).toBe(10);
   });
 
   it("finds nothing to write in a matching plan", () => {

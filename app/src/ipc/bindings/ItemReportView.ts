@@ -2,6 +2,7 @@
 import type { CommitTriggerReasonView } from "./CommitTriggerReasonView";
 import type { ItemResultView } from "./ItemResultView";
 import type { KeyRef } from "./KeyRef";
+import type { ResendReasonView } from "./ResendReasonView";
 import type { TableRef } from "./TableRef";
 
 /**
@@ -24,6 +25,11 @@ commit_trigger: CommitTriggerReasonView | null,
  * An unchanged Fn keymap re-sent as the commit trigger.
  */
 resent_unchanged: boolean, 
+/**
+ * Set when it re-sent a macro slot whose content the plan does not
+ * change (written again after macro slot 0).
+ */
+resent: ResendReasonView | null, 
 /**
  * What happened.
  */

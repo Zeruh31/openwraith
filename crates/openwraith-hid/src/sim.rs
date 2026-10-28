@@ -2,10 +2,11 @@
 //! `mock`). No HID device is involved.
 //!
 //! The simulator holds four onboard profiles. Main light, per-key triggers,
-//! both keymap layers, the macro and advanced-key slots and custom colours 1
-//! are per profile by default (OBSERVED on hardware); every table whose
-//! scope was unknown can be configured as per-profile or global with a
-//! [`ScopeConfig`]. Device constants (`0D`,
+//! both keymap layers, the macro and advanced-key slots, custom colours 1,
+//! the dead band and the SOCD pairs are per profile by default, and the
+//! SOCD power is one setting of the whole keyboard (OBSERVED on hardware);
+//! the scope of these and of the tables never written can be configured as
+//! per-profile or global with a [`ScopeConfig`]. Device constants (`0D`,
 //! `0E`, `0A`, `02`, `21/04`, `25 00`) are replayed from the seed backup.
 //!
 //! Read requests are answered with exactly framed replies. Write packets are
@@ -59,12 +60,12 @@
 //!   it).
 //!
 //! The model is a guess at the firmware's behaviour (GUESS): it treats the
-//! tables whose scope is unknown like the per-profile ones (a switch drops
+//! global tables (the SOCD power) like the per-profile ones (a switch drops
 //! their unsaved edits too). [`set_commit_delay`](DeviceSim::set_commit_delay)
 //! with zero turns it off (every write is saved at once, except the keymap
 //! edits below); only tests that need instant saves use it.
 //!
-//! # The base keymap is saved only by a following Fn-keymap write
+//! # Keymap-group edits that need an Fn-keymap write
 //!
 //! On the real keyboard an `18 00` (base keymap) write on its own is acked
 //! and reads back at once, but is gone after a profile switch, even after
@@ -76,22 +77,43 @@
 //! together with the Fn keymap once the commit delay has passed since the
 //! last `18 02` chunk, and a profile switch before that loses both layers.
 //! A partial `18 02` releases nothing (whether it would on the keyboard is
-//! unknown; every hardware probe sent complete tables). The `18 02` chunks
-//! themselves, the dead band, triggers, the main light and the colour tables
-//! keep the quiet-time commit. Whether macro (`19`) and advanced-key (`22`)
-//! edits need the `18 02` too is untested: by default they keep the
-//! quiet-time commit, and [`KeymapCommit::macros_need_fn_write`] and
-//! [`KeymapCommit::advanced_need_fn_write`] make them wait for a complete
-//! `18 02` as well (GUESS; the advanced-key setting is contradicted by
-//! hardware for the site's order and exists to show that the persistence
-//! check reports such a loss). An edit made after the `18 02` waits for the
-//! next one.
+//! unknown; every hardware probe sent complete tables). An edit made after
+//! the `18 02` waits for the next one.
+//!
+//! An advanced-key slot (`22`) is kept only when a complete `18 02` write
+//! is applied in the same save window (from the first unsaved edit to the
+//! save or the reload of the working copy): written before the slot, as
+//! the vendor site does, the slot is kept; a slot written without any
+//! `18 02` reads back at once but is gone after a profile switch
+//! (CONFIRMED on hardware, H20, 2026-10-27: `hw/v02/h20-2b.txt` and
+//! `h20-2.txt`). A complete `18 02` after the slot releases it like a base
+//! keymap (GUESS: never tested). With the delayed commit off every write is
+//! saved at once, so each write is a window of its own. A macro slot (`19`)
+//! written alone is kept (CONFIRMED, H19, `hw/v02/h19-2.txt`). The `18 02`
+//! chunks themselves, the macro slots, the dead band, SOCD, triggers, the
+//! main light and the colour tables keep the quiet-time commit
+//! ([`KeymapCommit::macros_need_fn_write`] makes macros wait too, to show
+//! that the persistence check reports such a loss).
+//!
+//! # Writing macro slot 0 clears slots 1-9
+//!
+//! On the real keyboard any write to macro slot 0 (`19 00`, empty or not)
+//! empties macro slots 1-9 of the active profile; writes to slots 1-9 touch
+//! only their own slot, and other profiles keep theirs (CONFIRMED on
+//! hardware: H24 and `hw/v02/macro-exp.txt`, 2026-10-27; the vendor site
+//! never shows it because it always writes all ten slots in ascending
+//! order). The slots read back as all `FF` afterwards (OBSERVED,
+//! `hw/v02/v02-final.owbackup.json`). The simulator empties them (256 x
+//! `FF`) in the working copy when the **first** chunk of a slot-0 write is
+//! applied (GUESS: the hardware re-read came after all five chunks), and
+//! saves the cleared slots like any other macro edit (a profile switch
+//! before the commit brings them back).
 //!
 //! # Keyboard events
 //!
-//! [`press_socd_hotkey_at`](DeviceSim::press_socd_hotkey_at) switches SOCD
-//! on the keyboard and pushes the `24 02` report, as Fn + Right Shift does
-//! (c15). While a travel test is open (`21 .. 18 02`), a
+//! [`press_socd_hotkey_at`](DeviceSim::press_socd_hotkey_at) switches the
+//! SOCD power (of every profile, by default) on the keyboard and pushes the
+//! `24 02` report, as Fn + Right Shift does (c15, H12, H21). While a travel test is open (`21 .. 18 02`), a
 //! [`travel_script`](DeviceSim::travel_script) is streamed as short and long
 //! `21 .. (05|03) 01` reports (c14 shapes); reports due while the test is
 //! closed are not sent. [`leave_travel_open`](DeviceSim::leave_travel_open)
@@ -121,7 +143,9 @@ pub enum Scope {
     Global,
 }
 
-/// The scope of every table whose real scope is unknown (design section 2).
+/// The scope of the tables a test may choose: the ones OpenWraith writes,
+/// whose scope hardware showed (the defaults), and the ones never written,
+/// whose scope is unknown (design section 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeConfig {
     /// Fn keymap (`18 82`).
@@ -138,8 +162,10 @@ pub struct ScopeConfig {
     pub active_custom_table: Scope,
     /// Side light (`08 01`).
     pub side_light: Scope,
-    /// SOCD pairs and settings (`24 01`, `24 02`).
-    pub socd: Scope,
+    /// SOCD power and hotkey bytes (`24 02`).
+    pub socd_power: Scope,
+    /// SOCD pairs (`24 01`).
+    pub socd_pairs: Scope,
     /// Per-key switch types (`25 02`).
     pub switch_types: Scope,
     /// Polling rate (`21/09`).
@@ -159,7 +185,8 @@ impl ScopeConfig {
             custom_colors2: scope,
             active_custom_table: scope,
             side_light: scope,
-            socd: scope,
+            socd_power: scope,
+            socd_pairs: scope,
             switch_types: scope,
             poll_rate: scope,
             status: scope,
@@ -168,16 +195,18 @@ impl ScopeConfig {
 }
 
 impl Default for ScopeConfig {
-    /// The Fn keymap, advanced keys and custom colours 1 per profile
-    /// (OBSERVED, spec 7.3 and 7.4); dead band and SOCD per profile too (a
-    /// guess: the vendor site re-reads them after a profile switch); the
-    /// others global.
+    /// What hardware showed: the Fn keymap, advanced keys, custom colours 1
+    /// (spec 7.3 and 7.4), the dead band (H16) and the SOCD pairs (H21) per
+    /// profile, the SOCD power one setting of the whole keyboard (H21:
+    /// switched on in profile 2, it reads on in every profile, and Fn +
+    /// Right Shift switches it off in all of them; 2026-10-27). The tables
+    /// never written are global.
     fn default() -> Self {
         ScopeConfig {
             fn_keymap: Scope::PerProfile,
             advanced_keys: Scope::PerProfile,
             dead_band: Scope::PerProfile,
-            socd: Scope::PerProfile,
+            socd_pairs: Scope::PerProfile,
             custom_colors1: Scope::PerProfile,
             ..ScopeConfig::uniform(Scope::Global)
         }
@@ -303,36 +332,38 @@ pub const DEFAULT_COMMIT_DELAY: Duration = Duration::from_secs(1);
 /// Data bytes per keymap chunk (`18 00` / `18 02`).
 const KEYMAP_CHUNK_LEN: usize = 56;
 
-/// Which keymap-group edits the simulated keyboard saves only after a
-/// complete `18 02` (Fn keymap) write was applied after them, instead of by
-/// the quiet-time commit alone (see "The base keymap is saved only by a
-/// following Fn-keymap write" in the [module documentation](self)).
+/// Which keymap-group edits the simulated keyboard saves only together with
+/// a complete `18 02` (Fn keymap) write, instead of by the quiet-time commit
+/// alone (see "Keymap-group edits that need an Fn-keymap write" in the
+/// [module documentation](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeymapCommit {
-    /// Base-keymap (`18 00`) edits wait for a complete `18 02` write, which
-    /// releases them to the quiet-time commit; a profile switch or a power
-    /// cycle before that commit loses them (CONFIRMED on hardware, spec
-    /// 4.8.2). Default: on.
+    /// Base-keymap (`18 00`) edits wait for a complete `18 02` write after
+    /// them, which releases them to the quiet-time commit; a profile switch
+    /// or a power cycle before that commit loses them (CONFIRMED on
+    /// hardware, spec 4.8.2). Default: on.
     pub base_needs_fn_write: bool,
-    /// Macro (`19`) edits wait for a complete `18 02` write too. Untested
-    /// on hardware (GUESS), so off by default: they are saved by the
-    /// quiet-time commit like every other table.
+    /// Macro (`19`) edits wait for a complete `18 02` write after them too.
+    /// Off by default: a macro slot written alone is kept (CONFIRMED on
+    /// hardware, H19 step 2, 2026-10-27); the switch exists to show that
+    /// the persistence check reports such a loss.
     pub macros_need_fn_write: bool,
-    /// Advanced-key (`22`) edits wait for a complete `18 02` write **after
-    /// them**. Contradicted by hardware for the site's order (`22` after
-    /// `18 02` persisted twice, spec 4.8.2), so off by default; it exists to
-    /// show that the persistence check reports such a loss.
+    /// Advanced-key (`22`) edits are saved only when a complete `18 02`
+    /// write is applied in the same save window: before them (CONFIRMED on
+    /// hardware, H20 step 2, 2026-10-27: `18 02` then `22` was kept, a lone
+    /// `22` was lost after a profile switch) or after them (GUESS, never
+    /// tested; it releases them like a base keymap). Default: on.
     pub advanced_need_fn_write: bool,
 }
 
 impl Default for KeymapCommit {
-    /// The hardware finding: the base keymap needs the `18 02`, macros and
-    /// advanced keys do not (the macros' behaviour is unknown).
+    /// The hardware findings: the base keymap and the advanced-key slots
+    /// need the `18 02`, macro slots do not.
     fn default() -> Self {
         KeymapCommit {
             base_needs_fn_write: true,
             macros_need_fn_write: false,
-            advanced_need_fn_write: false,
+            advanced_need_fn_write: true,
         }
     }
 }
@@ -439,6 +470,9 @@ pub struct DeviceSim {
     /// The `18 02` chunks applied to the active profile since the last
     /// release or reload (bit n = chunk n).
     fn_chunks: u16,
+    /// Whether a complete `18 02` write was applied since the working copy
+    /// was last saved or reloaded (the save window, see [`KeymapCommit`]).
+    fn_written_in_window: bool,
     discarded: usize,
     queue: VecDeque<Report>,
     delayed: Vec<Report>,
@@ -516,6 +550,7 @@ impl DeviceSim {
             keymap_commit: KeymapCommit::default(),
             released: HashSet::new(),
             fn_chunks: 0,
+            fn_written_in_window: false,
             discarded: 0,
             queue: VecDeque::new(),
             delayed: Vec::new(),
@@ -597,7 +632,8 @@ impl DeviceSim {
             ReadRequest::CustomColors(CustomTable::Custom2) => s.custom_colors2,
             ReadRequest::ActiveCustomTable => s.active_custom_table,
             ReadRequest::SideLight => s.side_light,
-            ReadRequest::SocdPairs | ReadRequest::SocdSettings => s.socd,
+            ReadRequest::SocdSettings => s.socd_power,
+            ReadRequest::SocdPairs => s.socd_pairs,
             ReadRequest::SwitchTypes => s.switch_types,
             ReadRequest::PollRate => s.poll_rate,
             ReadRequest::Status => s.status,
@@ -781,9 +817,14 @@ impl DeviceSim {
 
     /// Whether the unsaved edit `key` waits for an `18 02` write: its table
     /// waits under the [`KeymapCommit`] rule, and no complete `18 02` was
-    /// applied since the edit.
+    /// applied since the edit (for advanced-key slots: none in the whole
+    /// save window, before the edit included).
     fn waits(&self, key: (u8, SimTable)) -> bool {
-        self.keymap_commit.waits_for_fn_write(key.1) && !self.released.contains(&key)
+        let covered_by_earlier_fn_write =
+            key.1 == SimTable::AdvancedKeys && self.fn_written_in_window;
+        self.keymap_commit.waits_for_fn_write(key.1)
+            && !self.released.contains(&key)
+            && !covered_by_earlier_fn_write
     }
 
     /// Saves the working copy if its commit is due, except the keymap-group
@@ -804,19 +845,21 @@ impl DeviceSim {
             .collect();
         let saved = std::mem::replace(&mut self.unsaved_tables, kept);
         self.tables.extend(saved);
-        // Every released edit was saved now.
+        // Every released edit was saved now, and the save window ends.
         self.released.clear();
+        self.fn_written_in_window = false;
         self.triggers.extend(self.unsaved_triggers.drain());
         self.last_edit = None;
     }
 
     /// An edit was applied to the working copy of `key` (at `offset` into
     /// the table). A table that waits for an `18 02` write waits again, also
-    /// when an earlier edit of it was released. An `18 02` chunk counts
-    /// towards a complete `18 02` (every chunk applied since the last
-    /// release or reload), which releases every waiting edit to the
-    /// quiet-time commit: the commit delay runs from this chunk, the last
-    /// edit. A partial `18 02` releases nothing.
+    /// when an earlier edit of it was released (an advanced-key slot does
+    /// not when a complete `18 02` came earlier in the save window). An
+    /// `18 02` chunk counts towards a complete `18 02` (every chunk applied
+    /// since the last release or reload), which releases every waiting edit
+    /// to the quiet-time commit: the commit delay runs from this chunk, the
+    /// last edit. A partial `18 02` releases nothing.
     fn note_edit(&mut self, key: (u8, SimTable), offset: usize) {
         self.released.remove(&key);
         if key.1 != SimTable::Keymap(Layer::Fn) {
@@ -826,6 +869,7 @@ impl DeviceSim {
         self.fn_chunks |= 1 << (offset / KEYMAP_CHUNK_LEN);
         if usize::try_from(self.fn_chunks.count_ones()).unwrap_or(0) == chunks {
             self.fn_chunks = 0;
+            self.fn_written_in_window = true;
             let rule = self.keymap_commit;
             let waiting: Vec<(u8, SimTable)> = self
                 .unsaved_tables
@@ -848,6 +892,7 @@ impl DeviceSim {
         }
         self.released.clear();
         self.fn_chunks = 0;
+        self.fn_written_in_window = false;
         self.last_edit = None;
     }
 
@@ -860,6 +905,7 @@ impl DeviceSim {
         self.unsaved_triggers.clear();
         self.released.clear();
         self.fn_chunks = 0;
+        self.fn_written_in_window = false;
         self.last_edit = None;
         for profile in 0..=ProfileId::COUNT {
             for table in [
@@ -1473,6 +1519,18 @@ impl DeviceSim {
         })
     }
 
+    /// The firmware's side effect of a macro slot-0 write: slots 1-9 of the
+    /// active profile become empty (256 x `FF`) in the working copy (see
+    /// "Writing macro slot 0 clears slots 1-9" in the
+    /// [module documentation](self)).
+    fn clear_macros_after_slot0(&mut self) {
+        for slot in MacroSlotId::all().filter(|slot| slot.get() != 0) {
+            let table = SimTable::Macro(slot);
+            self.table_mut(table).fill(0xFF);
+            self.note_edit(self.key_of(table), 0);
+        }
+    }
+
     /// Applies a write; returns the reports the keyboard sends.
     fn apply(&mut self, effect: Effect, write: usize) -> Vec<Report> {
         let replies = self.apply_effect(effect, write);
@@ -1540,12 +1598,16 @@ impl DeviceSim {
                 data,
             } => {
                 if !blocked(self, table) {
+                    if offset == 0 && matches!(table, SimTable::Macro(slot) if slot.get() == 0) {
+                        self.clear_macros_after_slot0();
+                    }
                     let bytes = self.table_mut(table);
                     if let Some(dst) = bytes.get_mut(offset..offset + data.len()) {
                         dst.copy_from_slice(&data);
                     }
                     // A complete Fn-keymap write releases the base keymap
-                    // to the quiet-time commit (spec 4.8.2).
+                    // (spec 4.8.2) and the advanced-key slots (H20) to the
+                    // quiet-time commit.
                     self.note_edit(self.key_of(table), offset);
                 }
                 let ack: &[u8] = match table {
@@ -1716,7 +1778,7 @@ fn report(prefix: &[u8]) -> Report {
 }
 
 /// The reply reports of a table read, framed like the keyboard's.
-fn frame(request: ReadRequest, bytes: &[u8]) -> Vec<Report> {
+pub(crate) fn frame(request: ReadRequest, bytes: &[u8]) -> Vec<Report> {
     let packet = request.packet();
     let cmd = packet.cmd();
     let sub = match request {
@@ -2684,6 +2746,214 @@ mod tests {
             assert_eq!(s.table(p1, table), Some(content.as_slice()), "{waits}");
             s.assert_clean();
         }
+    }
+
+    /// The packet of an advanced-key write of a Toggle of A into `slot`.
+    fn toggle_packet(slot: u8) -> WritePacket {
+        use openwraith_protocol::write::Toggle;
+        use openwraith_protocol::{
+            AdvancedKeyDef, AdvancedLimits, AdvancedSlotData, AdvancedSlotId, HidUsage,
+        };
+        let global = TriggerGlobal::from_response(&raw(
+            ReadRequest::TriggerGlobal,
+            &[0x04, 0xaa, 0x02, 0x02, 0x00, 0x05],
+        ))
+        .expect("21/04");
+        let limits = AdvancedLimits::new(&W75, &global, 20).expect("limits");
+        let def = AdvancedKeyDef::Toggle(Toggle {
+            key: HidUsage::new(0x04).expect("usage"),
+        });
+        let data = AdvancedSlotData::from_def(&def, &limits).expect("valid");
+        WriteRequest::AdvancedKey(AdvancedSlotId::new(slot).expect("slot"), data)
+            .steps()
+            .remove(0)
+            .packet
+    }
+
+    /// H20 step 2 (2026-10-27, `hw/v02/h20-2.txt`, `h20-2b.txt`): a lone
+    /// `22` write reads back but is gone after a profile switch; an `18 02`
+    /// before it in the same save window keeps it (CONFIRMED), one after it
+    /// too (GUESS); an `18 02` saved before the slot was written does not.
+    #[test]
+    fn an_advanced_slot_is_kept_only_with_an_fn_write_in_the_same_save_window() {
+        let [p1, p2, ..] = ProfileId::ALL;
+        let zeros = vec![0u8; 528];
+        let empty_slots = vec![0u8; 1600];
+        let fresh = || {
+            let mut s = sim();
+            assert!(s.keymap_commit().advanced_need_fn_write);
+            for p in [p1, p2] {
+                s.set_table(p, SimTable::AdvancedKeys, empty_slots.clone());
+                s.set_table(p, SimTable::Keymap(Layer::Fn), zeros.clone());
+            }
+            s
+        };
+        let slot4 = |s: &DeviceSim| {
+            s.table(p1, SimTable::AdvancedKeys)
+                .map(|b| b[4 * 40..5 * 40].iter().any(|x| *x != 0))
+        };
+
+        // 22 alone: verified in the working copy, lost after the switch.
+        let mut s = fresh();
+        send_all(&mut s, &[toggle_packet(4)]);
+        assert_eq!(slot4(&s), Some(true));
+        assert!(s.read(Duration::from_secs(3)).expect("read").is_none());
+        assert!(s.has_edits_waiting_for_fn_write());
+        reload(&mut s, p2, p1);
+        assert_eq!(slot4(&s), Some(false));
+        assert_eq!(s.discarded_edits(), 1);
+        s.assert_clean();
+
+        // 18 02, then 22 (the site's order): kept.
+        let mut s = fresh();
+        send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+        send_all(&mut s, &[toggle_packet(4)]);
+        assert!(!s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(slot4(&s), Some(true));
+        assert_eq!(s.discarded_edits(), 0);
+
+        // 22, then 18 02: released, kept (GUESS).
+        let mut s = fresh();
+        send_all(&mut s, &[toggle_packet(4)]);
+        send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(slot4(&s), Some(true));
+
+        // An 18 02 the keyboard already saved is another window: lost.
+        let mut s = fresh();
+        send_all(&mut s, &keymap_packets(Layer::Fn, &zeros));
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        send_all(&mut s, &[toggle_packet(4)]);
+        assert!(s.has_edits_waiting_for_fn_write());
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(slot4(&s), Some(false));
+
+        // Without the rule a lone 22 is kept.
+        let mut s = fresh();
+        s.set_keymap_commit(KeymapCommit {
+            advanced_need_fn_write: false,
+            ..KeymapCommit::default()
+        });
+        send_all(&mut s, &[toggle_packet(4)]);
+        assert!(s.read(Duration::from_secs(1)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(slot4(&s), Some(true));
+        s.assert_clean();
+    }
+
+    /// H21 (2026-10-27): the SOCD power is one setting of the whole
+    /// keyboard, the pairs belong to each profile, and Fn + Right Shift
+    /// switches the power of every profile.
+    #[test]
+    fn the_socd_power_is_global_and_the_pairs_per_profile() {
+        use openwraith_protocol::{HidUsage, SocdMode, SocdPair, SocdPairsData, SocdWrite};
+        let [p1, p2, p3, ..] = ProfileId::ALL;
+        let mut s = sim();
+        s.factory_reset_all();
+        let pairs = SocdPairsData::from_pairs(
+            &W75,
+            &[SocdPair {
+                mode: SocdMode::M1,
+                key1: HidUsage::new(0x04).expect("A"),
+                key2: HidUsage::new(0x07).expect("D"),
+            }],
+        )
+        .expect("pairs");
+        let burst: Vec<WritePacket> = WriteRequest::Socd(SocdWrite::new(true, pairs))
+            .steps()
+            .into_iter()
+            .map(|step| step.packet)
+            .collect();
+        s.write_command(&select_packet(p2)).expect("sent");
+        send_all(&mut s, &burst);
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p1, p2);
+        let power = |s: &DeviceSim, p| s.table(p, SimTable::SocdSettings).map(|b| b[0]);
+        let first_pair = |s: &DeviceSim, p| {
+            s.table(p, SimTable::SocdPairs)
+                .map(|b| b[..4].to_vec())
+                .expect("pairs")
+        };
+        for p in ProfileId::ALL {
+            assert_eq!(power(&s, p), Some(1), "profile {p}");
+        }
+        assert_eq!(first_pair(&s, p2), [0x01, 0x00, 0x04, 0x07]);
+        for p in [p1, p3] {
+            assert_eq!(first_pair(&s, p), [0, 0, 0, 0], "profile {p}");
+        }
+        // Fn + Right Shift on profile 2: off everywhere, the pairs stay.
+        s.press_socd_hotkey_at(Duration::from_millis(10));
+        assert!(s.read(Duration::from_millis(50)).expect("push").is_some());
+        for p in ProfileId::ALL {
+            assert_eq!(power(&s, p), Some(0), "profile {p}");
+        }
+        assert_eq!(first_pair(&s, p2), [0x01, 0x00, 0x04, 0x07]);
+        s.assert_clean();
+    }
+
+    /// The experiment of `hw/v02/macro-exp.txt` (2026-10-27): a slot-0
+    /// write (empty or not) empties slots 1-9 of the active profile only;
+    /// a write to another slot touches only that slot.
+    #[test]
+    fn a_macro_slot_0_write_clears_slots_1_to_9_of_the_active_profile() {
+        let [p1, p2, ..] = ProfileId::ALL;
+        let slot = |n: u8| MacroSlotId::new(n).expect("slot");
+        let content = |n: u8| {
+            let mut bytes = vec![0u8; 256];
+            bytes[..12].copy_from_slice(&[n, 0, 0, 4, 0, 1, 0, 0, 0x04 + n, 0x10, 0, 0]);
+            bytes
+        };
+        let mut s = sim();
+        for p in [p1, p2] {
+            for n in 0..10 {
+                s.set_table(p, SimTable::Macro(slot(n)), content(n));
+            }
+        }
+        // Slot 2 alone: only slot 2 changes.
+        send_all(&mut s, &macro_packets(slot(2), &[0u8; 256]));
+        assert_eq!(s.table(p1, SimTable::Macro(slot(2))), Some(&[0u8; 256][..]));
+        for n in [0, 1, 3, 9] {
+            assert_eq!(s.table(p1, SimTable::Macro(slot(n))), Some(&content(n)[..]));
+        }
+        // Slot 0 with content (step 4 of the experiment): slots 1-9 read
+        // all FF after its first chunk already.
+        let packets = macro_packets(slot(0), &content(0));
+        send_all(&mut s, &packets[..1]);
+        for n in 1..10 {
+            assert_eq!(
+                s.table(p1, SimTable::Macro(slot(n))),
+                Some(&[0xFF; 256][..]),
+                "slot {n}"
+            );
+        }
+        send_all(&mut s, &packets[1..]);
+        assert_eq!(s.table(p1, SimTable::Macro(slot(0))), Some(&content(0)[..]));
+        // Saved like any other macro edit; profile 2 keeps its slots.
+        assert!(s.read(Duration::from_secs(2)).expect("read").is_none());
+        reload(&mut s, p2, p1);
+        assert_eq!(
+            s.persisted_table(p1, SimTable::Macro(slot(5))),
+            Some(&[0xFF; 256][..])
+        );
+        for n in 0..10 {
+            assert_eq!(s.table(p2, SimTable::Macro(slot(n))), Some(&content(n)[..]));
+        }
+        // A clear of slot 0 (step 3) empties them too; a switch before the
+        // commit brings them back.
+        s.set_table(p1, SimTable::Macro(slot(4)), content(4));
+        send_all(&mut s, &macro_packets(slot(0), &[0u8; 256]));
+        assert_eq!(
+            s.table(p1, SimTable::Macro(slot(4))),
+            Some(&[0xFF; 256][..])
+        );
+        reload(&mut s, p2, p1);
+        assert_eq!(s.table(p1, SimTable::Macro(slot(4))), Some(&content(4)[..]));
+        assert!(s.discarded_edits() >= 1);
+        s.assert_clean();
     }
 
     #[test]

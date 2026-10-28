@@ -7,9 +7,10 @@ mod common;
 use std::ops::ControlFlow;
 
 use common::{c06_backup, consent, pos, profile, sim_with_profiles, temp_dir, write_bytes};
-use openwraith_hid::protocol::write::{ModTap, Toggle};
+use openwraith_hid::protocol::write::{MacroStep, ModTap, Toggle};
 use openwraith_hid::protocol::{
-    AdvancedKeyDef, AdvancedSlotId, HidUsage, Layer, ProfileId, ReadRequest, TableId,
+    AdvancedKeyDef, AdvancedSlotId, HidUsage, Layer, MacroPlay, MacroProgram, ProfileId,
+    ReadRequest, TableId,
 };
 use openwraith_hid::{
     BACKUP_MAX_FILE_BYTES, BACKUP_SCOPE_EXPORT, Backup, BackupError, BlockCause, DeviceSim,
@@ -58,8 +59,9 @@ fn restore_with(sim: &mut DeviceSim, target: &Backup, options: &RestoreOptions) 
 
 /// Binds Mod-Tap to G and Toggle to H on profile 1 of `sim`.
 fn bind_advanced_keys(sim: &mut DeviceSim) {
-    let edit = KeymapEdit {
-        changes: vec![
+    edit_keymap(
+        sim,
+        vec![
             KeymapChange::BindAdvanced {
                 layer: Layer::Base,
                 pos: key("G"),
@@ -77,6 +79,13 @@ fn bind_advanced_keys(sim: &mut DeviceSim) {
                 slot: None,
             },
         ],
+    );
+}
+
+/// Applies a keymap edit of `changes` to the active profile of `sim`.
+fn edit_keymap(sim: &mut DeviceSim, changes: Vec<KeymapChange>) {
+    let edit = KeymapEdit {
+        changes,
         ..KeymapEdit::default()
     };
     let dir = temp_dir();
@@ -347,11 +356,18 @@ fn importing_a_profile_writes_only_the_chosen_categories_into_the_chosen_profile
     };
     assert_eq!(entry(&sim, 3), Some(vec![0x00, 0x04, 0x00, 0x00]));
     assert_eq!(entry(&sim, 1), Some(vec![0, 0, 0, 0]));
-    assert_eq!(
-        sim.persisted_table(profile(3), SimTable::SocdSettings)
-            .map(|b| b[0]),
-        Some(1)
-    );
+    // SOCD: the pair of the file, in profile 3 only; the power is a setting
+    // of the whole keyboard, not part of the profile, and stays off.
+    let socd = |p| {
+        (
+            sim.persisted_table(profile(p), SimTable::SocdSettings)
+                .map(|b| b[0]),
+            sim.persisted_table(profile(p), SimTable::SocdPairs)
+                .map(|b| b[..4].to_vec()),
+        )
+    };
+    assert_eq!(socd(3), (Some(0), Some(vec![0x01, 0x00, 0x04, 0x07])));
+    assert_eq!(socd(1), (Some(0), Some(vec![0; 4])));
     sim.assert_clean();
 }
 
@@ -390,8 +406,8 @@ fn an_imported_fn_layer_that_replaces_a_profile_switch_needs_its_own_permission(
             reason: SkipReason::KeymapGroupBlocked {
                 cause: BlockCause::CriticalFnOverride { index: 24 }
             },
-            ..
-        }
+            message,
+        } if message.contains("Fn + 2 (#24; a profile switch or the reset)")
     )));
     assert!(
         prepared
@@ -773,6 +789,51 @@ fn an_imported_macro_must_be_steps_openwraith_can_show() {
             ..
         }
     )));
+}
+
+#[test]
+fn an_imported_fn_layer_macro_is_confirmed_and_an_advanced_key_there_is_not() {
+    // Q on the Fn layer plays a macro (H19, 2026-10-27: confirmed); H on the
+    // Fn layer uses an advanced-key slot (not tested on hardware, Q36).
+    let mut source = DeviceSim::from_backup(&c06_backup());
+    let x = usage(0x1b);
+    edit_keymap(
+        &mut source,
+        vec![
+            KeymapChange::BindMacro {
+                layer: Layer::Fn,
+                pos: key("Q"),
+                program: MacroProgram::new(
+                    MacroPlay::Once,
+                    vec![MacroStep::press(x, 0), MacroStep::release(x, 0)],
+                )
+                .expect("program"),
+                slot: None,
+            },
+            KeymapChange::BindAdvanced {
+                layer: Layer::Fn,
+                pos: key("H"),
+                def: AdvancedKeyDef::Toggle(Toggle { key: usage(0x0b) }),
+                slot: None,
+            },
+        ],
+    );
+    let file = read_all(&mut Session::new(&mut source))
+        .expect("backup")
+        .export_profile(profile(1), None)
+        .expect("export");
+    let mut sim = sim_with_profiles(ScopeConfig::default());
+    let prepared = prepare(&mut sim, &file, &import_keys(false));
+    let unverified: Vec<(Layer, u8, &str)> = prepared
+        .plan()
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            PlanWarning::Unverified { layer, index, note } => Some((*layer, *index, note.question)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unverified, [(Layer::Fn, key("H").index(), "Q36")]);
 }
 
 #[test]

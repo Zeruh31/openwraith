@@ -33,25 +33,34 @@
 //! reported as [`ItemResult::MaybeLost`].
 //!
 //! Whether the keyboard keeps a table after the settle is CONFIRMED for
-//! triggers, the main light, the dead band, custom colours 1 and the keymap
-//! layers, and for advanced-key slots written after a complete Fn keymap;
-//! it is not tested for macro slots and SOCD. The **persistence check**
-//! ([`PersistenceCheckMode`]) proves it: it switches to the lowest other
-//! profile and back (the lighting changes briefly) and reads the written
-//! tables again; a table the keyboard did not keep is reported
-//! [`ItemResult::Lost`]. [`EditOptions::default`] checks exactly the tables
-//! without that evidence ([`PersistenceCheckMode::Auto`]); trigger and light
-//! edits ([`apply_trigger_edit`], [`apply_light_edit`]) never check.
+//! triggers, the main light, the dead band, custom colours 1, the keymap
+//! layers, the macro slots and SOCD (hardware tests H19, H21 and H22 of
+//! 2026-10-27), and for advanced-key slots written after a complete Fn
+//! keymap. The **persistence check** ([`PersistenceCheckMode`]) proves it:
+//! it switches to the lowest other profile and back (the lighting changes
+//! briefly) and reads the written tables again; a table the keyboard did
+//! not keep is reported [`ItemResult::Lost`]. [`EditOptions::default`]
+//! checks exactly the tables without that evidence
+//! ([`PersistenceCheckMode::Auto`]; today only advanced-key slots written
+//! without the Fn keymap before them,
+//! [`CommitTriggerMode::OmitForSlotsOnly`]); trigger and light edits
+//! ([`apply_trigger_edit`], [`apply_light_edit`]) never check.
 //!
 //! # The keymap group
 //!
 //! Key assignments, macros and advanced keys are one group (see
 //! [`keymap`]): it is written in the vendor site's order (changed macro
 //! slots, the base keymap, the Fn keymap, changed advanced-key slots), the
-//! Fn keymap is written after any base keymap (the keyboard keeps a base
-//! keymap only then, spec 4.8.2) and, when only slots change, between the
-//! macro and the advanced-key slots, and a cancellation never separates a
-//! binding from what it needs.
+//! Fn keymap is written after any base keymap and before any advanced-key
+//! slot, also unchanged: the keyboard keeps a base keymap only with an Fn
+//! keymap after it (spec 4.8.2), and an advanced-key slot when a complete
+//! Fn keymap is written in the same save (H20 of 2026-10-27: kept with the
+//! Fn keymap before it, lost without one); macro slots need no Fn keymap. A
+//! cancellation never separates a binding from what it needs. Writing
+//! macro slot 0 makes the keyboard empty macro slots 1-9, so an edit that
+//! writes it writes every slot 1-9 that keeps content again right after it
+//! (see [`crate::group`]); a new macro therefore takes a free slot in 1-9
+//! first.
 
 mod colors;
 mod dead_band;
@@ -71,13 +80,14 @@ use serde::Serialize;
 
 use crate::error::{BackupError, ErrorInfo, ErrorKind, RestoreError, SessionError};
 use crate::group::{
-    DanglingBinding, GroupCursor, GroupView, GroupWrite, SlotRef, Step, dangling_after,
+    ClearedMacro, DanglingBinding, GroupCursor, GroupView, GroupWrite, ResendReason, SlotRef, Step,
+    clears_other_macros,
 };
 use crate::persist::{CheckOutcome, persistence_confirmed, recheck, reload_profile};
 use crate::restore::{
-    Checked, CommitTriggerReason, ItemReport, ItemResult, Outcome, PersistenceCheck, TableFailure,
-    TableState, WriteProgress, apply_to_view, confirm_profile, profile_after_gate_failure,
-    write_checked,
+    Checked, CommitTriggerReason, ItemReport, ItemResult, Outcome, PersistenceCheck, SentWrite,
+    TableFailure, TableState, WriteProgress, confirm_profile, emptied_by_slot0,
+    emptied_macro_states, left_behind, profile_after_gate_failure, write_checked,
 };
 use crate::safety::SavedBackup;
 use crate::session::{ForeignActivity, Session};
@@ -109,8 +119,7 @@ pub enum PersistenceCheckMode {
     /// Always, after a complete edit that wrote anything.
     Always,
     /// When a written table is not known to be kept after the settle
-    /// (macro slots, SOCD, advanced-key slots without an Fn keymap before
-    /// them).
+    /// (advanced-key slots without an Fn keymap before them).
     #[default]
     Auto,
 }
@@ -268,12 +277,10 @@ pub enum EditWarning {
     /// The vendor site sends the same bytes, but OpenWraith has not yet
     /// tested on a W75 that it does what it says.
     Unverified(UnverifiedNote),
-    /// The table's profile scope is unknown: it may change the other
-    /// profiles too (dead band, SOCD).
-    ScopeUnknown {
-        /// The table.
-        table: TableId,
-    },
+    /// The SOCD power is one setting of the whole keyboard: switching it
+    /// on or off changes every profile (the pairs belong to the profile;
+    /// H21, 2026-10-27).
+    SocdPowerAllProfiles,
     /// A malformed macro or advanced-key entry of a written layer is kept
     /// byte for byte.
     MalformedReferencePreserved {
@@ -308,12 +315,6 @@ pub enum EditWarning {
     /// The colours are written to custom table 1, which the keyboard shows
     /// only in the Custom light mode, and the light is in another mode.
     NotShownUntilCustomMode,
-    /// Whether the keyboard keeps these tables across a power loss is not
-    /// tested.
-    PowerLossUntested {
-        /// The tables.
-        tables: Vec<TableId>,
-    },
     /// SOCD can also be switched on the keyboard with Fn + Right Shift.
     SocdHotkey,
     /// The edit replaces content the undo (a restore of the safety backup)
@@ -348,13 +349,19 @@ pub struct PlannedEditWrite {
     /// Whether it re-sends an unchanged Fn keymap as the commit trigger.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub resent_unchanged: bool,
-    /// Whether it completes a binding of a layer written in the same group
-    /// (it is written even after a cancellation).
+    /// Whether it completes a binding of a layer written in the same group,
+    /// or writes a macro slot 1-9 again after macro slot 0 (it is written
+    /// even after a cancellation).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub completes_binding: bool,
     /// The tables whose binding it completes.
     #[serde(skip)]
     pub(crate) binding_tables: Vec<TableId>,
+    /// Set when it re-sends a macro slot whose content the edit does not
+    /// change: macro slot 0 is written before it, which makes the keyboard
+    /// empty slots 1-9 (see [`crate::group`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resent: Option<ResendReason>,
     #[serde(skip)]
     request: WriteRequest,
     /// The bytes the write was planned against (`changed_since_plan`).
@@ -375,9 +382,19 @@ impl PlannedEditWrite {
             resent_unchanged: false,
             completes_binding: false,
             binding_tables: Vec::new(),
+            resent: None,
             request,
             planned,
         }
+    }
+
+    /// A re-send of `request` (a macro slot 1-9 after macro slot 0) for
+    /// `reason`, planned against `planned`.
+    pub(crate) fn resend(request: WriteRequest, reason: ResendReason, planned: TableState) -> Self {
+        let mut write = PlannedEditWrite::new(request, None, planned);
+        write.summary = format!("{} re-sent: {}", write.request, reason.text());
+        write.resent = Some(reason);
+        write
     }
 
     /// The request (for a packet preview).
@@ -388,6 +405,21 @@ impl PlannedEditWrite {
     /// The packets of the first attempt, in order (for a packet preview).
     pub fn steps(&self) -> Vec<WriteStep> {
         self.request.steps()
+    }
+
+    /// Whether it writes a macro slot 1-9 with content after the plan's
+    /// macro slot-0 write, which makes the keyboard empty slots 1-9 (see
+    /// [`crate::group`]): it is written even after a cancellation once
+    /// slot 0 was sent. A macro write can also complete a binding without
+    /// any slot-0 write (a slot a written layer newly refers to), so
+    /// [`completes_binding`](Self::completes_binding) alone does not say
+    /// this.
+    pub fn follows_macro_slot_0(&self) -> bool {
+        matches!(&self.request, WriteRequest::Macro(slot, data) if slot.get() != 0 && !data.is_empty())
+            && self
+                .binding_tables
+                .iter()
+                .any(|table| clears_other_macros(*table))
     }
 }
 
@@ -444,11 +476,16 @@ pub struct EditReport {
     /// part-way (the undo command restores them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dangling: Vec<DanglingBinding>,
+    /// Macro slots left empty because the edit wrote macro slot 0 (which
+    /// makes the keyboard empty slots 1-9) and stopped before writing them
+    /// again (the undo command restores them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cleared_macros: Vec<ClearedMacro>,
     /// A cancellation was asked for (Ctrl+C), but every write still made
     /// after it was needed to keep the keymap group consistent (the Fn
     /// keymap that makes the keyboard save a base keymap, a slot a written
-    /// key refers to): with [`Outcome::Completed`] everything planned was
-    /// written.
+    /// key refers to, the macro slots after slot 0): with
+    /// [`Outcome::Completed`] everything planned was written.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cancel_requested: bool,
 }
@@ -576,6 +613,7 @@ pub(crate) fn run_edit<T: WriteTransport>(
                 summary: w.summary.clone(),
                 commit_trigger: w.commit_trigger,
                 resent_unchanged: w.resent_unchanged,
+                resent: w.resent,
                 result: ItemResult::NotAttempted,
             })
             .collect(),
@@ -586,6 +624,7 @@ pub(crate) fn run_edit<T: WriteTransport>(
         persistence: None,
         warnings: run.warnings.to_vec(),
         dangling: Vec::new(),
+        cleared_macros: Vec::new(),
         cancel_requested: false,
     };
     if !saved.covers(profile) || saved.product() != run.product {
@@ -620,6 +659,8 @@ pub(crate) fn run_edit<T: WriteTransport>(
     // Whether any packet of each write went out (a write that failed after
     // its first packet may have changed the keyboard's working copy).
     let mut started = vec![false; writes.len()];
+    // Whether the edit's macro slot-0 write went out (see `crate::group`).
+    let mut macros_cleared = false;
     for (index, write) in writes.iter().enumerate() {
         let start = WriteProgress::Writing {
             profile: profile.get(),
@@ -687,17 +728,25 @@ pub(crate) fn run_edit<T: WriteTransport>(
             Some(trigger) => Checked::CommitTrigger(trigger),
             None => Checked::Table(&write.request),
         };
+        // After the edit's own macro slot-0 write, the keyboard has emptied
+        // macro slots 1-9: not a change by someone else.
+        let also_expected = if macros_cleared && emptied_by_slot0(write.table) {
+            emptied_macro_states()
+        } else {
+            Vec::new()
+        };
         let result = write_checked(
             &mut writer,
             profile,
             checked,
             &write.planned,
-            &[],
+            &also_expected,
             &mut on_packet,
         );
         if let Some(flag) = started.get_mut(index) {
             *flag = any_packet;
         }
+        macros_cleared |= any_packet && clears_other_macros(write.table);
         let sent = match result {
             Ok(result) => {
                 let sent = result.was_sent();
@@ -777,14 +826,24 @@ pub(crate) fn run_edit<T: WriteTransport>(
     report.foreign_activity = writer.foreign_activity_seen();
     if let (false, Some(before)) = (report.is_success(), run.group_before) {
         // Every write whose packets (some or all) went out counts as
-        // applied: a key that may refer to an empty slot is reported.
-        let mut after = before.clone();
-        for ((write, item), started) in writes.iter().zip(&report.items).zip(&started) {
-            if item.result.was_sent() || *started {
-                apply_to_view(&mut after, &write.request);
-            }
-        }
-        report.dangling = dangling_after(profile.get(), before, &after);
+        // applied, a write the keyboard may drop or that did not complete
+        // (a failed base keymap is never kept) as applied or not: a key
+        // that may refer to an empty slot is reported, and so is a macro
+        // slot the slot-0 write emptied.
+        let sent: Vec<SentWrite<'_>> = writes
+            .iter()
+            .zip(&report.items)
+            .zip(&started)
+            .map(|((write, item), started)| SentWrite {
+                request: &write.request,
+                sent: item.result.was_sent(),
+                started: *started,
+                may_be_dropped: item.result.may_be_dropped(),
+            })
+            .collect();
+        let (dangling, cleared) = left_behind(profile.get(), before, &sent);
+        report.dangling = dangling;
+        report.cleared_macros = cleared;
     }
     report
 }
@@ -907,13 +966,7 @@ fn persistence_check<T: WriteTransport>(
         if write.resent_unchanged {
             continue;
         }
-        match recheck(
-            writer,
-            &write.request,
-            &mut item.result,
-            &|_| false,
-            socd_mark,
-        ) {
+        match recheck(writer, &write.request, &mut item.result, socd_mark) {
             Ok(CheckOutcome::Persisted) => check.persisted += 1,
             Ok(CheckOutcome::Lost) => check.lost += 1,
             Ok(CheckOutcome::NotChecked) => {

@@ -18,14 +18,19 @@ use crate::writer::{CommitWait, WriteWarning, Writer};
 
 /// Whether hardware tests showed that the keyboard keeps a write of `table`
 /// after the commit settle. `complete_fn_before`: an advanced-key slot was
-/// written in a keymap group that sent a complete Fn keymap before it (the
-/// site's order, which persisted in c16 B1 and the restore of 2026-10-27).
+/// written in a keymap group that sent a complete Fn keymap before it.
 ///
 /// * triggers, main light, dead band, custom colours 1, both keymap layers
 ///   (the base keymap is always followed by the Fn keymap): CONFIRMED;
-/// * advanced-key slots: only after a complete Fn keymap;
-/// * macro slots, SOCD and everything else: not tested (hardware tests
-///   H19, H21, H22 in docs/HARDWARE_TESTS.md).
+/// * macro slots, also written alone: CONFIRMED (H19 step 2, 2026-10-27);
+/// * SOCD (power and pairs): CONFIRMED (H21, 2026-10-27: `persisted` after
+///   both writes);
+/// * advanced-key slots: only after a complete Fn keymap in the same save
+///   window (CONFIRMED, H20 step 2, 2026-10-27: without it the keyboard
+///   drops the slot at the next profile switch);
+/// * everything else: not counted as tested.
+///
+/// Each of these also survived a USB power cycle (H22, 2026-10-27).
 pub(crate) fn persistence_confirmed(table: TableId, complete_fn_before: bool) -> bool {
     match table {
         TableId::Triggers
@@ -36,7 +41,9 @@ pub(crate) fn persistence_confirmed(table: TableId, complete_fn_before: bool) ->
         }
         | TableId::Keymap {
             layer: Layer::Base | Layer::Fn,
-        } => true,
+        }
+        | TableId::Macro { .. }
+        | TableId::Socd => true,
         TableId::AdvancedKey { .. } => complete_fn_before,
         _ => false,
     }
@@ -74,9 +81,8 @@ pub(crate) enum CheckOutcome {
     Persisted,
     /// It did not ([`ItemResult::Lost`]).
     Lost,
-    /// Not counted: not a written item, a table that may be shared and
-    /// holds what the operation wrote elsewhere, or SOCD switched on the
-    /// keyboard since it was written ([`socd_toggled`]).
+    /// Not counted: not a written item, or SOCD switched on the keyboard
+    /// since it was written ([`socd_toggled`]).
     NotChecked,
 }
 
@@ -111,17 +117,14 @@ pub(crate) fn socd_toggled(
 
 /// Reads the tables of `request` again (the profile was just reloaded) and
 /// turns a [`ItemResult::Written`] `result` into
-/// [`Persistence::Persisted`] or [`ItemResult::Lost`]. A state accepted by
-/// `written_elsewhere` (a possibly shared table that holds what the
-/// operation wrote in another profile) stays [`Persistence::NotChecked`],
-/// and so does a SOCD write whose power alone differs after a SOCD switch
-/// on the keyboard since `socd_mark` ([`socd_toggled`]; with the warning
-/// [`WriteWarning::SocdToggledOnKeyboard`]).
+/// [`Persistence::Persisted`] or [`ItemResult::Lost`]. A SOCD write whose
+/// power alone differs after a SOCD switch on the keyboard since
+/// `socd_mark` stays [`Persistence::NotChecked`] ([`socd_toggled`]; with
+/// the warning [`WriteWarning::SocdToggledOnKeyboard`]).
 pub(crate) fn recheck<T: WriteTransport>(
     writer: &mut Writer<'_, T>,
     request: &WriteRequest,
     result: &mut ItemResult,
-    written_elsewhere: &dyn Fn(&TableState) -> bool,
     socd_mark: Option<u64>,
 ) -> Result<CheckOutcome, WriteError> {
     let ItemResult::Written {
@@ -139,7 +142,6 @@ pub(crate) fn recheck<T: WriteTransport>(
         replies.push(writer.read(read)?);
     }
     let now = state_of(request, &replies);
-    let elsewhere = written_elsewhere(&now);
     let toggled = socd_toggled(writer.session().socd_pushes(), request, &now, socd_mark);
     let (outcome, item) = match request.check(&replies) {
         Ok(()) => (
@@ -149,15 +151,6 @@ pub(crate) fn recheck<T: WriteTransport>(
                 packets,
                 warnings,
                 persistence: Persistence::Persisted,
-            },
-        ),
-        Err(_) if elsewhere => (
-            CheckOutcome::NotChecked,
-            ItemResult::Written {
-                sends,
-                packets,
-                warnings,
-                persistence: Persistence::NotChecked,
             },
         ),
         Err(_) if toggled.is_some() => {

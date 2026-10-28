@@ -57,7 +57,7 @@ the same two libraries.
 | `group`, `persist` (crate-private) | The keymap group's cursor (cancellation rules, completing bindings, dangling references) shared by restores and edits; the persistence check and its evidence table (`persistence_confirmed`). |
 | `error` | Error types and `ErrorKind` (serialisable, for a GUI). |
 | `mock` (feature `mock`) | `MockTransport`: replays the captures; can add noise, inject unsolicited reports and drop replies. Read-only. |
-| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the write forms (W1-W11, T1/T2), configurable table scopes, fault injection, a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time; `sent_times()` gives the time of every packet) and the keyboard's **delayed commit** (writes go to a working copy of the active profile, saved 1 s of virtual time after the last write; a select or `power_cycle()` before that discards them, counted by `discarded_edits()`; `persisted_table` / `persisted_trigger` show the saved state; on by default), the **keymap commit rule** (`KeymapCommit`, on by default: the timer never saves base-keymap edits on their own; a complete `18 02` write, every chunk applied, releases them to it, so base and Fn keymap are saved 1 s after the last `18 02` chunk and a switch before that loses both; a partial `18 02` releases nothing; `has_edits_waiting_for_fn_write()`; `macros_need_fn_write` and `advanced_need_fn_write`, both off by default and untested on hardware, make macro or advanced-key edits wait for an `18 02` too, so that the tests can show that the persistence check reports such a loss), profile switches made on the keyboard at a virtual time, with or without a profile report (`switch_profile_at`; the profile is reloaded as of that time), and keyboard events: Fn + Right Shift (`press_socd_hotkey_at`), scripted key movements for the travel stream (`travel_script`), a test left open by a crashed run (`leave_travel_open`). |
+| `sim` (feature `mock`) | `DeviceSim`: a stateful W75 with four profiles, an independent parser of the write forms (W1-W11, T1/T2), fault injection, a virtual clock (reads "wait" without sleeping; reports and acks can be scheduled at a virtual time; `sent_times()` gives the time of every packet) and the keyboard's **delayed commit** (writes go to a working copy of the active profile, saved 1 s of virtual time after the last write; a select or `power_cycle()` before that discards them, counted by `discarded_edits()`; `persisted_table` / `persisted_trigger` show the saved state; on by default), the **keymap commit rule** (`KeymapCommit`, on by default: the timer never saves base-keymap edits on their own; a complete `18 02` write, every chunk applied, releases them to it, so base and Fn keymap are saved 1 s after the last `18 02` chunk and a switch before that loses both; a partial `18 02` releases nothing; `has_edits_waiting_for_fn_write()`; `advanced_need_fn_write`, on by default, keeps advanced-key edits only when a complete `18 02` is applied in the same save window: before them as on hardware (H20), or after them, a GUESS that was never tested; `macros_need_fn_write`, off by default because a macro slot is kept alone (H19), makes macro edits wait for an `18 02` too, so that the tests can show that the persistence check reports such a loss), the **macro slot-0 clear** (the first chunk of any `19 00` write empties slots 1-9 of the active profile to all `FF`, saved like any macro edit; the chunk is a GUESS, hardware showed only that the slots were empty after the whole write), table scopes as found on hardware by default (`ScopeConfig`: the dead band and the SOCD pairs per profile, the SOCD power one setting of the whole keyboard, which Fn + Right Shift toggles; a test may choose otherwise, and the tables OpenWraith never writes stay configurable), profile switches made on the keyboard at a virtual time, with or without a profile report (`switch_profile_at`; the profile is reloaded as of that time), and keyboard events: Fn + Right Shift (`press_socd_hotkey_at`), scripted key movements for the travel stream (`travel_script`), a test left open by a crashed run (`leave_travel_open`). |
 
 ### `openwraith-cli`
 
@@ -128,7 +128,8 @@ keyboard. This is enforced by types, not by convention:
 Only these forms, all sent by the vendor site and accepted by the keyboard
 in the captures (byte layouts in the `write` module documentation and spec
 section 3; W1-W9 checked on hardware by OpenWraith in Phase 2, W10, W11 and
-T1/T2 in capture session 3):
+T1/T2 in capture session 3, and all of them with OpenWraith's own writes in
+the hardware session H12-H24 of 2026-10-27):
 
 | # | Write | Packets | Acknowledgement |
 |---|---|---|---|
@@ -137,12 +138,12 @@ T1/T2 in capture session 3):
 | W3 | `07 00` main light | 1 | none |
 | W4 | `09 00` custom colour table 1 | 8 | `09 00 00 00 00` each |
 | W5 | `18 00` / `18 02` keymap base / Fn | 10 | `18 00 00 00 00` each |
-| W6 | `19 0n` macro slot | 5 | `19 00 00 00 00` each |
+| W6 | `19 0n` macro slot (a write to slot 0 empties slots 1-9, rule 6 below) | 5 | `19 00 00 00 00` each |
 | W7 | `22 SS` advanced-key slot cleared (all zero) | 1 | `22 00 00 00 00` |
 | W8 | `21 .. 18 MM` trigger, MM in `00`/`0C`/`0D`, **one key per packet** | 1 | `21 .. 01 00` |
 | W9 | `26 01` dead band | 5 | `26 01 00 00 00` each |
 | W10 | `22 SS` advanced-key slot with a DKS, Mod-Tap or Toggle (c16) | 1 | `22 00 00 00 00` |
-| W11 | SOCD: `24 03 .. 01 PP` power, then `24 00` pair chunks 0 and 1 (c15) | 3 | power: none expected (`AckSpec::Possible`, listened for during a 50 ms pause), chunks: `24 00 00 00 00` |
+| W11 | SOCD: `24 03 .. 01 PP` power (one setting of the whole keyboard), then `24 00` pair chunks 0 and 1 (the active profile's pairs; c15) | 3 | power: none expected (`AckSpec::Possible`, listened for during a 50 ms pause), chunks: `24 00 00 00 00` |
 | T1 / T2 | `21 .. 18 02` + the full layout mask: open the travel test; `21 .. 18 03`: close it (c14) | 1 | `21 .. 01 00` |
 
 `WritePacket` has no public constructor and no conversion from `OutPacket`
@@ -295,9 +296,10 @@ because it reads the working copy. This was found on hardware: a restore of
 profile 2 reported "written and verified" and switched back to profile 1
 within milliseconds, and the write was gone (CONFIRMED, measured threshold
 between 0.8 s and 1.0 s; [PROTOCOL.md](PROTOCOL.md) section 4.5.3, "Delayed
-commit"). A power loss in that second very likely loses the write too
-(untested). Four rules follow, all in `openwraith-hid`, and a fifth for the
-base keymap, which the keyboard does not save on a timer at all:
+commit"). A power loss in that second loses the write too (desktop-app
+test A10: an unplug during the wait lost it). Four rules follow, all in
+`openwraith-hid`, a fifth for the keymap group, parts of which the
+keyboard does not save on a timer at all, and a sixth for macro slot 0:
 
 1. **No switch before the save.** `Session` records when the last write
    packet that changes a setting was sent (`last_write_at`, on the
@@ -333,10 +335,10 @@ base keymap, which the keyboard does not save on a timer at all:
    reported `written` with `persistence: persisted`, or `lost`
    (`ItemResult::Lost`, with the difference read after the switch); a lost
    write fails the restore with `ErrorKind::NotPersisted` and the message
-   says to run the restore again or undo it. A table whose profile scope is
-   unknown that holds what this restore wrote to it in another profile is
-   left `not_checked` (the final check compares it with the backup;
-   `PersistenceCheck::not_checked` counts them).
+   says to run the restore again or undo it. A SOCD write whose power alone
+   differs after a switch on the keyboard (Fn + Right Shift) since the write
+   is left `not_checked` (`PersistenceCheck::not_checked` counts it): the
+   power is then the user's.
 4. **A switch before the save is never reported as done.** The keyboard
    can be switched on its own keys (or by another program) during the
    settle. The W75 reports such a switch (PROTOCOL.md Q2, observed in app
@@ -351,14 +353,15 @@ base keymap, which the keyboard does not save on a timer at all:
    write as discarded (nothing waits for it any more; the switch back to
    the original profile goes out at once) and set
    `Writer::commit_interrupted`, which is also true when the connection was
-   lost before the settle had passed (an unplug very likely loses unsaved
-   edits). Restores and edits then report the written, unconfirmed tables of
+   lost before the settle had passed (an unplug loses unsaved edits,
+   hardware test A10). Restores and edits then report the written, unconfirmed tables of
    that profile as `ItemResult::MaybeLost` ("written and verified, but may
    not have been saved"), not `written`, and the known active profile is
    the one the keyboard reported. A switch found at the end of a wait counts
    as made before the save, because its time is unknown. A reset
    notification is not counted: it reports a reset of the settings.
-5. **The base keymap needs the Fn keymap after it (commit trigger).** The
+5. **The base keymap needs the Fn keymap after it, advanced-key slots
+   need it before them (commit trigger).** The
    settle is not enough for the base keymap: written alone (`18 00`), it
    was gone after a profile switch even 6 s later; followed by an `18 02`,
    both layers were kept, and `18 02`, the dead band, triggers, the main
@@ -370,14 +373,18 @@ base keymap, which the keyboard does not save on a timer at all:
    slots. Whenever the base keymap is written the Fn keymap follows,
    re-sent unchanged if it already matches
    (`CommitTriggerReason::BaseKeymap`; shown as "Fn keymap (18 02) re-sent
-   unchanged to make the keyboard save the base keymap"). Whether macro
-   (`19`) slots need the trigger too is untested; advanced-key slots
-   written after a complete Fn keymap were kept (c16, the restore of
-   2026-10-27). So a group that writes only slots gets the unchanged Fn
-   keymap between the macro and the advanced-key slots, as the site does
-   (`CommitTriggerReason::MacrosOrAdvancedKeys`); only the hardware-test
-   mode of the CLI (`--commit-trigger skip`) leaves it out, and then the
-   persistence check always runs. If the Fn keymap cannot be
+   unchanged to make the keyboard save the base keymap"). The keyboard
+   keeps an advanced-key slot (`22`) only when a complete Fn keymap is
+   written in the same save window (CONFIRMED, hardware test H20,
+   2026-10-27: a lone `22` was lost at the next profile switch, `18 02`
+   then `22` was kept); macro slots (`19`) are kept without it
+   (CONFIRMED, H19). So a group that writes advanced-key slots while
+   neither layer differs gets the unchanged Fn keymap before them, after
+   the macro slots, as the site does (`CommitTriggerReason::AdvancedKeys`,
+   a required write, not a precaution); a group that writes only macro
+   slots gets none. Only the hardware-test mode of the CLI
+   (`--commit-trigger skip`) leaves it out, and then the persistence check
+   always runs. If the Fn keymap cannot be
    written (an unusable reply), the whole group is skipped
    (`BlockCause::FnKeymapNotWritable`, or `Incomplete` when the Fn keymap is
    missing): the base keymap is never written alone. The Fn-keymap write
@@ -385,10 +392,16 @@ base keymap, which the keyboard does not save on a timer at all:
    is sent once more (see the write gate above). A Ctrl+C after a group
    table was sent skips the group's other tables (they stay
    `NotAttempted`, a not-yet-written base keymap included), still sends
-   the Fn keymap (an `18 02` alone is kept) and every write that completes
-   a binding (`completes_binding`: an advanced-key slot a written layer
-   refers to, a layer that moves a key away from a macro slot already
-   written in the group, cleared or rewritten), and stops after them; when
+   the Fn keymap once the base keymap was sent (an `18 02` alone is kept;
+   a sent macro slot alone does not need it, so after a Ctrl+C during the
+   macro slots it is skipped too, and with it any Fn-layer change that
+   would bind a key to a macro slot the Ctrl+C skipped) and every write
+   that completes a binding (`completes_binding`: an advanced-key slot a
+   written layer refers to, a layer that moves a key away from a macro
+   slot already written in the group, cleared or rewritten, a macro slot
+   1-9 after slot 0, and a macro slot that a layer newly refers to
+   whenever that layer still goes out: `group::link_new_references`), and
+   stops after them; when
    those were the last planned writes, the restore did complete and ends
    normally, persistence check included, with
    `RestoreReport::cancel_requested` set (the CLI says "Ctrl+C received"
@@ -399,9 +412,34 @@ base keymap, which the keyboard does not save on a timer at all:
    be lost" in the CLI), not as written. The persistence check stays the
    safety net: it reads the base keymap (and every other changed table)
    again after a profile switch; it does not count an unchanged re-sent Fn
-   keymap, which reads the same whether the keyboard kept it or not. A
-   slot the keyboard does not keep without a later Fn keymap would be
-   reported lost.
+   keymap, which reads the same whether the keyboard kept it or not. An
+   advanced-key slot written without the Fn keymap before it is reported
+   lost (H20 step 2).
+6. **Macro slot 0 empties slots 1-9.** Any write to macro slot 0 makes the
+   keyboard empty macro slots 1-9 of the active profile; a write to another
+   slot touches only that slot (CONFIRMED, hardware test H24 and a
+   dedicated experiment, 2026-10-27; PROTOCOL.md 4.9.2). The vendor site
+   never shows it because it always writes all ten slots in ascending
+   order. So every plan that writes slot 0 (a restore, an import, an edit,
+   the clear of an orphan slot, an undo) writes every slot 1-9 whose target
+   content is not empty right after it, in ascending order and before the
+   keymap layers (`PlannedWrite::resent` / `PlannedEditWrite::resent`,
+   `ResendReason`: "re-sent: writing macro slot 0 makes the keyboard clear
+   slots 1-9"). Once slot 0 was sent these re-sends are sent even after a
+   cancellation (the cursor treats them like `completes_binding`), and so
+   is a layer write that moves a key off a slot slot 0 emptied. The re-read
+   before each later macro write expects the slots 1-9 that this plan's own
+   slot-0 write emptied (all `FF` or all `00`), so they are not "changed
+   after planning". A re-send that fails is reported with the macros left
+   empty (`cleared_macros`) and the keys that now refer to an empty slot
+   (`dangling`), also the keys of a layer write the keyboard may drop: a
+   base keymap whose Fn keymap never came (`BaseKeymapNotSaved`) or one the
+   persistence check found lost goes back to its old entries, which may
+   point at a slot slot 0 emptied (`restore::left_behind` counts both the old
+   and the new entries of such a write). A new macro takes the lowest free slot in 1-9 and slot 0
+   only when 1-9 are taken; a slot 1-9 whose content OpenWraith cannot
+   write back blocks a restore or import (`non_canonical_macro`) and makes
+   an edit that writes slot 0 `not undoable` (refused unless allowed).
 
 Edits switch away and back only for tables whose keeping is not proven on
 hardware (see "Edits" below); trigger, light, colour, dead-band and keymap
@@ -472,29 +510,37 @@ openwraith restore FILE [--profile N]...
       select_profile                          nothing left to wait for
       for each table, in order: triggers (one key per packet), dead band,
       SOCD (power and pairs in one burst), keymap group (every changed
-      macro slot, 18 00, 18 02 right after it, the advanced-key slots;
-      no layer differs: the macro slots, the unchanged 18 02, the
-      advanced-key slots), custom colours 1, main light (W2 only on a
+      macro slot, after slot 0 every slot 1-9 that keeps content, 18 00,
+      18 02 right after it, the advanced-key slots; no layer differs: the
+      macro slots, the unchanged 18 02 only if advanced-key slots follow,
+      the advanced-key slots), custom colours 1, main light (W2 only on a
       mode change):
         cancelled (Ctrl+C)? stop here; inside the keymap group after a
                             group table was sent: skip the group's
-                            other tables, send its 18 02, stop after it
+                            other tables, send its 18 02 if the base
+                            keymap was sent, the slot-0 re-sends and
+                            the writes that complete a binding, stop
+                            after them
         confirm 21/11
         re-read exactly the bytes the write changes
-        already the target?        -> AlreadyMatched (a global table written
-                                      in an earlier profile); the 18 02
-                                      commit trigger is sent anyway
-        neither planned nor ours?  -> changed_since_plan, stop
+        already the target?        -> AlreadyMatched (e.g. a macro slot
+                                      this restore's slot-0 write emptied,
+                                      the SOCD power written in an earlier
+                                      profile); the 18 02 commit trigger
+                                      is sent anyway
+        neither planned nor ours?  -> changed_since_plan, stop (ours: the
+                                      SOCD power this restore wrote, macro
+                                      slots 1-9 its slot-0 write emptied)
         else write (stop-and-wait, verify, one whole-table retry)
       confirm 21/11
     everything written? -> persistence check (not cancellable): every
       written profile selected again after switching away (settle first),
       its written tables read again: persisted, or lost (-> failed)
     select the original profile again (unless poisoned; settle first)
-    a table of unknown scope written and two or more profiles compared?
-      -> final check (not cancellable): read every profile again, compare
-         every written table and every unknown-scope table the plan left
-         unchanged (a shared table written in another profile changes it)
+    the SOCD power changed in a profile other than the original one?
+      -> final check (not cancellable): read the power once more in the
+         original profile (one keyboard-wide setting; a switch on the
+         keyboard since the write is the user's)
     wait for the commit settle (usually nothing is left to wait)
     profile changed or connection lost before the save? -> the last
       profile's written, unconfirmed tables become maybe_lost
@@ -513,17 +559,31 @@ is not a DKS, Mod-Tap or Toggle in the vendor site's form
 (`AdvancedSlotData::from_read_slot`), a non-canonical macro, holds a
 malformed reference, or would need the Fn keymap as its commit trigger (rule
 5 above) while the backup's Fn keymap cannot be written. SOCD is restored
-as one write (power and pairs) when the backup's pairs are in the vendor
-site's form; a difference only in the hotkey bytes, which are never
-written, is skipped (`read_only_bytes`). A write that completes a binding (a
+as the vendor site's burst (power and pairs) when the backup's pairs are in
+the site's form; a difference only in the hotkey bytes, which are never
+written, is skipped (`read_only_bytes`). The power is one setting of the
+whole keyboard and the pairs belong to each profile (hardware tests H21,
+H24): the target power is the backup's power of the profile that was
+active when the backup was made (`socd_power_differs_in_backup` when a
+restored profile holds another one), every SOCD write sends it, a
+profile's SOCD is written only when its pairs differ, and when only the
+power differs it is written once (in the original profile if the restore
+covers it, else in the first profile written, with that profile's
+unchanged pairs). The plan shows the power change once, as entry 0 of the
+first SOCD write (the CLI: "SOCD power (all profiles): on -> off"); after
+it every profile is expected to read the new power, and only that: a later
+SOCD write that reads the old power again (switched back with Fn + Right
+Shift, or by another program) stops with "changed after planning" instead
+of switching it once more. A write that completes a binding (a
 slot a written layer refers to) carries `completes_binding` and is written
 even after a cancellation. The Fn-keymap write that is the commit trigger carries
 `PlannedWrite::commit_trigger` (and, when it re-sends the keyboard's Fn
 keymap unchanged, no changes; `is_resent_unchanged`); the CLI shows the
 reason in the plan and counts it apart in the report ("the Fn keymap (18 02)
-was also re-sent unchanged ..."). Such an unchanged re-send changes no other
-profile, so it does not raise `SharedTablesMayChangeOtherProfiles`. An empty macro
-slot (all `00` or all `FF`) is written as 256 x `00`; nothing else is ever
+was also re-sent unchanged ..."). A macro slot re-sent after slot 0
+(rule 6 above) carries `PlannedWrite::resent` and no changes; the CLI
+shows the reason, and the app counts it as a write but not as a change. An
+empty macro slot (all `00` or all `FF`) is written as 256 x `00`; nothing else is ever
 normalised, and defaults the backup does not contain are never written.
 
 Trigger and dead-band values are raw counts of the keyboard's distance unit
@@ -534,13 +594,21 @@ differing trigger key and the dead band are skipped with
 are never converted). This matters after a firmware update, the main use case
 of a restore.
 
-Plan warnings point out tables of unknown scope: written while the restore
-does not cover every profile (`shared_tables_may_change_other_profiles`), or
-held in different copies by the backup while the keyboard holds one copy in
-every profile (`likely_shared_table_differs`). Only the dead band and SOCD
-are treated as possibly shared: triggers, the main light, both keymap
-layers, the macros, the advanced keys and custom colours 1 were observed
-per profile (spec 7.3, 7.4).
+Table scopes (spec 4.5.4, 7.3-7.5) as the planner uses them:
+
+| Table | Scope | Evidence |
+|---|---|---|
+| Triggers, main light, base keymap, macro slots | per profile | c04, c10 |
+| Fn keymap, advanced-key slots | per profile | c16, OpenWraith snapshot after c17 |
+| Custom colours 1 | per profile | OpenWraith all-profile backup (2026-10-24) |
+| Dead band | per profile | H16 |
+| SOCD pairs | per profile | H21 |
+| SOCD power | **one setting of the whole keyboard** | H21, H24 |
+| Custom colours 2, active custom table, side light, switch types, poll rate, Win-Lock / 6-key | unknown | never written, only compared |
+
+There is no "possibly shared" class any more: the plan warnings about
+shared tables were removed, and the only keyboard-wide value, the SOCD
+power, is planned once (above).
 
 **Importing a profile.** `RestoreOptions::import` (`ImportOptions { from,
 into, include, allow_critical_fn_overrides }`) compares profile `from` of a
@@ -550,7 +618,9 @@ and writes only the chosen categories (`ImportSelection`: triggers and
 lighting by default; the keymap group, the dead band and SOCD only when
 chosen); the others are skipped as `not_imported`. The file is untrusted
 input. Triggers, the main light, the dead band and SOCD go through the same
-validated builders as any restore. The keymap layers and custom colours 1
+validated builders as any restore; of SOCD only the pairs are imported, and
+the power, a setting of the whole keyboard, keeps the keyboard's value
+(`socd_power_not_imported`, a plan note). The keymap layers and custom colours 1
 are not written as the file holds them but merged into the keyboard's
 tables, read-modify-write: positions that are not keys, the knob and its
 slots (15-21), the Fn key (121), Fn-layer keys the keyboard locks (`0E`)
@@ -562,7 +632,8 @@ the keymap group is blocked (`unwritable_imported_entry`); an imported
 macro must be steps `MacroProgram` can express (`non_canonical_macro`);
 an Fn layer that would replace a critical built-in function (Fn + 1..4,
 Fn + Space) blocks the keymap group (`critical_fn_override`) unless
-allowed; entries whose effect is not verified on a W75 get an
+allowed; entries whose effect is not verified on a W75 (since the hardware
+session H12-H24 only an advanced-key binding on the Fn layer, Q36) get an
 `unverified` note. A plain restore of an exported file (scope
 `profile_export`) is refused (`invalid_request`): it can only be
 imported. Everything else (safety backup, plan, persistence check, undo)
@@ -596,8 +667,8 @@ group's cursor (below), the active-profile check, the commit wait,
 | `plan_light_edit` | W3, W2 only on a mode change | the direction is set to the mode's default |
 | `plan_keymap_edit` / `plan_keymap_edit_on` (`KeymapGroupState`) | W6, W5, W10, W7 in the group order | below |
 | `plan_color_edit` | W4, then W2 + W3 to Custom with `switch_to_custom` | only keys of the layout change; the knob, #103, #126 and the other slots keep their bytes; the `07` foreground is never touched |
-| `plan_dead_band_edit` | W9 | 0.02 mm units only; scope unknown (a warning) |
-| `plan_socd_edit` (`SocdState`) | W11 | reads only `24 02` and `24 01` (the status report does not hold the SOCD power); the whole burst every time, as the site sends it; keeping the pairs needs them in the site's form |
+| `plan_dead_band_edit` | W9 | 0.02 mm units only; per profile (H16) |
+| `plan_socd_edit` (`SocdState`) | W11 | reads only `24 02` and `24 01` (the status report does not hold the SOCD power); the whole burst every time, as the site sends it; keeping the pairs needs them in the site's form; switching the power changes every profile (`EditWarning::SocdPowerAllProfiles`, H21), the pairs are the active profile's |
 
 **The keymap group.** `KeymapGroupState` reads both layers, the ten macro
 slots, the forty advanced-key slots, the Fn-locked mask (`0E`) and the DKS
@@ -605,7 +676,8 @@ limits (`21/04`). `KeymapChange` is applied in order: `Assign` (default,
 key, multimedia, mouse, combination, or a binding to an existing slot),
 `BindMacro` / `BindAdvanced` (content and binding: the slot only this key
 uses, else the lowest slot that is empty and unreferenced in both layers,
-as the site does), `SetMacroSlot` / `SetAdvancedSlot` (content only),
+as the site does; for a macro the lowest such slot in 1-9, and slot 0 only
+when 1-9 are taken, rule 6 above), `SetMacroSlot` / `SetAdvancedSlot` (content only),
 `Unbind`. One slot per key (`SlotAlreadyBound`), never a binding to an
 empty slot (`BindingToEmptySlot`), a slot whose last binding goes away is
 cleared in the same group unless `keep_orphans`; existing malformed or
@@ -614,16 +686,19 @@ dangling entries are kept byte for byte (a warning). Placement
 layer; never an Fn-locked key on the Fn layer; an Fn-layer entry that
 hides a built-in Fn function needs a `BuiltinAck`, a critical one (Fn +
 1..4, Fn + Space) one with `critical`. The writes follow the site's order
-(rule 5 above): changed macro slots, the base keymap, the Fn keymap
-(re-sent unchanged after a base keymap, or between macro and advanced-key
-slots when only slots change), changed advanced-key slots. The cursor
+(rules 5 and 6 above): changed macro slots (after slot 0 the slots 1-9
+that keep content, re-sent), the base keymap, the Fn keymap (re-sent
+unchanged after a base keymap, or before the advanced-key slots when no
+layer changes; never for macro slots alone), changed advanced-key slots. The cursor
 (`group`) keeps the restore's cancellation rules: a Ctrl+C before any group
 table stops at once; after one, the other tables up to the Fn keymap are
-skipped, the Fn keymap is still sent, and a write that completes a binding
-(`completes_binding`: a slot a written layer refers to, or a layer that
-moves a key away from a macro slot already cleared or rewritten in the
-group) is written even then, so that no key is left pointing at an empty
-slot or at a slot's new content. A cancellation whose remaining writes
+skipped, the Fn keymap is still sent once the base keymap was, and a write
+that completes a binding (`completes_binding`: a slot a written layer
+refers to, a layer that moves a key away from a macro slot already cleared
+or rewritten in the group, a macro slot that a layer still sent newly
+refers to) is written even then, and so are the macro re-sends after a
+slot-0 write, so that no key is left pointing at an empty slot or at a
+slot's new or old content. A cancellation whose remaining writes
 were all needed sets `EditReport::cancel_requested` with the outcome
 `Completed`. A failure part-way lists the keys
 that may refer to an empty slot (`EditReport::dangling`); the undo command
@@ -635,15 +710,18 @@ the persistence check.
 `Never`; `Always`; `Auto` (the default) checks only when a written table is
 not known from hardware tests to be kept after the commit settle
 (`persist::persistence_confirmed`: triggers, the main light, the dead band,
-custom colours 1 and both keymap layers are; advanced-key slots only after
-a complete Fn keymap in the same group; macro slots and SOCD are not yet).
+custom colours 1, both keymap layers, macro slots (H19) and SOCD (H21) are;
+advanced-key slots only after a complete Fn keymap in the same group, H20).
+Each of them also survived a USB power cycle (H22), so the edit plans no
+longer carry a "not tested across a power loss" note. In practice `Auto`
+checks only under `--commit-trigger skip`, which forces the check anyway.
 It switches to the lowest other profile and back (after the settle) and
 reads the written tables again (an unchanged re-sent Fn keymap is not
 counted); a table that no longer holds what was written is reported
 `lost` and fails the edit. `apply_trigger_edit` and `apply_light_edit`
-keep their Phase 2 signatures and never check. Flip an entry of
-`persistence_confirmed` (one line each) after the hardware test that
-proves it (H19, H21, H22 in [HARDWARE_TESTS.md](HARDWARE_TESTS.md)).
+keep their Phase 2 signatures and never check. An entry of
+`persistence_confirmed` (one line each) is flipped after the hardware test
+that proves it ([HARDWARE_TESTS.md](HARDWARE_TESTS.md)).
 `persistence_check_tables(plan.writes(), mode)` tells a plan text before
 the question which tables the check will read again (empty: no profile
 switch). SOCD can also be switched on the keyboard (Fn + Right Shift): the
@@ -740,9 +818,13 @@ simulator mode.
 - Ctrl+C sets a flag that the progress callbacks turn into a cancellation at
   the next table boundary; the original profile is selected again. Inside a
   restore's keymap group, once a group table was sent, the group's other
-  tables are skipped but its Fn keymap (`18 02`) is still written, because
-  without it the keyboard would not keep the base keymap (rule 5 above);
-  the message the CLI prints says so. A Ctrl+C
+  tables are skipped but the writes the group still needs go out: its Fn
+  keymap (`18 02`) after a sent base keymap, because without it the
+  keyboard would not keep the base keymap (rule 5 above), the slots a
+  written key needs, and after macro slot 0 every other macro slot that
+  keeps content (rule 6); the message the CLI prints says so
+  (`ui::FIRST_CTRL_C`), and the second Ctrl+C warns that macros not yet
+  written again after slot 0 stay empty. A Ctrl+C
   during a wait for the keyboard to save is seen right after the wait,
   before the next profile is selected. A second
   Ctrl+C exits at once with a warning. The final check of a restore is not
@@ -903,21 +985,46 @@ keep backups usable across versions:
   (c13 macro, c16 DKS / Mod-Tap / Toggle and their bindings, c17 Fn-layer
   codes and custom colours, c15 SOCD bursts and pushes, c14 travel open,
   close and stream).
-- `crates/openwraith-hid/tests/{keymap_edit,edits_v02,socd,travel,import}.rs`
+- `crates/openwraith-hid/tests/{keymap_edit,edits_v02,socd,travel,import,macro_slot0,keymap_group_cancel}.rs`
   run the v0.2 editors, the travel guard and the import against
   `DeviceSim`: the captured packets, the group order and its commit
   trigger, placement refusals, slots, Ctrl+C at every table boundary,
   failures part-way (dangling bindings), the persistence check (`Auto`,
   and `Lost` with `KeymapCommit::macros_need_fn_write`), the SOCD toggle on
   the keyboard during a write, the travel test closed on every path
-  (panics included) and stray streams, undo by restore.
+  (panics included) and stray streams, undo by restore. Regression tests
+  for the hardware session H12-H24: `macro_slot0.rs` (the `macro-exp.txt`
+  experiment, the re-sends after slot 0 in edits, restores and imports,
+  Ctrl+C after slot 0, a failed re-send naming the emptied macros and the
+  dangling keys, a base keymap the keyboard drops (its Fn keymap failed,
+  or the persistence check found it lost) naming the key it leaves on a
+  slot slot 0 emptied, a slot-0 write cut short after its first packet
+  listing the macros it emptied, a slot 1-9 that cannot be written again
+  blocking a restore of slot 0 and only warned about in an edit the user
+  allows, the allocation from slot 1, the H24 multi-profile restore and
+  its undo); `keymap_group_cancel.rs` (a Ctrl+C after a macro slot sends
+  no Fn keymap, so no key is bound to a macro slot the Ctrl+C skipped; a
+  macro slot a layer newly refers to goes out with that layer); in
+  `restore.rs` the H24 SOCD case (SOCD on in every profile, A / D only in
+  profile 2, profile 4 active: one SOCD burst, the final check passes,
+  every profile reads off), the power written once (in the original
+  profile before a profile written anyway), the backup's active-profile
+  power (also when that is not the first profile restored), an import that
+  keeps the keyboard's power, a Fn + Right Shift press between two SOCD
+  writes stopping the restore ("changed after planning") instead of being
+  switched back silently, and a press after the write that the final check
+  does not count as a mismatch; in `keymap_edit.rs` the H20 step 2 case (a lone `22` is lost,
+  `18 02` then `22` is kept, a lone macro slot is kept); in `socd.rs` and
+  `edits_v02.rs` the edits that no longer switch profiles to check SOCD,
+  macro slots or colours.
 - `crates/openwraith-hid/tests/` run sessions, summaries and full backups
   against `MockTransport` built from the captures (noise, lost replies and
   retries, partial tables, endless unrelated traffic, timeouts, stale input,
   the real reset notification, profile changes, unknown models, undecodable
   replies, JSON and plain-serde round trips, edited headers, atomic saves),
   and the writer, all-profile backups, restore and edits against `DeviceSim`
-  (round trips, both scope configurations of every unknown-scope table, ack
+  (round trips, both scope configurations of the tables whose scope a test
+chooses, ack
   loss and retries, late acks of an earlier table, verification failures and
   final-check mismatches, reset notifications, disconnects, interrupted
   reads, keyboard-side profile changes, foreign heartbeats and acks, the 2 s
@@ -955,12 +1062,17 @@ keep backups usable across versions:
   `restore`) is reported lost by the persistence check, and so is the
   restore with the trigger when the commit settle is turned off (test-only
   option). Further tests: the group order (macros, `18 00`, `18 02`, `22`;
-  with `advanced_need_fn_write` on, the advanced-key clear after the
-  trigger is reported lost), macro slots alone followed by the unchanged
+  with `advanced_need_fn_write` on, the default, the advanced-key clear
+  after the trigger persists, and so does everything else), macro slots
+  alone written without the Fn keymap (reported lost only with
+  `macros_need_fn_write` on), advanced-key slots alone after the unchanged
   Fn keymap, no
   cancellation between the base and the Fn keymap, a Ctrl+C during the
-  first macro slot (the base keymap is skipped, the Fn keymap still sent,
-  the outcome `Cancelled`, the macro saved in both settings), a Ctrl+C
+  first macro slot (the base and Fn keymaps are skipped, the outcome
+  `Cancelled`, the macro saved), a Ctrl+C after a macro slot never sending
+  an Fn keymap that binds a key to a macro slot it skipped, and a macro
+  slot that a written layer newly refers to going out with that layer
+  (`tests/keymap_group_cancel.rs`, restores and edits), a Ctrl+C
   whose only remaining write is the trigger (the restore completes), a
   dropped ack of the first `18 02` packet (the whole table is sent again)
   and of both sends (the restore fails, the base keymap `MaybeLost` with
@@ -994,12 +1106,15 @@ keep backups usable across versions:
   prints both). `src/sim_tests_v02.rs` runs the v0.2 commands the same
   way and compares their packets with capture session 3: `set key` (a
   swap, and the c17 Fn-layer codes), `set macro` (c13, the binding, the
-  persistence check, `--commit-trigger skip` kept and lost), `set
-  advanced` (c16 DKS, Mod-Tap, Toggle, a lone slot write, unbinding),
+  re-sends after slot 0, `--commit-trigger skip` kept), `set
+  advanced` (c16 DKS, Mod-Tap, Toggle, a lone slot write lost under
+  `--commit-trigger skip` at the byte offsets H20 reported, unbinding),
   `set colors` (c17), `set deadband`, `set socd` (four c15 bursts),
   presets, dry runs (reads only), `travel` (c14 open and close, Ctrl+C, a
   profile switch, JSON, a test left open and `travel --close`), `monitor`
-  (sends nothing at all) and `profile export` / `import` (`cargo test -p
+  (sends nothing at all), `profile export` / `import`, and the re-tests
+  H26 and H27 command by command as HARDWARE_TESTS.md lists them
+  (`hardware_tests_h26_and_h27_in_the_simulator`; `cargo test -p
   openwraith-cli sim_tests_v02 -- --nocapture` prints the outputs).
 - `crates/openwraith-cli/tests/cli.rs` runs the real binary on backup files
   replayed from the captures or made with the simulator (`--from`,
@@ -1007,8 +1122,9 @@ keep backups usable across versions:
   and escape sequences, plus help texts and argument errors.
 - No test enumerates or opens a HID device. Keep it that way: hardware tests
   must be run by hand by someone who has the keyboard. The checklist (H0-H11
-  for Phase 2, H12-H25 for the v0.2 editors: preconditions, exact commands,
-  what to compare, pass criteria) is [HARDWARE_TESTS.md](HARDWARE_TESTS.md).
+  for Phase 2, H12-H25 for the v0.2 editors, H26-H27 for the fixes after
+  them: preconditions, exact commands, what to compare, pass criteria) is
+  [HARDWARE_TESTS.md](HARDWARE_TESTS.md).
 
 ## The desktop app
 
@@ -1487,12 +1603,17 @@ Still open:
   `RestoreError` (`InvalidRequest`, `SafetyBackupMismatch`);
 - multi-key trigger masks (`TriggerGrouping::SameSetting`, CODE-ONLY until
   hardware test H10 in [HARDWARE_TESTS.md](HARDWARE_TESTS.md));
-- the evidence that the hardware tests H12-H25 will settle: the `Evidence`
-  values of the protocol crate (`KeyAssignment::evidence`,
-  `MacroProgram::evidence`, `AdvancedKeyDef::evidence`, `SocdWrite::evidence`,
-  the labels of `W75_FN_BUILTINS`), `persistence_confirmed` and the
-  simulator's defaults (`KeymapCommit`, `set_travel_survives_select`); flip
-  them one result at a time;
+- the evidence the hardware session H12-H24 left open (PROTOCOL.md 7.5):
+  the `Evidence` values that stay unverified (multimedia indices other than
+  `12`, `24`, `25` and `32`; a DKS tap at stage 4 and "hold again"; Mod-Tap
+  hold times other than 300 ms; advanced-key bindings on the Fn layer; SOCD
+  modes 2 and 3), the labels of `W75_FN_BUILTINS` other than F1-F4 and
+  R-Shift (`FnBuiltin::confirmed`), and the simulator's GUESSes (the chunk
+  of a slot-0 macro write that clears slots 1-9, an `18 02` written after
+  advanced-key slots, `set_travel_survives_select`); flip them one result
+  at a time. Wheel down and two-modifier combinations count as confirmed by
+  c17's blanket report and were not tested again; H26, H27 and H13 step 4
+  are still to run;
 - a SOCD push that arrives exactly while our own `24 02` read is pending is
   taken as the reply (it carries the current state); during the
   verification of a SOCD write such a toggle could go unnoticed;

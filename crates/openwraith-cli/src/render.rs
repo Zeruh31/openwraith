@@ -761,7 +761,7 @@ pub fn socd(view: &SocdView) -> String {
         return out;
     };
     out.push_str(&format!(
-        "  Power: {} (Fn + Right Shift also switches it on the keyboard)\n",
+        "  Power (all profiles): {} (Fn + Right Shift also switches it on the keyboard)\n",
         if settings.enabled { "on" } else { "off" }
     ));
     match &view.state {
@@ -791,9 +791,9 @@ pub fn socd(view: &SocdView) -> String {
         mark("Hotkey")
     ));
     out.push_str(
-        "  SOCD may apply to every profile (its profile scope is not known yet). OpenWraith \
-         writes the power and the pairs together, as the vendor site does: `openwraith set socd \
-         --on --pair A/D`.\n",
+        "  The power is one setting of the whole keyboard; the pairs belong to each profile. \
+         OpenWraith writes the power and the pairs together, as the vendor site does: \
+         `openwraith set socd --on --pair A/D`.\n",
     );
     out
 }
@@ -860,7 +860,8 @@ pub fn extras(view: &ExtrasView, keymaps: &[&KeymapTable], model: Option<&Model>
                 .collect();
             let [b1, b2] = socd.hotkey;
             out.push_str(&format!(
-                "  {}; hotkey bytes {b1:02x} {b2:02x}, shown by the vendor as {}\n",
+                "  Power (all profiles): {}; hotkey bytes {b1:02x} {b2:02x}, shown by the vendor \
+                 as {}\n",
                 if socd.enabled { "On" } else { "Off" },
                 mark(&hotkey.join(" + "))
             ));
@@ -1264,7 +1265,10 @@ mod tests {
         assert!(text.contains("backup b.owbackup.json (created 2026-10-24T07:30:00Z)"));
         assert!(text.contains("None of the 40 slots is used."), "{text}");
         assert!(
-            text.contains("Off; hotkey bytes fa e5, shown by the vendor as Fn + R-Shift*"),
+            text.contains(
+                "Power (all profiles): Off; hotkey bytes fa e5, shown by the vendor as Fn + \
+                 R-Shift*"
+            ),
             "{text}"
         );
         assert!(text.contains("82 keys: HM1 (magnetic, 3.4 mm)"), "{text}");

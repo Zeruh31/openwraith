@@ -80,9 +80,10 @@ only switch profiles and do not ask.
 The keyboard saves a change about 1 s after it is written; a profile switch \
 or unplugging it before that loses the change. Commands that write therefore \
 wait 2 s after the last write before they switch profiles or finish. restore, \
-and set for tables whose keeping is not proven on hardware yet (macro slots, \
-SOCD; --check-persistence), read what was written again after switching away \
-and back (\"persisted\", or \"LOST\" and exit code 1). A profile change on the \
+and set with --check-persistence always, read what was written again after \
+switching away and back (\"persisted\", or \"LOST\" and exit code 1); hardware \
+tests showed that the keyboard keeps every table set writes, so set does not \
+by default. A profile change on the \
 keyboard or a lost connection before the keyboard has saved is reported as \
 \"MAY BE LOST\" (exit code 1).
 
@@ -896,6 +897,31 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// `set ... -h` and `--help` say what `--check-persistence auto` checks
+    /// today: macro slots and SOCD are known to be kept (H19, H21, H22).
+    #[test]
+    fn the_check_persistence_help_matches_what_auto_checks() {
+        for what in ["socd", "macro", "key", "advanced", "deadband", "colors"] {
+            let mut command = Cli::command();
+            let set = command.find_subcommand_mut("set").expect("set");
+            let sub = set.find_subcommand_mut(what).expect(what);
+            for help in [
+                sub.render_help().to_string(),
+                sub.render_long_help().to_string(),
+            ] {
+                let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    help.contains(
+                        "auto = only tables not yet proven on hardware (today only \
+                         advanced-key slots written without the Fn keymap before them)"
+                    ),
+                    "set {what}: {help}"
+                );
+                assert!(!help.contains("macro slots, SOCD"), "set {what}: {help}");
+            }
+        }
     }
 
     #[test]

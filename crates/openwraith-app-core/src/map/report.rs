@@ -2,16 +2,19 @@
 
 use openwraith_hid::{
     EditReport, ItemReport, ItemResult, Outcome, Persistence, RestoreReport, SelectOutcome,
-    WriteWarning,
+    SlotRef, WriteWarning,
 };
-use openwraith_protocol::{Mismatch, MismatchKind};
+use openwraith_protocol::{Mismatch, MismatchKind, TableId};
 
-use super::{commit_reason, foreign, key_ref, sat8, sat16, sat32, table_ref};
+use super::{
+    commit_reason, foreign, key_ref, key_ref_index, layer_view, resend_reason, sat8, sat16, sat32,
+    table_ref,
+};
 use crate::dto::{
-    AppError, EditReportView, FileRef, FinalCheckView, FinalMismatchView, Headline, ItemReportView,
-    ItemResultView, MismatchKindView, MismatchView, OutcomeView, PersistenceCheckView,
-    PersistenceView, ProfileReportView, ProfileSwitchReport, ReportCounts, RestoreReportView,
-    WriteWarningView,
+    AppError, ClearedMacroView, DanglingBindingView, EditReportView, FileRef, FinalCheckView,
+    FinalMismatchView, Headline, ItemReportView, ItemResultView, MismatchKindView, MismatchView,
+    OutcomeView, PersistenceCheckView, PersistenceView, ProfileReportView, ProfileSwitchReport,
+    ReportCounts, RestoreReportView, WriteWarningView,
 };
 
 /// At most this many differing offsets are listed.
@@ -127,6 +130,7 @@ fn item(report: &ItemReport) -> ItemReportView {
         key: report.key.map(key_ref),
         commit_trigger: report.commit_trigger.map(commit_reason),
         resent_unchanged: report.resent_unchanged,
+        resent: report.resent.map(resend_reason),
         result: item_result(&report.result),
     }
 }
@@ -243,6 +247,27 @@ pub(crate) fn restore_report_view(
         safety_backup,
         foreign_activity: report.foreign_activity.map(foreign),
         anything_written,
+        cleared_macros: report
+            .cleared_macros
+            .iter()
+            .map(|c| ClearedMacroView {
+                profile: c.profile,
+                slot: c.slot.get(),
+            })
+            .collect(),
+        dangling: report
+            .dangling
+            .iter()
+            .map(|d| DanglingBindingView {
+                profile: d.profile,
+                layer: layer_view(d.layer),
+                key: key_ref_index(d.index),
+                slot: table_ref(match d.slot {
+                    SlotRef::Macro(slot) => TableId::Macro { slot },
+                    SlotRef::Advanced(slot) => TableId::AdvancedKey { slot },
+                }),
+            })
+            .collect(),
     }
 }
 

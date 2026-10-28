@@ -175,7 +175,10 @@ export interface WarningView {
   technical: string | null;
 }
 
-/** A plan warning in words. Shared-table warnings are amber; the others are informational. */
+/**
+ * A plan warning in words. Amber when the result differs from what the file suggests (the SOCD
+ * setting of another profile, a replaced Fn shortcut); the others are informational.
+ */
 export function planWarningView(warning: PlanWarningView, dict: Dict, format: Format): WarningView {
   const w = dict.backupRestore.planWarnings;
   const unknown = dict.common.unknown;
@@ -190,21 +193,14 @@ export function planWarningView(warning: PlanWarningView, dict: Dict, format: Fo
       return { text: w.constant_differs, tone: "info", technical: warning.request };
     case "capability_flags_differ":
       return { text: w.capability_flags_differ, tone: "info", technical: null };
-    case "shared_tables_may_change_other_profiles":
+    case "socd_power_differs_in_backup":
       return {
-        text: w.shared_tables_may_change_other_profiles({
-          tables: format.list(warning.tables.map((table) => tableName(table, dict))),
-          profiles: numberList(warning.profiles, format),
-        }),
+        text: w.socd_power_differs_in_backup({ profile: warning.profile, on: warning.power }),
         tone: "warning",
         technical: null,
       };
-    case "likely_shared_table_differs":
-      return {
-        text: w.likely_shared_table_differs({ table: tableName(warning.table, dict) }),
-        tone: "warning",
-        technical: null,
-      };
+    case "socd_power_not_imported":
+      return { text: w.socd_power_not_imported({ on: warning.power }), tone: "info", technical: null };
     case "imported":
       return { text: w.imported({ from: warning.from, into: warning.into }), tone: "info", technical: null };
     case "imported_macros":

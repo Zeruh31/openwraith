@@ -15,9 +15,11 @@
 //!    originally active one first, then ascending) it selects the profile,
 //!    and for each table confirms the active profile, re-reads exactly the
 //!    bytes the write changes, skips the write when the keyboard already
-//!    holds the target (a table that is global and was written in an earlier
-//!    profile), aborts with `changed_since_plan` when the bytes are neither
-//!    the planned state nor something this restore wrote, and otherwise
+//!    holds the target, aborts with `changed_since_plan` when the bytes are
+//!    neither the planned state nor what this restore's own writes left
+//!    there (the SOCD power written in an earlier profile, which replaces
+//!    the planned power, and macro slots 1-9 emptied by its macro slot-0
+//!    write), and otherwise
 //!    writes it through the [`Writer`] (stop-and-wait, read-back
 //!    verification, one more attempt with the whole table). Before each
 //!    profile switch it waits for the keyboard to save
@@ -28,11 +30,11 @@
 //!    ([`PersistenceCheck`]). A profile change or a lost connection before
 //!    the keyboard saved turns the last profile's writes into
 //!    [`ItemResult::MaybeLost`]. Finally it
-//!    selects the original profile again and, when a table whose profile
-//!    scope is unknown was written and the plan covers several profiles,
-//!    reads every profile again to check that each still holds the backup's
-//!    bytes. Failures are reported in the [`RestoreReport`]; there is never
-//!    an automatic rollback: the undo command restores the safety backup.
+//!    selects the original profile again and, when the restore changed the
+//!    SOCD power in another profile, reads the power once more there (the
+//!    [`FinalCheck`]: the power is one setting of the whole keyboard).
+//!    Failures are reported in the [`RestoreReport`]; there is never an
+//!    automatic rollback: the undo command restores the safety backup.
 //!
 //! [`dry_run_restore`] plans against a plain read of the active profile and
 //! never writes; [`plan_restore`] plans offline against another backup.
@@ -45,15 +47,28 @@
 //! (knob or Fn keymap defaults) are never written. Tables without a confirmed
 //! write command (side light, custom colours 2, active custom table, switch
 //! types, polling rate, Win-Lock / 6-key) are compared and reported as
-//! skipped when they differ. SOCD (power and pairs) is written as one burst
-//! (`24 03`, `24 00`) when the backup's pairs are in the vendor site's form;
-//! a difference only in the read-only bytes of `24 02` (the hotkey) is
-//! skipped ([`SkipReason::ReadOnlyBytes`]). The keymap group (both keymap
-//! layers, the ten macro slots and the forty advanced-key slots) is planned
-//! as one unit and skipped as a whole when it would need an advanced-key
-//! slot that is not a DKS, Mod-Tap or Toggle OpenWraith can write
-//! ([`BlockCause::UnwritableAdvancedKey`]), a non-canonical macro, or holds
-//! a malformed reference.
+//! skipped when they differ. A difference only in the read-only bytes of
+//! `24 02` (the SOCD hotkey) is skipped ([`SkipReason::ReadOnlyBytes`]).
+//!
+//! SOCD: the power is one setting of the whole keyboard, the pairs belong
+//! to each profile (OBSERVED on hardware, H21 and H24, 2026-10-27). Every
+//! SOCD write is the vendor site's burst of the power and the profile's
+//! pairs (`24 03`, `24 00`, pairs in the site's form only) and sends the
+//! same power: the backup's power of the profile that was active when it
+//! was made ([`PlanWarning::SocdPowerDiffersInBackup`] when a restored
+//! profile of the backup holds another one). A profile's SOCD is written
+//! when its pairs differ; when only the power differs, it is written once,
+//! in the original profile if the restore covers it, else in the first
+//! profile written. The plan shows the power change once (entry 0 of the
+//! first SOCD write), and after this restore's own SOCD write every profile
+//! is expected to read the new power (and only that: the old power again
+//! means a switch on the keyboard or by another program since, and the
+//! next SOCD write stops instead of switching it back). The keymap group
+//! (both keymap layers, the ten macro slots and the forty advanced-key
+//! slots) is planned as one unit and skipped as a whole when it would need
+//! an advanced-key slot that is not a DKS, Mod-Tap or Toggle OpenWraith can
+//! write ([`BlockCause::UnwritableAdvancedKey`]), a non-canonical macro, or
+//! holds a malformed reference.
 //!
 //! The keymap group is written in the vendor site's order (spec 4.8.2):
 //! every macro slot that changes (content and clears), the base keymap, the
@@ -62,14 +77,14 @@
 //! (`18 02`) follows it (CONFIRMED on hardware), so whenever the base keymap
 //! is written, the Fn keymap is written right after it, re-sent unchanged if
 //! it already holds the backup's bytes ([`CommitTriggerReason::BaseKeymap`];
-//! a [`CommitTrigger`] is sent even when the keyboard holds it). When macro
-//! or advanced-key slots are written but neither keymap layer differs, the
-//! unchanged Fn keymap is written between the macro slots and the
-//! advanced-key slots, as the site does (a precaution for the macro slots,
-//! whose need for it is untested;
-//! [`CommitTriggerReason::MacrosOrAdvancedKeys`]; advanced-key slots written
-//! after a complete Fn keymap persisted twice). If the Fn keymap cannot be
-//! written, the group is not written at all
+//! a [`CommitTrigger`] is sent even when the keyboard holds it). The
+//! keyboard keeps an advanced-key slot (`22`) only when a complete Fn
+//! keymap is written in the same save window (CONFIRMED on hardware, H20,
+//! 2026-10-27): when advanced-key slots are written but neither keymap
+//! layer differs, the unchanged Fn keymap is written before them (after the
+//! macro slots), as the site does ([`CommitTriggerReason::AdvancedKeys`]).
+//! Macro slots are kept without it (CONFIRMED, H19) and get none of their
+//! own. If the Fn keymap cannot be written, the group is not written at all
 //! ([`BlockCause::FnKeymapNotWritable`]). A cancellation asked for after a
 //! group table was sent skips the group's other tables up to that Fn-keymap
 //! write ([`ItemResult::NotAttempted`]), still sends it (an `18 02` alone is
@@ -84,6 +99,18 @@
 //! slot is listed in [`RestoreReport::dangling`]. The persistence check
 //! stays the safety net: a table the keyboard did not keep is reported lost.
 //!
+//! Writing macro slot 0 makes the keyboard empty macro slots 1-9 of the
+//! profile (CONFIRMED on hardware, H24; see [`crate::group`]). A plan that
+//! writes slot 0 therefore writes every slot 1-9 whose backup content is
+//! not empty right after it, also an unchanged one
+//! ([`PlannedWrite::resent`]); these writes are sent even after a
+//! cancellation once slot 0 went out. The re-read before each later macro
+//! write expects the empty slot this restore's own slot-0 write left (it is
+//! not "changed after planning", and a slot whose target is empty is then
+//! [`ItemResult::AlreadyMatched`]). A slot that cannot be written again
+//! blocks the keymap group ([`BlockCause::NonCanonicalMacro`]); slots left
+//! empty by a stop part-way are listed in [`RestoreReport::cleared_macros`].
+//!
 //! # Importing one profile into another
 //!
 //! With [`RestoreOptions::import`] a restore compares one profile of a file
@@ -92,7 +119,10 @@
 //! ([`ImportSelection`]; the others are skipped as
 //! [`SkipReason::NotImported`]). The file is untrusted input. Triggers,
 //! the main light, the dead band and SOCD go through the same validated
-//! builders as any restore. The keymap layers and custom colour table 1
+//! builders as any restore; of SOCD only the pairs are imported, the power
+//! (a setting of the whole keyboard, not of a profile) keeps the keyboard's
+//! value ([`PlanWarning::SocdPowerNotImported`]). The keymap layers and
+//! custom colour table 1
 //! are not written as the file holds them but merged into the keyboard's
 //! tables: positions that are not keys, the knob and its slots, the Fn key,
 //! Fn-layer keys the keyboard locks and colour slots outside the layout
@@ -113,11 +143,11 @@
 //! numbers would mean other distances, and they are skipped
 //! ([`SkipReason::DistanceUnitChanged`]). Values are never converted.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 
-use openwraith_protocol::write::ADVANCED_SLOT_LEN;
+use openwraith_protocol::write::{ADVANCED_SLOT_LEN, MACRO_SLOT_LEN};
 use openwraith_protocol::{
     AdvancedSlotData, AdvancedSlotId, BuiltinAck, ColorTableData, CustomTable, DeadBandData,
     DeadBandWrite, Distance, EntryKind, HexBytes, KeyAssignment, KeyMask, KeyPos, KeymapData,
@@ -133,12 +163,12 @@ use crate::backup::{
 };
 use crate::error::{ErrorInfo, ErrorKind, RestoreError, WriteError};
 use crate::group::{
-    DanglingBinding, GroupCursor, GroupView, GroupWrite, Step, dangling_after, layer_index,
+    ClearedMacro, DanglingBinding, GroupCursor, GroupView, GroupWrite, ResendReason, Step,
+    cleared_macros, clears_other_macros, dangling_after, layer_index, link_new_references,
+    new_macro_references, slots_cleared_by_slot0,
 };
-use crate::persist::{CheckOutcome, recheck, reload_profile, socd_toggled};
-use crate::profiles::{
-    ProfileSet, ProfilesOptions, ProfilesProgress, read_other_profiles, read_profiles,
-};
+use crate::persist::{CheckOutcome, recheck, reload_profile};
+use crate::profiles::{ProfileSet, ProfilesOptions, ProfilesProgress, read_profiles};
 use crate::safety::SavedBackup;
 use crate::session::{ForeignActivity, Session};
 use crate::summary::identify;
@@ -196,9 +226,10 @@ pub struct ImportSelection {
     pub lighting: bool,
     /// Keymap layers, macros and advanced keys.
     pub keymap_group: bool,
-    /// Dead band (its profile scope is unknown).
+    /// Dead band.
     pub dead_band: bool,
-    /// SOCD (its profile scope is unknown).
+    /// SOCD pairs (the SOCD power is a setting of the whole keyboard and
+    /// keeps the keyboard's value).
     pub socd: bool,
 }
 
@@ -283,7 +314,8 @@ pub enum WriteProgress {
         /// Which sending of the table (1, or 2 for the retry).
         send: u32,
     },
-    /// Reading every written profile again to check the result.
+    /// The final check of a restore ([`FinalCheck`]): reading the SOCD
+    /// power again in the original profile.
     Verifying,
     /// Selecting the original profile again.
     Returning {
@@ -469,9 +501,17 @@ pub struct PlannedWrite {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub completes_binding: bool,
     /// The tables whose binding it completes (written layers that refer to
-    /// the slot, or the macro slots cleared before the layer).
+    /// the slot, the macro slots cleared before the layer, or macro slot 0
+    /// for a macro slot 1-9 written again after it).
     #[serde(skip)]
     pub(crate) binding_tables: Vec<TableId>,
+    /// Set when the write re-sends content the keyboard holds now and the
+    /// backup holds too (`changes` is empty): a macro slot 1-9 after macro
+    /// slot 0, whose write makes the keyboard empty it (see
+    /// [`crate::group`]). Unlike a re-sent commit trigger it changes the
+    /// keyboard's state at that point, and it is checked like any write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resent: Option<ResendReason>,
 }
 
 impl PlannedWrite {
@@ -489,33 +529,34 @@ impl PlannedWrite {
 /// The keyboard saves the base keymap (`18 00`) only when the Fn keymap is
 /// written after it: written alone, the base keymap reads back at once but
 /// is gone after a profile switch, even 6 s later (CONFIRMED on hardware,
-/// spec 4.8.2). The vendor site always writes the macro slots, the base
-/// keymap, the Fn keymap and the advanced-key slots, in that order, and a
-/// restore keeps that order.
+/// spec 4.8.2). It keeps an advanced-key slot (`22`) only when a complete
+/// Fn keymap is written in the same save window (CONFIRMED on hardware,
+/// H20, 2026-10-27: `18 02` then `22` was kept, a `22` alone was lost).
+/// Macro slots need no Fn keymap (CONFIRMED, H19). The vendor site always
+/// writes the macro slots, the base keymap, the Fn keymap and the
+/// advanced-key slots, in that order, and a restore keeps that order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitTriggerReason {
     /// The base keymap is written right before it (CONFIRMED rule). It is
     /// the next write after the base keymap.
     BaseKeymap,
-    /// Neither keymap layer differs, but macro or advanced-key slots are
-    /// written: the unchanged Fn keymap is placed after the macro slots and
-    /// before the advanced-key slots, the vendor site's order (a precaution
-    /// for the macro slots, whose need for it is untested; advanced-key
-    /// slots written after a complete `18 02` persisted, spec 4.8.2).
-    MacrosOrAdvancedKeys,
+    /// Neither keymap layer differs, but advanced-key slots are written:
+    /// the unchanged Fn keymap is written before them (after the macro
+    /// slots), the vendor site's order (CONFIRMED requirement).
+    AdvancedKeys,
 }
 
 impl CommitTriggerReason {
     /// The summary of an unchanged Fn keymap re-sent for this reason.
-    fn resent_summary(self) -> &'static str {
+    pub(crate) fn resent_summary(self) -> &'static str {
         match self {
             CommitTriggerReason::BaseKeymap => {
                 "Fn keymap (18 02) re-sent unchanged to make the keyboard save the base keymap"
             }
-            CommitTriggerReason::MacrosOrAdvancedKeys => {
-                "Fn keymap (18 02) re-sent unchanged to make sure the keyboard saves the macro \
-                 and advanced-key slots (precaution)"
+            CommitTriggerReason::AdvancedKeys => {
+                "Fn keymap (18 02) re-sent unchanged before the advanced-key slots to make the \
+                 keyboard save them"
             }
         }
     }
@@ -526,7 +567,8 @@ impl CommitTriggerReason {
 pub struct EntryChange {
     /// Entry index: the key index (keymap, dead band, trigger), the colour
     /// slot, the macro or advanced-key slot, 0 for the light record; for
-    /// SOCD 0 is the power byte and 1-20 the pair entries 0-19.
+    /// SOCD 0 is the power byte (of every profile; only in the restore's
+    /// first SOCD write) and 1-20 the pair entries 0-19.
     pub index: usize,
     /// The keyboard's bytes (empty for an empty macro or advanced-key slot).
     pub old: HexBytes,
@@ -687,22 +729,22 @@ pub enum PlanWarning {
     },
     /// The capability flags (status bytes 17-18) differ.
     CapabilityFlagsDiffer,
-    /// Tables whose profile scope is unknown (they may be shared by all
-    /// profiles) are written, and the restore does not cover every profile:
-    /// the other profiles may change too.
-    SharedTablesMayChangeOtherProfiles {
-        /// The tables written.
-        tables: Vec<TableId>,
-        /// The profiles the restore does not cover.
-        profiles: Vec<u8>,
+    /// A restored profile of the backup holds another SOCD power than the
+    /// profile that was active when the backup was made, but the keyboard
+    /// has one power for all profiles: the power of `profile` (that active
+    /// profile) is restored.
+    SocdPowerDiffersInBackup {
+        /// The profile whose power is restored.
+        profile: u8,
+        /// That power (on = true).
+        power: bool,
     },
-    /// The backup holds different copies of a table whose scope is unknown,
-    /// while the keyboard holds the same copy in every profile it was read
-    /// in: the table is probably shared, and the backup cannot be restored
-    /// exactly (the final check will report it).
-    LikelySharedTableDiffers {
-        /// The table.
-        table: TableId,
+    /// An import that includes SOCD writes the file's pairs only: the SOCD
+    /// power is one setting of the whole keyboard, not part of a profile,
+    /// and keeps the keyboard's value.
+    SocdPowerNotImported {
+        /// The keyboard's power, which is kept (on = true).
+        power: bool,
     },
     /// An import: profile `from` of the file is written to profile `into`
     /// of the keyboard.
@@ -767,6 +809,7 @@ pub fn plan_restore(
         options.allow_firmware_mismatch,
     )?;
     warnings.extend(constant_warnings(target.primary(), current.primary()));
+    let (socd_power, socd_warnings) = socd_power_target(target, current, options, scope);
 
     let mut profiles = Vec::new();
     for profile in scope.iter() {
@@ -782,7 +825,8 @@ pub fn plan_restore(
                     .import
                     .as_ref()
                     .map(|import| ImportGuard::new(model, import, c, current.primary()));
-                let mut items = plan_profile(model, t, c, guard.as_ref(), &mut warnings);
+                let mut items =
+                    plan_profile(model, t, c, socd_power, guard.as_ref(), &mut warnings);
                 if let Some(import) = &options.import {
                     warnings.extend(apply_import(import, &mut items));
                 }
@@ -800,6 +844,7 @@ pub fn plan_restore(
         };
         profiles.push(plan);
     }
+    place_socd_power(&mut profiles, current, socd_power);
     if let Some(import) = &options.import {
         warnings.insert(
             0,
@@ -809,7 +854,7 @@ pub fn plan_restore(
             },
         );
     }
-    warnings.extend(scope_warnings(target, current, &profiles));
+    warnings.extend(socd_warnings);
     Ok(RestorePlan {
         product: current.device.product.clone(),
         backup_created_at: target.created_at.clone(),
@@ -1016,8 +1061,8 @@ pub enum ItemResult {
         warnings: Vec<WriteWarning>,
     },
     /// The keyboard already held the target bytes when the table was about
-    /// to be written (for example a global table written in an earlier
-    /// profile).
+    /// to be written (for example an empty macro slot that this restore's
+    /// macro slot-0 write had emptied already).
     AlreadyMatched,
     /// Failed; later tables were not attempted.
     Failed {
@@ -1051,6 +1096,11 @@ pub struct ItemReport {
     /// changes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub resent_unchanged: bool,
+    /// Set when it re-sends content the plan does not change (see
+    /// [`PlannedWrite::resent`]); unlike `resent_unchanged` the write
+    /// restores what the keyboard had just emptied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resent: Option<ResendReason>,
     /// What happened.
     pub result: ItemResult,
 }
@@ -1073,16 +1123,19 @@ pub struct FinalMismatch {
     pub mismatch: Mismatch,
 }
 
-/// The final check: every profile in scope read again after a table whose
-/// profile scope is unknown was written (and the plan compares several
-/// profiles). It compares every written table and every unknown-scope table
-/// the plan left unchanged.
+/// The final check: the SOCD power is one setting of the whole keyboard
+/// (H21, 2026-10-27), so after a restore that changed it in a profile other
+/// than the original one, the power is read once more in the original
+/// profile, where the restore ends (one read is enough; the pairs belong to
+/// each profile and the persistence check read them). A switch on the
+/// keyboard (Fn + Right Shift) since the write is the user's and not
+/// compared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FinalCheck {
-    /// The profiles read.
+    /// The profiles read (the original one).
     pub profiles: Vec<u8>,
-    /// Tables that no longer hold the backup's bytes (a global table written
-    /// with different contents in two profiles, or another program).
+    /// What no longer holds the restored values (a keyboard that does not
+    /// share the SOCD power, or another program).
     pub mismatches: Vec<FinalMismatch>,
 }
 
@@ -1104,10 +1157,10 @@ pub struct PersistenceCheck {
     pub persisted: usize,
     /// Written tables that did not ([`ItemResult::Lost`]).
     pub lost: usize,
-    /// Written tables that could not be checked: a table that may be shared
-    /// by all profiles and holds what this restore wrote to it in another
-    /// profile ([`Persistence::NotChecked`]; the final check compares it
-    /// with the backup).
+    /// Written tables that could not be checked: SOCD switched on the
+    /// keyboard (Fn + Right Shift) after it was written, whose power is
+    /// then the user's ([`Persistence::NotChecked`], with
+    /// [`WriteWarning::SocdToggledOnKeyboard`]).
     pub not_checked: usize,
 }
 
@@ -1148,11 +1201,16 @@ pub struct RestoreReport {
     /// restores them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dangling: Vec<DanglingBinding>,
+    /// Macro slots left empty because the restore wrote macro slot 0 (which
+    /// makes the keyboard empty slots 1-9) and stopped before writing them
+    /// again (the undo command restores them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cleared_macros: Vec<ClearedMacro>,
     /// A cancellation was asked for (Ctrl+C), but every write still made
     /// after it was needed to keep the keymap group consistent (the Fn
     /// keymap that makes the keyboard save a base keymap, a slot a written
-    /// key refers to): with [`Outcome::Completed`] everything planned was
-    /// written.
+    /// key refers to, the macro slots after slot 0): with
+    /// [`Outcome::Completed`] everything planned was written.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cancel_requested: bool,
 }
@@ -1224,6 +1282,20 @@ impl ItemResult {
         )
     }
 
+    /// Whether the table was sent but the keyboard did not keep it
+    /// ([`ItemResult::Lost`]) or will drop it at the next profile switch: a
+    /// base keymap after which the Fn-keymap write never came
+    /// ([`ItemResult::MaybeLost`] with [`WriteWarning::BaseKeymapNotSaved`]).
+    pub(crate) fn may_be_dropped(&self) -> bool {
+        match self {
+            ItemResult::Lost { .. } => true,
+            ItemResult::MaybeLost { warnings, .. } => {
+                warnings.contains(&WriteWarning::BaseKeymapNotSaved)
+            }
+            _ => false,
+        }
+    }
+
     /// A written item whose save is unconfirmed ([`Persistence::NotChecked`])
     /// as [`ItemResult::MaybeLost`]; any other result unchanged.
     pub(crate) fn into_maybe_lost(self) -> ItemResult {
@@ -1279,6 +1351,7 @@ pub fn execute_restore<T: WriteTransport>(
                         summary: write.summary.clone(),
                         commit_trigger: write.commit_trigger,
                         resent_unchanged: write.is_resent_unchanged(),
+                        resent: write.resent,
                         result: ItemResult::NotAttempted,
                     })
                     .collect(),
@@ -1290,6 +1363,7 @@ pub fn execute_restore<T: WriteTransport>(
         undo_command: saved.undo_command(),
         foreign_activity: None,
         dangling: Vec::new(),
+        cleared_macros: Vec::new(),
         cancel_requested: false,
     };
     if !saved.describes(&prepared.safety) {
@@ -1323,11 +1397,12 @@ pub fn execute_restore<T: WriteTransport>(
     let mut run = Run {
         prepared,
         progress: &mut progress,
-        written: HashMap::new(),
+        socd_power_written: None,
         cancel: false,
         socd_mark: None,
         packet_sent: false,
         started: Vec::new(),
+        macros_cleared_in: Vec::new(),
     };
     let result = run.all_profiles(&mut writer, &order, &mut report);
     report.cancel_requested = run.cancel;
@@ -1367,7 +1442,8 @@ pub fn execute_restore<T: WriteTransport>(
         }
     }
 
-    if report.outcome == Outcome::Completed && needs_final_check(&prepared.plan, &report) {
+    if report.outcome == Outcome::Completed && needs_final_check(&prepared.plan, &report, original)
+    {
         if let Err(error) = run.final_check(&mut writer, original, &mut report) {
             report.fail(error);
         }
@@ -1395,22 +1471,26 @@ pub fn execute_restore<T: WriteTransport>(
     }
     report.foreign_activity = writer.foreign_activity_seen();
     if !report.is_success() {
-        report.dangling = restore_dangling(prepared, &report, &run.started);
+        let (dangling, cleared) = restore_dangling(prepared, &report, &run.started);
+        report.dangling = dangling;
+        report.cleared_macros = cleared;
     }
     report
 }
 
 /// The keys a restore that stopped part-way left referring to an empty
-/// slot (or may have): per written profile, the keymap group as the safety
-/// backup read it with every table the restore sent applied, also a table
-/// that failed after some of its packets went out (`started`: profile and
-/// item index).
+/// slot (or may have), and the macro slots its slot-0 write left empty: per
+/// written profile, from the keymap group as the safety backup read it and
+/// every table the restore sent or started ([`left_behind`]; `started`:
+/// profile and item index of every table at least one packet of which went
+/// out).
 fn restore_dangling(
     prepared: &PreparedRestore,
     report: &RestoreReport,
     started: &[(u8, usize)],
-) -> Vec<DanglingBinding> {
+) -> (Vec<DanglingBinding>, Vec<ClearedMacro>) {
     let mut out = Vec::new();
+    let mut cleared = Vec::new();
     for profile_report in &report.profiles {
         let Some(profile) = ProfileId::new(profile_report.profile) else {
             continue;
@@ -1418,20 +1498,122 @@ fn restore_dangling(
         let Some(before) = prepared.safety.snapshot(profile).map(group_view) else {
             continue;
         };
-        let mut after = before.clone();
-        let writes = prepared
+        let writes: Vec<SentWrite<'_>> = prepared
             .plan
             .writes()
             .filter(|(p, _, _)| *p == profile)
-            .map(|(_, _, w)| w);
-        for (index, (write, item)) in writes.zip(&profile_report.items).enumerate() {
-            if item.result.was_sent() || started.contains(&(profile.get(), index)) {
-                apply_to_view(&mut after, &write.request);
+            .zip(&profile_report.items)
+            .enumerate()
+            .map(|(index, ((_, _, write), item))| SentWrite {
+                request: &write.request,
+                sent: item.result.was_sent(),
+                started: started.contains(&(profile.get(), index)),
+                may_be_dropped: item.result.may_be_dropped(),
+            })
+            .collect();
+        let (dangling, emptied) = left_behind(profile.get(), &before, &writes);
+        out.extend(dangling);
+        cleared.extend(emptied);
+    }
+    (out, cleared)
+}
+
+/// One planned write of a keymap group and what became of it, for
+/// [`left_behind`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SentWrite<'a> {
+    /// The write.
+    pub(crate) request: &'a WriteRequest,
+    /// It was sent completely (written and verified).
+    pub(crate) sent: bool,
+    /// At least one of its packets went out.
+    pub(crate) started: bool,
+    /// It was sent, but the keyboard did not keep it or will drop it
+    /// ([`ItemResult::may_be_dropped`]).
+    pub(crate) may_be_dropped: bool,
+}
+
+/// What a keymap group that stopped part-way left behind, from `before`
+/// (the group as the operation found it) and its planned writes in order
+/// ([`SentWrite`]):
+///
+/// * the macro slots 1-9 that held content, were emptied by the slot-0
+///   write (once a packet of it went out) and were not written again
+///   completely although the plan keeps them ([`ClearedMacro`]);
+/// * the keys that refer to an empty slot now, or may (the keyboard may
+///   hold either the old or the new content of a write it may drop), and
+///   did not before ([`DanglingBinding`]): every write a packet of which
+///   went out counts as made, except that a cleared macro slot counts as
+///   empty; a write the keyboard may drop, and a write that went out only
+///   in part or failed after its packets (not [`SentWrite::sent`]), also
+///   count as not made (a key of either layer counts, a slot is empty when
+///   either content is). A base keymap whose Fn-keymap write never came,
+///   for example, goes back to its old entries at the next profile switch,
+///   and so does a base keymap whose own write failed (the group stops
+///   before the Fn keymap), while the macro slots the group's slot-0 write
+///   emptied stay empty (macro slots are saved on their own).
+pub(crate) fn left_behind(
+    profile: u8,
+    before: &GroupView,
+    writes: &[SentWrite<'_>],
+) -> (Vec<DanglingBinding>, Vec<ClearedMacro>) {
+    // Every write made, and every write made except those the keyboard
+    // may drop or may not hold completely.
+    let mut after = before.clone();
+    let mut kept = before.clone();
+    let mut restored = before.clone();
+    for write in writes {
+        if write.sent || write.started {
+            apply_to_view(&mut after, write.request);
+            if write.sent && !write.may_be_dropped {
+                apply_to_view(&mut kept, write.request);
             }
         }
-        out.extend(dangling_after(profile.get(), &before, &after));
+        if write.sent || (write.started && clears_other_macros(write.request.table())) {
+            apply_to_view(&mut restored, write.request);
+        }
     }
-    out
+    let planned = kept_macros(writes.iter().map(|w| w.request));
+    let cleared = cleared_macros(profile, before, &restored, &planned);
+    for view in [&mut after, &mut kept] {
+        for macro_slot in &cleared {
+            if let Some(full) = view.macros.get_mut(usize::from(macro_slot.slot.get())) {
+                *full = false;
+            }
+        }
+    }
+    // A slot holds content only when it does either way.
+    for (a, k) in after.macros.iter_mut().zip(kept.macros.iter_mut()) {
+        *a &= *k;
+        *k = *a;
+    }
+    for (a, k) in after.advanced.iter_mut().zip(kept.advanced.iter_mut()) {
+        *a &= *k;
+        *k = *a;
+    }
+    let mut dangling = dangling_after(profile, before, &after);
+    for binding in dangling_after(profile, before, &kept) {
+        if !dangling.contains(&binding) {
+            dangling.push(binding);
+        }
+    }
+    (dangling, cleared)
+}
+
+/// The macro slots 1-9 a plan writes with content after its macro slot-0
+/// write (none without one): the slots it means to keep.
+pub(crate) fn kept_macros<'a>(
+    requests: impl Iterator<Item = &'a WriteRequest> + Clone,
+) -> Vec<MacroSlotId> {
+    if !requests.clone().any(|r| clears_other_macros(r.table())) {
+        return Vec::new();
+    }
+    requests
+        .filter_map(|r| match r {
+            WriteRequest::Macro(slot, data) if slot.get() != 0 && !data.is_empty() => Some(*slot),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The keymap group of a snapshot as a [`GroupView`] (unknown layers and
@@ -1464,8 +1646,14 @@ pub(crate) fn group_view(view: SnapshotView<'_>) -> GroupView {
     group
 }
 
-/// Applies a sent write to a [`GroupView`].
+/// Applies a sent write to a [`GroupView`] (a macro slot-0 write also
+/// empties slots 1-9, see [`crate::group`]).
 pub(crate) fn apply_to_view(view: &mut GroupView, request: &WriteRequest) {
+    if clears_other_macros(request.table()) {
+        for slot in slots_cleared_by_slot0() {
+            view.macros[usize::from(slot.get())] = false;
+        }
+    }
     match request {
         WriteRequest::Keymap(layer, data) => view.layers[layer_index(*layer)] = Some(data.clone()),
         WriteRequest::Macro(slot, data) => view.macros[usize::from(slot.get())] = !data.is_empty(),
@@ -1568,9 +1756,10 @@ impl GroupWrite for RestoreWrite<'_> {
 struct Run<'a, P: FnMut(WriteProgress) -> ControlFlow<()>> {
     prepared: &'a PreparedRestore,
     progress: &'a mut P,
-    /// What this restore wrote, per table (and key): a global table written
-    /// in an earlier profile reads back like this.
-    written: HashMap<(TableId, Option<KeyPos>), Vec<TableState>>,
+    /// The SOCD power this restore wrote (0 or 1), once a SOCD write was
+    /// made: one setting of the whole keyboard, so every profile reads it
+    /// from then on.
+    socd_power_written: Option<u8>,
     cancel: bool,
     /// The session's SOCD push count right after the last SOCD write (a
     /// later switch on the keyboard is not a lost write, see
@@ -1581,6 +1770,10 @@ struct Run<'a, P: FnMut(WriteProgress) -> ControlFlow<()>> {
     /// (profile, item index) of every table at least one packet of which
     /// went out.
     started: Vec<(u8, usize)>,
+    /// The profiles in which this restore's macro slot-0 write went out (at
+    /// least one packet): their macro slots 1-9 may read empty from then on
+    /// (see [`crate::group`]).
+    macros_cleared_in: Vec<ProfileId>,
 }
 
 impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
@@ -1657,6 +1850,9 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
             let result = self.one_table(writer, profile, table, key, write);
             if self.packet_sent {
                 self.started.push((profile.get(), index));
+                if clears_other_macros(table) {
+                    self.macros_cleared_in.push(profile);
+                }
             }
             let (item_result, stop) = match result {
                 Ok(item_result) => (item_result, None),
@@ -1726,7 +1922,7 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
     ) -> Result<ItemResult, TableFailure> {
         let request = &write.request;
         let reads = request.verify_reads();
-        let planned = self
+        let mut planned = self
             .prepared
             .safety
             .snapshot(profile)
@@ -1738,15 +1934,23 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
                 state_of(request, &replies)
             })
             .unwrap_or_default();
-        let state_key = (table, key);
-        // Only a table whose profile scope is unknown may hold what this
-        // restore wrote in an earlier profile (it may be global). Tables that
-        // are per profile must still hold exactly the planned state.
-        let written_here = if possibly_global(table) {
-            self.written.get(&state_key).cloned().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Every table must still hold exactly the planned state, except
+        // what this restore's own writes changed: the SOCD power (one
+        // setting of the whole keyboard) written in an earlier profile,
+        // which every profile reads from then on (the power of the safety
+        // backup no longer: reading it means that it was switched back, on
+        // the keyboard or by another program), with this profile's planned
+        // pairs; and the macro slots 1-9 its macro slot-0 write emptied (see
+        // `crate::group`).
+        if let (WriteRequest::Socd(_), Some(power), [settings, _]) =
+            (request, self.socd_power_written, planned.as_mut_slice())
+        {
+            *settings = Some(vec![power]);
+        }
+        let mut written_here: Vec<TableState> = Vec::new();
+        if self.macros_cleared_in.contains(&profile) && emptied_by_slot0(table) {
+            written_here.extend(emptied_macro_states());
+        }
 
         // The commit trigger is sent even when the keyboard already holds it;
         // only an Fn-keymap write can be one.
@@ -1793,11 +1997,8 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
             &written_here,
             &mut on_packet,
         )?;
-        if matches!(result, ItemResult::Written { .. }) {
-            self.written
-                .entry(state_key)
-                .or_default()
-                .push(expected_state(request));
+        if let (ItemResult::Written { .. }, WriteRequest::Socd(socd)) = (&result, request) {
+            self.socd_power_written = Some(u8::from(socd.power()));
         }
         Ok(result)
     }
@@ -1814,9 +2015,8 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
     /// Every switch waits for the commit settle first.
     ///
     /// A table that no longer holds what was written becomes
-    /// [`ItemResult::Lost`] and fails the restore; a table that may be shared
-    /// by all profiles and holds what this restore wrote in another profile
-    /// stays [`Persistence::NotChecked`] (the final check compares it).
+    /// [`ItemResult::Lost`] and fails the restore; a SOCD write whose power
+    /// was switched on the keyboard since stays [`Persistence::NotChecked`].
     /// Lost writes are reported; an `Err` is a failed read or switch. Not
     /// cancellable: it only reads and switches profiles.
     fn persistence_check<T: WriteTransport>(
@@ -1941,22 +2141,10 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
                 // the keyboard save are checked themselves.
                 continue;
             }
-            // A table that may be shared by all profiles can hold what this
-            // restore wrote to it in another profile; the final check
-            // compares it with the backup.
-            let table = item.table;
-            let states = possibly_global(table)
-                .then(|| self.written.get(&(table, item.key)))
-                .flatten();
-            let written_elsewhere =
-                |state: &TableState| states.is_some_and(|states| states.contains(state));
-            match recheck(
-                writer,
-                &write.request,
-                &mut item.result,
-                &written_elsewhere,
-                self.socd_mark,
-            )? {
+            // Every SOCD write of the restore sends the same power, so a
+            // later one in another profile leaves this one's power as
+            // written.
+            match recheck(writer, &write.request, &mut item.result, self.socd_mark)? {
                 CheckOutcome::Persisted => check.persisted += 1,
                 CheckOutcome::Lost => check.lost += 1,
                 CheckOutcome::NotChecked => {
@@ -1969,149 +2157,62 @@ impl<P: FnMut(WriteProgress) -> ControlFlow<()>> Run<'_, P> {
         Ok(())
     }
 
-    /// Reads every profile in scope again and compares with the backup every
-    /// written table, and every table whose profile scope is unknown that the
-    /// plan left unchanged (a shared table written in another profile changes
-    /// it too). Not cancellable: it only reads and switches profiles, and it
-    /// always returns to the original profile.
+    /// The final check (see [`FinalCheck`]): reads the SOCD power once more
+    /// in the original profile, where the restore ended, and compares it
+    /// with the power this restore wrote. Not cancellable: it only reads.
     fn final_check<T: WriteTransport>(
         &mut self,
         writer: &mut Writer<'_, T>,
         original: ProfileId,
         report: &mut RestoreReport,
     ) -> Result<(), ErrorInfo> {
+        let Some(power) = self.socd_power_written else {
+            return Ok(());
+        };
         let _ = (self.progress)(WriteProgress::Verifying);
-        let scope: Vec<ProfileId> = self
-            .prepared
-            .plan
-            .profiles
-            .iter()
-            .map(|p| p.profile)
-            .collect();
-        let product = self.prepared.safety.device.product.clone();
-        let mut snapshots: Vec<(ProfileId, Vec<RawResponse>)> = Vec::new();
-        if scope.contains(&original) {
-            let snapshot = writer
-                .read_snapshot(original, &mut |_| ControlFlow::Continue(()))
-                .map_err(|e| ErrorInfo::new(e.kind(), &e))?;
-            snapshots.push((original, raws(&snapshot.entries)));
-        }
-        let others: Vec<ProfileId> = scope.iter().copied().filter(|p| *p != original).collect();
-        let progress = &mut *self.progress;
-        // Shown, but a cancellation request is ignored: every table was
-        // already written, and stopping here would only skip the check.
-        let read = read_other_profiles(writer, original, &others, product.as_deref(), &mut |p| {
-            let _ = progress(WriteProgress::SafetyBackup { progress: p });
-            ControlFlow::Continue(())
-        })
-        .map_err(|e| ErrorInfo::new(e.kind(), &e))?;
-        for (profile, snapshot) in others.iter().zip(read) {
-            snapshots.push((*profile, raws(&snapshot.entries)));
-        }
-
+        let reply = writer
+            .read(ReadRequest::SocdSettings)
+            .map_err(|e| ErrorInfo::new(e.kind(), &e))?;
+        let got = reply
+            .payload()
+            .get(..1)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+        // Switched on the keyboard (Fn + Right Shift) since this restore's
+        // SOCD write: the power is the user's.
+        let switched = self
+            .socd_mark
+            .is_some_and(|mark| writer.session().socd_pushes() > mark);
         let mut mismatches = Vec::new();
-        for (profile, replies) in &snapshots {
-            let done = report
-                .profiles
-                .iter()
-                .find(|p| p.profile == profile.get())
-                .map(|p| p.items.as_slice())
-                .unwrap_or_default();
-            let writes = self
-                .prepared
-                .plan
-                .writes()
-                .filter(|(p, _, _)| p == profile)
-                .map(|(_, _, w)| w);
-            let pushes = writer.session().socd_pushes();
-            let mut toggled: Vec<usize> = Vec::new();
-            for (index, (write, item)) in writes.zip(done).enumerate() {
-                if !matches!(
-                    item.result,
-                    ItemResult::Written { .. } | ItemResult::AlreadyMatched
-                ) {
-                    continue;
-                }
-                if let Err(mismatch) = write.request.check(replies) {
-                    // SOCD switched on the keyboard since it was written:
-                    // the user's switch, not a lost write.
-                    let now = state_of(&write.request, replies);
-                    if socd_toggled(pushes, &write.request, &now, self.socd_mark).is_some() {
-                        toggled.push(index);
-                        continue;
-                    }
-                    mismatches.push(FinalMismatch {
-                        profile: profile.get(),
-                        mismatch,
-                    });
-                }
-            }
-            for index in toggled {
-                let Some(item) = report.item_mut(*profile, index) else {
-                    continue;
-                };
-                let now = power_of(replies);
-                if let ItemResult::Written {
-                    warnings,
-                    persistence,
-                    ..
-                } = &mut item.result
-                {
-                    *persistence = Persistence::NotChecked;
-                    let warning = WriteWarning::SocdToggledOnKeyboard { power: now };
-                    if !warnings.contains(&warning) {
-                        warnings.push(warning);
-                    }
-                }
-            }
-            // Tables of unknown scope that this profile's plan left
-            // unchanged must still hold the backup's bytes.
-            let (Some(plan), Some(target)) = (
-                self.prepared
-                    .plan
-                    .profiles
-                    .iter()
-                    .find(|p| p.profile == *profile),
-                self.prepared.target_snapshot(*profile),
-            ) else {
-                continue;
-            };
-            let socd_switched = self
-                .socd_mark
-                .is_some_and(|mark| writer.session().socd_pushes() > mark);
-            for item in plan
-                .items
-                .iter()
-                .filter(|i| matches!(i.action, PlanAction::Unchanged) && possibly_global(i.table))
-            {
-                let mismatch = if socd_switched && item.table == TableId::Socd {
-                    // SOCD was switched on the keyboard after a SOCD write
-                    // of this restore: its power is the user's; the pairs
-                    // are still compared.
-                    socd_mismatch(ReadRequest::SocdPairs, target, replies)
-                } else {
-                    unchanged_mismatch(item.table, target, replies)
-                };
-                if let Some(mismatch) = mismatch {
-                    mismatches.push(FinalMismatch {
-                        profile: profile.get(),
-                        mismatch,
-                    });
-                }
-            }
+        if got != [power] && !switched {
+            mismatches.push(FinalMismatch {
+                profile: original.get(),
+                mismatch: Mismatch {
+                    table: TableId::Socd,
+                    read: ReadRequest::SocdSettings,
+                    kind: if got.is_empty() {
+                        MismatchKind::MissingReply
+                    } else {
+                        MismatchKind::Differs
+                    },
+                    expected: HexBytes(vec![power]),
+                    got: HexBytes(got),
+                },
+            });
         }
         let failed = !mismatches.is_empty();
         report.final_check = Some(FinalCheck {
-            profiles: snapshots.iter().map(|(p, _)| p.get()).collect(),
+            profiles: vec![original.get()],
             mismatches,
         });
         if failed {
             return Err(ErrorInfo {
                 kind: ErrorKind::VerifyFailed,
-                message: "after writing every profile, some tables no longer hold the backup's \
-                          bytes (a table shared by all profiles, or another program); see the \
-                          final check"
-                    .to_string(),
+                message: format!(
+                    "profile {original} does not read the SOCD power this restore wrote in \
+                     another profile: the keyboard did not apply it to every profile, or another \
+                     program changed it; see the final check"
+                ),
             });
         }
         Ok(())
@@ -2297,111 +2398,23 @@ fn persistence_order(
     order
 }
 
-/// Whether a final check is needed: a table whose profile scope is unknown
-/// was written, and the plan compares two or more profiles (whose copies of
-/// that table may be one shared table).
-fn needs_final_check(plan: &RestorePlan, report: &RestoreReport) -> bool {
-    let compared = plan.profiles.iter().filter(|p| p.compared).count();
-    let unknown_scope = report
-        .items()
-        .any(|(_, i)| matches!(i.result, ItemResult::Written { .. }) && possibly_global(i.table));
-    compared >= 2 && unknown_scope
-}
-
-/// The difference between the backup's copy of an unchanged table of
-/// unknown scope and the keyboard's `replies`, if any.
-fn unchanged_mismatch(
-    table: TableId,
-    target: SnapshotView<'_>,
-    replies: &[RawResponse],
-) -> Option<Mismatch> {
-    if table == TableId::Socd {
-        return [ReadRequest::SocdSettings, ReadRequest::SocdPairs]
-            .into_iter()
-            .find_map(|read| socd_mismatch(read, target, replies));
-    }
-    let (read, range) = match table {
-        TableId::CustomColors { table } => (ReadRequest::CustomColors(table), None),
-        TableId::DeadBand => (ReadRequest::DeadBand, None),
-        TableId::Keymap { layer } => (ReadRequest::Keymap(layer), None),
-        TableId::AdvancedKey { slot } => {
-            let start = usize::from(slot.get()) * ADVANCED_SLOT_LEN;
-            (
-                ReadRequest::AdvancedKeys,
-                Some(start..start + ADVANCED_SLOT_LEN),
-            )
-        }
-        _ => return None,
-    };
-    let part = |bytes: Vec<u8>| match &range {
-        Some(range) => bytes
-            .get(range.clone())
-            .map(<[u8]>::to_vec)
-            .unwrap_or_default(),
-        None => bytes,
-    };
-    let expected = part(content(target.response(read)?));
-    let mismatch = |kind, got: Vec<u8>| Mismatch {
-        table,
-        read,
-        kind,
-        expected: HexBytes(expected.clone()),
-        got: HexBytes(got),
-    };
-    let Some(reply) = replies.iter().rev().find(|r| r.request() == read) else {
-        return Some(mismatch(MismatchKind::MissingReply, Vec::new()));
-    };
-    let got = part(content(reply));
-    (got != expected).then(|| mismatch(MismatchKind::Differs, got))
-}
-
-/// The difference of one SOCD read (power byte of `24 02`, the pairs of
-/// `24 01`) between the backup and the keyboard's `replies`, if any.
-fn socd_mismatch(
-    read: ReadRequest,
-    target: SnapshotView<'_>,
-    replies: &[RawResponse],
-) -> Option<Mismatch> {
-    let part = |raw: &RawResponse| match read {
-        ReadRequest::SocdSettings => raw.payload().get(..1).map(<[u8]>::to_vec),
-        _ => Some(content(raw)),
-    };
-    let expected = part(target.response(read)?)?;
-    let mismatch = |kind, got: Vec<u8>| Mismatch {
-        table: TableId::Socd,
-        read,
-        kind,
-        expected: HexBytes(expected.clone()),
-        got: HexBytes(got),
-    };
-    let Some(reply) = replies.iter().rev().find(|r| r.request() == read) else {
-        return Some(mismatch(MismatchKind::MissingReply, Vec::new()));
-    };
-    let got = part(reply).unwrap_or_default();
-    (got != expected).then(|| mismatch(MismatchKind::Differs, got))
-}
-
-/// SOCD's power in the `24 02` reply among `replies` (on = 1).
-fn power_of(replies: &[RawResponse]) -> bool {
-    replies
-        .iter()
-        .rev()
-        .find(|r| r.request() == ReadRequest::SocdSettings)
-        .and_then(|r| r.payload().first().copied())
-        == Some(1)
-}
-
-/// Whether a writable table's profile scope is unknown (it may be shared by
-/// all profiles): the dead band and SOCD. Main light, triggers, both keymap
-/// layers, macros, advanced keys and custom colours 1 are per profile
-/// (OBSERVED, c04 / c10 / c16 and the all-profile backups of 2026-10-24 and
-/// 2026-10-27; spec 4.5.4, 7.3, 7.4).
-pub(crate) fn possibly_global(table: TableId) -> bool {
-    matches!(table, TableId::DeadBand | TableId::Socd)
-}
-
-fn raws(entries: &[crate::BackupEntry]) -> Vec<RawResponse> {
-    entries.iter().map(|e| e.raw.clone()).collect()
+/// Whether the final check is needed: a SOCD write that changes the power
+/// (one setting of the whole keyboard) was made in a profile other than
+/// the original one, where the restore ends.
+fn needs_final_check(plan: &RestorePlan, report: &RestoreReport, original: ProfileId) -> bool {
+    plan.writes()
+        .filter(|(profile, item, write)| {
+            *profile != original
+                && item.table == TableId::Socd
+                && write.changes.iter().any(|change| change.index == 0)
+        })
+        .any(|(profile, _, _)| {
+            report.items().any(|(p, item)| {
+                p == profile.get()
+                    && item.table == TableId::Socd
+                    && matches!(item.result, ItemResult::Written { .. })
+            })
+        })
 }
 
 /// The bytes `request` changes, as read in `replies`, one entry per verify
@@ -2441,6 +2454,22 @@ fn compared_bytes(request: &WriteRequest, reply: &RawResponse) -> Option<Vec<u8>
         // of `24 02` and the pairs of `24 01`).
         WriteRequest::AdvancedKey(..) | WriteRequest::Socd(_) => request.observed_bytes(reply),
     }
+}
+
+/// Whether `table` is a macro slot that a macro slot-0 write empties (slots
+/// 1-9, see [`crate::group`]).
+pub(crate) fn emptied_by_slot0(table: TableId) -> bool {
+    matches!(table, TableId::Macro { slot } if slot.get() != 0)
+}
+
+/// What a macro slot 1-9 reads after the operation's own macro slot-0 write
+/// emptied it, in the form of [`state_of`]: all `FF` (OBSERVED,
+/// `hw/v02/v02-final.owbackup.json`), or all `00` (the other empty form).
+pub(crate) fn emptied_macro_states() -> Vec<TableState> {
+    [0xFF, 0x00]
+        .into_iter()
+        .map(|byte| vec![Some(vec![byte; MACRO_SLOT_LEN])])
+        .collect()
 }
 
 /// What the keyboard reads back after `request` was written, in the form of
@@ -2565,60 +2594,194 @@ fn check_keyboard(
     Ok(warnings)
 }
 
-/// Warnings about tables whose profile scope is unknown (dead band, SOCD):
-/// written while the restore does not cover every profile, or backed up with
-/// different copies while the keyboard holds one copy in every profile.
-fn scope_warnings(target: &Backup, current: &Backup, profiles: &[ProfilePlan]) -> Vec<PlanWarning> {
+/// The SOCD power byte of a snapshot (`24 02` payload byte 0), if read.
+fn socd_power_of(view: SnapshotView<'_>) -> Option<u8> {
+    view.response(ReadRequest::SocdSettings)
+        .and_then(|raw| raw.payload().first().copied())
+}
+
+/// The SOCD power every SOCD write of the plan sends: one setting of the
+/// whole keyboard (H21, 2026-10-27). For an import the keyboard's (the
+/// power is not part of a profile, [`PlanWarning::SocdPowerNotImported`]
+/// when SOCD is imported); else the backup's power of the profile that was
+/// active when it was made (its primary snapshot), with
+/// [`PlanWarning::SocdPowerDiffersInBackup`] when a restored profile of the
+/// backup holds another one. `None` when no snapshot holds it.
+fn socd_power_target(
+    target: &Backup,
+    current: &Backup,
+    options: &RestoreOptions,
+    scope: ProfileSet,
+) -> (Option<u8>, Vec<PlanWarning>) {
     let mut warnings = Vec::new();
-    let mut written: Vec<TableId> = Vec::new();
-    for item in profiles.iter().flat_map(|p| p.items.iter()) {
-        // An unchanged Fn keymap re-sent as the commit trigger writes the
-        // bytes the keyboard holds: it changes no other profile.
-        let changes = matches!(&item.action, PlanAction::Write(w) if !w.is_resent_unchanged());
-        if changes && possibly_global(item.table) && !written.contains(&item.table) {
-            written.push(item.table);
+    if let Some(import) = &options.import {
+        let power = current
+            .snapshot(import.into)
+            .and_then(socd_power_of)
+            .or_else(|| socd_power_of(current.primary()));
+        if let (true, Some(power)) = (import.include.socd, power) {
+            warnings.push(PlanWarning::SocdPowerNotImported { power: power == 1 });
         }
+        return (power, warnings);
     }
-    let covered: Vec<u8> = profiles
+    let restored: Vec<u8> = scope
         .iter()
-        .filter(|p| p.compared)
-        .map(|p| p.profile.get())
+        .filter_map(|profile| target.snapshot(profile).and_then(socd_power_of))
         .collect();
-    let uncovered: Vec<u8> = ProfileId::ALL
-        .into_iter()
-        .map(ProfileId::get)
-        .filter(|p| !covered.contains(p))
-        .collect();
-    if !written.is_empty() && !uncovered.is_empty() {
-        warnings.push(PlanWarning::SharedTablesMayChangeOtherProfiles {
-            tables: written,
-            profiles: uncovered,
+    let Some(power) = socd_power_of(target.primary()).or_else(|| restored.first().copied()) else {
+        return (None, warnings);
+    };
+    if let (true, Some(active)) = (restored.iter().any(|p| *p != power), target.active_profile) {
+        warnings.push(PlanWarning::SocdPowerDiffersInBackup {
+            profile: active,
+            power: power == 1,
         });
     }
-    let shared = [
-        (TableId::DeadBand, ReadRequest::DeadBand),
-        (TableId::Socd, ReadRequest::SocdPairs),
-    ];
-    // Only the profiles read from the keyboard are compared: a backup copy
-    // of a profile outside the restore (say profile 1, with its own
-    // colours) says nothing about whether the keyboard shares the table.
-    let read_profiles = current.profile_numbers();
-    let copies = |backup: &Backup, read: ReadRequest| -> Vec<Vec<u8>> {
-        backup
-            .snapshots()
-            .into_iter()
-            .filter(|view| view.profile().is_some_and(|p| read_profiles.contains(&p)))
-            .filter_map(|view| view.response(read).map(content))
-            .collect()
+    (Some(power), warnings)
+}
+
+/// Places the SOCD power change once for the whole restore (the power is
+/// one setting of the whole keyboard): the first SOCD write in execution
+/// order (the original profile first, then ascending) shows it as entry 0.
+/// Without any SOCD write, a power that differs from the keyboard's is
+/// written once, with the profile's pairs re-sent unchanged: in the
+/// original profile if the restore covers it, else in the first profile
+/// written, else in the lowest compared profile.
+fn place_socd_power(profiles: &mut [ProfilePlan], current: &Backup, power: Option<u8>) {
+    let Some(power) = power else {
+        return;
     };
-    let all_same = |copies: &[Vec<u8>]| copies.windows(2).all(|w| w[0] == w[1]);
-    for (table, read) in shared {
-        let (backup, keyboard) = (copies(target, read), copies(current, read));
-        if backup.len() >= 2 && !all_same(&backup) && keyboard.len() >= 2 && all_same(&keyboard) {
-            warnings.push(PlanWarning::LikelySharedTableDiffers { table });
+    let original = current.active_profile.and_then(ProfileId::new);
+    let keyboard_power = |profile: ProfileId| current.snapshot(profile).and_then(socd_power_of);
+    let socd_index = |plan: &ProfilePlan| plan.items.iter().position(|i| i.table == TableId::Socd);
+    let has_writes = |plan: &ProfilePlan| {
+        plan.items
+            .iter()
+            .any(|i| matches!(i.action, PlanAction::Write(_)))
+    };
+    let mut order: Vec<usize> = (0..profiles.len()).collect();
+    order.sort_by_key(|&i| (Some(profiles[i].profile) != original, profiles[i].profile));
+
+    // A SOCD write: the first one sets the power.
+    let first_write = order.iter().copied().find(|&i| {
+        socd_index(&profiles[i])
+            .is_some_and(|at| matches!(profiles[i].items[at].action, PlanAction::Write(_)))
+    });
+    if let Some(i) = first_write {
+        let old = keyboard_power(profiles[i].profile);
+        if old != Some(power) {
+            let at = socd_index(&profiles[i]);
+            if let Some(PlanAction::Write(write)) = at
+                .and_then(|at| profiles[i].items.get_mut(at))
+                .map(|item| &mut item.action)
+            {
+                write.changes.insert(
+                    0,
+                    EntryChange {
+                        index: 0,
+                        old: HexBytes(old.into_iter().collect()),
+                        new: HexBytes(vec![power]),
+                    },
+                );
+            }
+        }
+        return;
+    }
+
+    // Only the power differs: one write, in the first profile that can take
+    // it (its SOCD otherwise unchanged).
+    let differs = profiles
+        .iter()
+        .filter(|p| p.compared)
+        .any(|p| keyboard_power(p.profile).is_some_and(|now| now != power));
+    if !differs {
+        return;
+    }
+    let mut candidates: Vec<usize> = order
+        .into_iter()
+        .filter(|&i| {
+            profiles[i].compared
+                && socd_index(&profiles[i])
+                    .is_some_and(|at| matches!(profiles[i].items[at].action, PlanAction::Unchanged))
+        })
+        .collect();
+    candidates.sort_by_key(|&i| {
+        (
+            Some(profiles[i].profile) != original,
+            !has_writes(&profiles[i]),
+            profiles[i].profile,
+        )
+    });
+    let built: Vec<(usize, PlanItem)> = candidates
+        .iter()
+        .filter_map(|&i| {
+            let view = current.snapshot(profiles[i].profile)?;
+            Some((i, socd_power_item(view, power)))
+        })
+        .collect();
+    let chosen = built
+        .iter()
+        .find(|(_, item)| matches!(item.action, PlanAction::Write(_)))
+        .or_else(|| built.first());
+    if let Some((i, item)) = chosen {
+        if let Some(at) = socd_index(&profiles[*i]) {
+            profiles[*i].items[at] = item.clone();
         }
     }
-    warnings
+}
+
+/// The power-only SOCD write of one profile whose pairs are unchanged:
+/// `power` with the keyboard's pairs `c` re-sent unchanged (the burst always
+/// carries them, as the vendor site's switch does).
+fn socd_power_item(c: SnapshotView<'_>, power: u8) -> PlanItem {
+    let table = TableId::Socd;
+    let (Some(settings), Some(pairs)) = (
+        c.response(ReadRequest::SocdSettings),
+        c.response(ReadRequest::SocdPairs),
+    ) else {
+        return skip(
+            table,
+            None,
+            SkipReason::NotInKeyboard,
+            "the keyboard did not report its SOCD settings and pairs".to_string(),
+        );
+    };
+    let on = match power {
+        0 => false,
+        1 => true,
+        other => {
+            return skip(
+                table,
+                None,
+                SkipReason::Unusable,
+                format!("the backup's SOCD power byte is {other:02x}, not 00 or 01"),
+            );
+        }
+    };
+    match SocdPairsData::from_response(pairs) {
+        Ok(data) => {
+            let changes = vec![EntryChange {
+                index: 0,
+                old: HexBytes(settings.payload().get(..1).unwrap_or_default().to_vec()),
+                new: HexBytes(vec![power]),
+            }];
+            item(
+                table,
+                None,
+                write_action(WriteRequest::Socd(SocdWrite::new(on, data)), changes),
+            )
+        }
+        Err(WriteBuildError::UnwritableSocdPairs { reason }) => skip(
+            table,
+            None,
+            SkipReason::UnwritableSocdPairs { rule: reason },
+            format!(
+                "the SOCD power differs, but the keyboard's pairs, which are written with it, \
+                 cannot be written again: {reason}"
+            ),
+        ),
+        Err(e) => skip(table, None, SkipReason::Unusable, e.to_string()),
+    }
 }
 
 /// Device constants that differ (they are never written).
@@ -2673,6 +2836,25 @@ fn write_action(request: WriteRequest, changes: Vec<EntryChange>) -> PlanAction 
         commit_trigger: None,
         completes_binding: false,
         binding_tables: Vec::new(),
+        resent: None,
+        request,
+    })
+}
+
+/// A planned re-send of a macro slot 1-9 after macro slot 0 (`data`: the
+/// content the keyboard holds and keeps, see [`crate::group`]).
+fn resend_action(slot: MacroSlotId, data: MacroData) -> PlanAction {
+    let request = WriteRequest::Macro(slot, data);
+    let reason = ResendReason::MacroSlot0Clears;
+    PlanAction::Write(PlannedWrite {
+        kind: request.kind(),
+        summary: format!("{request} re-sent: {}", reason.text()),
+        packets: request.steps().len(),
+        changes: Vec::new(),
+        commit_trigger: None,
+        completes_binding: false,
+        binding_tables: Vec::new(),
+        resent: Some(reason),
         request,
     })
 }
@@ -2699,6 +2881,7 @@ fn trigger_action(
         commit_trigger: Some(reason),
         completes_binding: false,
         binding_tables: Vec::new(),
+        resent: None,
         request,
     })
 }
@@ -2766,19 +2949,21 @@ fn unit_problem(t: SnapshotView<'_>, c: SnapshotView<'_>) -> Option<(SkipReason,
     ))
 }
 
-/// The plan of one profile, in execution order. `import`: the checks of an
-/// import (its warnings go to `warnings`).
+/// The plan of one profile, in execution order. `socd_power`: the SOCD
+/// power of the whole restore ([`socd_power_target`]). `import`: the checks
+/// of an import (its warnings go to `warnings`).
 fn plan_profile(
     model: &Model,
     t: SnapshotView<'_>,
     c: SnapshotView<'_>,
+    socd_power: Option<u8>,
     import: Option<&ImportGuard>,
     warnings: &mut Vec<PlanWarning>,
 ) -> Vec<PlanItem> {
     let mut items = Vec::new();
     items.extend(plan_triggers(model, t, c));
     items.push(plan_dead_band(model, t, c));
-    items.push(plan_socd(t, c));
+    items.push(plan_socd(t, c, socd_power));
     items.extend(plan_keymap_group(
         model,
         t,
@@ -2956,9 +3141,13 @@ fn plan_dead_band(model: &Model, t: SnapshotView<'_>, c: SnapshotView<'_>) -> Pl
     }
 }
 
-/// SOCD power (`24 02` byte 0) and pairs (`24 01`), written as one burst
-/// (W11). The other bytes of `24 02` (the hotkey) are never written.
-fn plan_socd(t: SnapshotView<'_>, c: SnapshotView<'_>) -> PlanItem {
+/// SOCD of one profile: its pairs (`24 01`), written when they differ as
+/// one burst (W11) with `power`, the restore's power for every profile
+/// ([`socd_power_target`]; this profile's backup power when unknown). The
+/// power alone is placed once for the whole restore ([`place_socd_power`]):
+/// with unchanged pairs the item is unchanged here. The other bytes of
+/// `24 02` (the hotkey) are never written.
+fn plan_socd(t: SnapshotView<'_>, c: SnapshotView<'_>, power: Option<u8>) -> PlanItem {
     let table = TableId::Socd;
     let target = (
         t.response(ReadRequest::SocdSettings),
@@ -2987,19 +3176,22 @@ fn plan_socd(t: SnapshotView<'_>, c: SnapshotView<'_>) -> PlanItem {
         };
     };
     let (t_payload, c_payload) = (t_settings.payload(), c_settings.payload());
-    let (t_power, c_power) = (t_payload.first().copied(), c_payload.first().copied());
+    let t_power = power.or_else(|| t_payload.first().copied());
+    let c_power = c_payload.first().copied();
     let (t_table, c_table) = (content(t_pairs), content(c_pairs));
-    if t_power == c_power && t_table == c_table {
-        if t_payload.get(1..) == c_payload.get(1..) {
-            return item(table, None, PlanAction::Unchanged);
+    if t_table == c_table {
+        // The power is placed once for the whole restore.
+        if t_power == c_power && t_payload.get(1..) != c_payload.get(1..) {
+            return skip(
+                table,
+                None,
+                SkipReason::ReadOnlyBytes,
+                "only the SOCD bytes OpenWraith never writes differ (24 02 bytes 1-5, the \
+                 hotkey)"
+                    .to_string(),
+            );
         }
-        return skip(
-            table,
-            None,
-            SkipReason::ReadOnlyBytes,
-            "only the SOCD bytes OpenWraith never writes differ (24 02 bytes 1-5, the hotkey)"
-                .to_string(),
-        );
+        return item(table, None, PlanAction::Unchanged);
     }
     let power = match t_power {
         Some(0) => false,
@@ -3025,22 +3217,15 @@ fn plan_socd(t: SnapshotView<'_>, c: SnapshotView<'_>) -> PlanItem {
         }
         Err(e) => return skip(table, None, SkipReason::Unusable, e.to_string()),
     };
-    let mut changes = Vec::new();
-    if t_power != c_power {
-        changes.push(EntryChange {
-            index: 0,
-            old: HexBytes(c_power.into_iter().collect()),
-            new: HexBytes(t_power.into_iter().collect()),
-        });
-    }
-    changes.extend(
-        entry_changes(&c_table, &t_table, 4)
-            .into_iter()
-            .map(|change| EntryChange {
-                index: change.index + 1,
-                ..change
-            }),
-    );
+    // The pairs only: a power change is shown once, on the restore's first
+    // SOCD write (place_socd_power).
+    let changes = entry_changes(&c_table, &t_table, 4)
+        .into_iter()
+        .map(|change| EntryChange {
+            index: change.index + 1,
+            ..change
+        })
+        .collect();
     item(
         table,
         None,
@@ -3432,13 +3617,42 @@ fn plan_keymap_group(
         }
     }
 
-    // The commit trigger (spec 4.8.2): the keyboard saves the base keymap
-    // only when the Fn keymap is written after it, so the Fn keymap is
-    // written whenever the base keymap is, even unchanged. Macro and
-    // advanced-key slots may depend on the same trigger (untested): when
-    // they are written and neither layer differs, the unchanged Fn keymap
-    // is placed after the macro slots and before the advanced-key slots as
-    // a precaution (GUESS; the site's order).
+    // Writing macro slot 0 makes the keyboard empty slots 1-9 (CONFIRMED,
+    // see `crate::group`): every slot 1-9 that keeps content is written
+    // again right after it, also when it does not change. A slot that
+    // cannot be written again blocks the group (it would be lost).
+    let slot0_written = macros
+        .iter()
+        .any(|(slot, _, state)| slot.get() == 0 && matches!(state, GroupState::Differs(Ok(_))));
+    let mut resends: Vec<(MacroSlotId, MacroData)> = Vec::new();
+    if slot0_written && cause.is_none() {
+        for (slot, _, state) in macros.iter().filter(|(slot, _, _)| slot.get() != 0) {
+            let (GroupState::Unchanged, Some(target)) =
+                (state, t.response(ReadRequest::Macro(*slot)))
+            else {
+                continue;
+            };
+            match MacroData::from_response(target) {
+                Ok((_, MacroData::Empty)) => {}
+                Ok((_, data)) => resends.push((*slot, data)),
+                Err(_) => {
+                    cause = Some(BlockCause::NonCanonicalMacro {
+                        slot: slot.get(),
+                        reason: "writing macro slot 0 makes the keyboard clear this slot, and its \
+                                 content is not in a form OpenWraith can write again",
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    // The commit trigger: the keyboard saves the base keymap only when the
+    // Fn keymap is written after it (spec 4.8.2), and an advanced-key slot
+    // only with a complete Fn keymap in the same save window, which the
+    // site's order writes before it (H20, 2026-10-27). So the Fn keymap is
+    // written whenever either is, even unchanged. Macro slots are kept
+    // without it (H19) and get none of their own.
     let writes = |state: &GroupState| matches!(state, GroupState::Differs(Ok(_)));
     let layer_state = |wanted: Layer| {
         layers
@@ -3449,12 +3663,11 @@ fn plan_keymap_group(
     let base_state = layer_state(Layer::Base);
     let fn_state = layer_state(Layer::Fn);
     let base_written = base_state.is_some_and(writes);
-    let slots_written = macros.iter().any(|(_, _, state)| writes(state))
-        || advanced.iter().any(|(_, state)| writes(state));
+    let advanced_written = advanced.iter().any(|(_, state)| writes(state));
     let reason = if base_written {
         Some(CommitTriggerReason::BaseKeymap)
-    } else if slots_written {
-        Some(CommitTriggerReason::MacrosOrAdvancedKeys)
+    } else if advanced_written {
+        Some(CommitTriggerReason::AdvancedKeys)
     } else {
         None
     };
@@ -3475,7 +3688,7 @@ fn plan_keymap_group(
             _ => None,
         };
     if let (Some(reason), None, None) = (reason, &trigger, &cause) {
-        // Never the base keymap (or the slots) without the trigger.
+        // Never the base keymap or an advanced-key slot without the trigger.
         cause = Some(BlockCause::FnKeymapNotWritable { reason });
     }
 
@@ -3499,7 +3712,7 @@ fn plan_keymap_group(
                     format!(
                         "{table} differs, but the keymap group (keymaps, macros, advanced keys) \
                          cannot be restored as a whole: {}",
-                        block_message(cause)
+                        block_message(model, cause)
                     ),
                 ),
                 (None, Ok((request, changes))) => {
@@ -3511,7 +3724,7 @@ fn plan_keymap_group(
                     SkipReason::KeymapGroupBlocked {
                         cause: cause.clone(),
                     },
-                    block_message(cause),
+                    block_message(model, cause),
                 ),
             },
         }
@@ -3540,7 +3753,12 @@ fn plan_keymap_group(
     };
     let mut items: Vec<PlanItem> = macros
         .iter()
-        .map(|(_, table, state)| to_item(*table, state))
+        .map(
+            |(slot, table, state)| match resends.iter().find(|(s, _)| s == slot) {
+                Some((slot, data)) => item(*table, None, resend_action(*slot, data.clone())),
+                None => to_item(*table, state),
+            },
+        )
         .collect();
     if let Some(state) = base_state {
         items.push(to_item(base_table, state));
@@ -3553,14 +3771,32 @@ fn plan_keymap_group(
 
 /// Flags the writes of a keymap group that complete a binding (see
 /// [`PlannedWrite::completes_binding`]): an advanced-key slot written with
-/// content that a written layer refers to, and a layer write that changes
-/// an entry of the keyboard's layer referring to a macro slot written in
-/// the same group, cleared or rewritten (the slot goes first, so a
-/// cancellation must not leave the old key bound to the slot's new content
-/// or to an empty slot).
+/// content that a written layer refers to, a layer write that changes an
+/// entry of the keyboard's layer referring to a macro slot written in the
+/// same group, cleared or rewritten, or emptied by the group's macro slot-0
+/// write (the slot goes first, so a cancellation must not leave the old key
+/// bound to the slot's new content or to an empty slot), and every macro
+/// slot 1-9 written with content after macro slot 0 (see [`crate::group`]).
 fn mark_binding_writes(items: &mut [PlanItem], c: SnapshotView<'_>) {
+    let all: Vec<&WriteRequest> = items
+        .iter()
+        .filter_map(|item| match &item.action {
+            PlanAction::Write(write) => Some(&write.request),
+            _ => None,
+        })
+        .collect();
+    let kept = kept_macros(all.iter().copied());
+    // The group's macro slot-0 write, if any.
+    let slot0: Option<TableId> = all
+        .iter()
+        .map(|r| r.table())
+        .find(|t| clears_other_macros(*t));
     let written = |item: &PlanItem| match &item.action {
-        PlanAction::Write(write) if !write.is_resent_unchanged() => Some(write.request.clone()),
+        // A re-send keeps the slot's content: the keys bound to it are not
+        // affected.
+        PlanAction::Write(write) if !write.is_resent_unchanged() && write.resent.is_none() => {
+            Some(write.request.clone())
+        }
         _ => None,
     };
     let requests: Vec<WriteRequest> = items.iter().filter_map(written).collect();
@@ -3604,6 +3840,8 @@ fn mark_binding_writes(items: &mut [PlanItem], c: SnapshotView<'_>) {
                 .filter(|(bound, _)| bound == slot)
                 .map(|(_, table)| *table)
                 .collect(),
+            // Written again after slot 0, which emptied it.
+            WriteRequest::Macro(slot, _) if kept.contains(slot) => slot0.into_iter().collect(),
             WriteRequest::Keymap(layer, data) if !write.changes.is_empty() => {
                 // Per entry: the key that refers to the written slot now
                 // and changes in this write.
@@ -3611,15 +3849,21 @@ fn mark_binding_writes(items: &mut [PlanItem], c: SnapshotView<'_>) {
                     .map(|now| {
                         now.references()
                             .into_iter()
-                            .filter_map(|r| match r {
-                                KeymapReference::Macro { index, slot }
-                                    if written_macros.contains(&slot) =>
-                                {
-                                    let pos = KeyPos::from_index(index)?;
-                                    (now.entry(pos) != data.entry(pos))
-                                        .then_some(TableId::Macro { slot })
+                            .flat_map(|r| match r {
+                                KeymapReference::Macro { index, slot } => {
+                                    let changes = KeyPos::from_index(index)
+                                        .is_some_and(|pos| now.entry(pos) != data.entry(pos));
+                                    let mut needs = Vec::new();
+                                    if changes && written_macros.contains(&slot) {
+                                        needs.push(TableId::Macro { slot });
+                                    }
+                                    // Emptied by slot 0 and not written again.
+                                    if changes && slot.get() != 0 && !kept.contains(&slot) {
+                                        needs.extend(slot0);
+                                    }
+                                    needs
                                 }
-                                _ => None,
+                                _ => Vec::new(),
                             })
                             .collect()
                     })
@@ -3627,7 +3871,38 @@ fn mark_binding_writes(items: &mut [PlanItem], c: SnapshotView<'_>) {
             }
             _ => Vec::new(),
         };
-        tables.dedup();
+        let mut seen = Vec::with_capacity(tables.len());
+        tables.retain(|t| {
+            let new = !seen.contains(t);
+            seen.push(*t);
+            new
+        });
+        write.completes_binding = !tables.is_empty();
+        write.binding_tables = tables;
+    }
+
+    // A macro slot that a written layer newly refers to goes out whenever
+    // that layer does (see `crate::group`, rule 3).
+    let writes: Vec<&mut PlannedWrite> = items
+        .iter_mut()
+        .filter_map(|item| match &mut item.action {
+            PlanAction::Write(write) => Some(write),
+            _ => None,
+        })
+        .collect();
+    let tables: Vec<TableId> = writes.iter().map(|w| w.request.table()).collect();
+    let newly: Vec<Vec<MacroSlotId>> = writes
+        .iter()
+        .map(|w| match &w.request {
+            WriteRequest::Keymap(layer, data) if !w.changes.is_empty() => {
+                new_macro_references(layer_now(*layer).as_ref(), data)
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    let mut binding: Vec<Vec<TableId>> = writes.iter().map(|w| w.binding_tables.clone()).collect();
+    link_new_references(&tables, &newly, &mut binding);
+    for (write, tables) in writes.into_iter().zip(binding) {
         write.completes_binding = !tables.is_empty();
         write.binding_tables = tables;
     }
@@ -3792,8 +4067,10 @@ fn import_layer(
 }
 
 /// Applies an import's selection to the plan of profile `into`: the writes
-/// and skips of excluded categories become [`SkipReason::NotImported`].
-/// Returns the import's warnings (the macros it writes).
+/// and skips of excluded categories become [`SkipReason::NotImported`]
+/// (a macro re-send, which only exists because macro slot 0 is written,
+/// becomes unchanged again). Returns the import's warnings (the macros it
+/// writes from the file; re-sent slots keep the keyboard's content).
 fn apply_import(import: &ImportOptions, items: &mut [PlanItem]) -> Vec<PlanWarning> {
     let mut warnings = Vec::new();
     for item in items.iter_mut() {
@@ -3801,9 +4078,14 @@ fn apply_import(import: &ImportOptions, items: &mut [PlanItem]) -> Vec<PlanWarni
             continue;
         }
         if !import.include.includes(item.table) {
-            item.action = PlanAction::Skip {
-                reason: SkipReason::NotImported,
-                message: format!("{} is not imported", item.table),
+            let resent = matches!(&item.action, PlanAction::Write(w) if w.resent.is_some());
+            item.action = if resent {
+                PlanAction::Unchanged
+            } else {
+                PlanAction::Skip {
+                    reason: SkipReason::NotImported,
+                    message: format!("{} is not imported", item.table),
+                }
             };
         }
     }
@@ -3812,6 +4094,7 @@ fn apply_import(import: &ImportOptions, items: &mut [PlanItem]) -> Vec<PlanWarni
         .filter_map(|i| match &i.action {
             PlanAction::Write(PlannedWrite {
                 request: WriteRequest::Macro(slot, data),
+                resent: None,
                 ..
             }) if !data.is_empty() => Some(slot.get()),
             _ => None,
@@ -3823,16 +4106,17 @@ fn apply_import(import: &ImportOptions, items: &mut [PlanItem]) -> Vec<PlanWarni
     warnings
 }
 
-/// Human-readable form of a [`BlockCause`].
-fn block_message(cause: &BlockCause) -> String {
+/// Human-readable form of a [`BlockCause`]; keys are named by `model`.
+fn block_message(model: &Model, cause: &BlockCause) -> String {
     match cause {
         BlockCause::UnwritableAdvancedKey { slot, reason } => format!(
             "advanced-key slot {slot} of the backup is not a DKS, Mod-Tap or Toggle OpenWraith \
              can write ({reason})"
         ),
         BlockCause::CriticalFnOverride { index } => format!(
-            "the imported Fn layer replaces the built-in function of Fn + key #{index} (a \
-             profile switch or the reset), which was not allowed"
+            "the imported Fn layer replaces the built-in function of Fn + {} (#{index}; a \
+             profile switch or the reset), which was not allowed",
+            model.key_name(*index)
         ),
         BlockCause::UnwritableImportedEntry {
             layer,
@@ -3868,9 +4152,9 @@ fn block_message(cause: &BlockCause) -> String {
                 CommitTriggerReason::BaseKeymap =>
                     "the keyboard keeps the base keymap only when the Fn keymap (18 02) is \
                      written after it, so the base keymap is not written alone",
-                CommitTriggerReason::MacrosOrAdvancedKeys =>
-                    "the macro and advanced-key slots are only written followed by the Fn \
-                     keymap (18 02), as the vendor site does (precaution)",
+                CommitTriggerReason::AdvancedKeys =>
+                    "the keyboard loses advanced-key slots written without the Fn keymap \
+                     (18 02) in the same save, so they are not written alone",
             }
         ),
     }
@@ -3993,6 +4277,84 @@ mod tests {
         ));
         assert_eq!(sim.persisted_table(p1, base), Some(remapped.as_slice()));
         assert!(sim.discarded_edits() >= 1);
+        sim.assert_clean();
+    }
+
+    /// H20 step 2 (2026-10-27, `hw/v02/h20-2.txt`) in a restore: the plan
+    /// writes the unchanged Fn keymap before an advanced-key slot; taken
+    /// out of a prepared plan, the lone `22` reads back but the keyboard
+    /// (simulator) does not keep it, and the persistence check reports it
+    /// lost.
+    #[test]
+    fn a_lone_advanced_key_slot_is_reported_lost_by_the_persistence_check() {
+        let target = c06();
+        let mut sim = DeviceSim::from_backup(&target);
+        let p1 = ProfileId::ALL[0];
+        // A Toggle of A in slot 5, which the backup (c06) does not have.
+        let mut slots = vec![0u8; 1600];
+        slots[5 * 40..5 * 40 + 3].copy_from_slice(&[0x03, 0x00, 0x04]);
+        sim.set_table(p1, SimTable::AdvancedKeys, slots.clone());
+        let consent = WriteConsent::new(ConsentOrigin::CommandLineFlag);
+        let mut prepared = prepare_restore(
+            &mut Session::new(&mut sim),
+            &target,
+            &options(),
+            consent,
+            |_| ControlFlow::Continue(()),
+        )
+        .expect("prepared");
+        let slot5 = TableId::AdvancedKey {
+            slot: AdvancedSlotId::new(5).expect("slot"),
+        };
+        let planned: Vec<(TableId, Option<CommitTriggerReason>)> = prepared
+            .plan
+            .writes()
+            .map(|(_, item, write)| (item.table, write.commit_trigger))
+            .collect();
+        assert_eq!(
+            planned,
+            [
+                (
+                    TableId::Keymap { layer: Layer::Fn },
+                    Some(CommitTriggerReason::AdvancedKeys)
+                ),
+                (slot5, None),
+            ]
+        );
+        for profile in &mut prepared.plan.profiles {
+            profile.items.retain(
+                |item| !matches!(&item.action, PlanAction::Write(w) if w.commit_trigger.is_some()),
+            );
+        }
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let saved = prepared
+            .safety
+            .save_safety(dir.path(), "restore")
+            .expect("safety backup");
+        let first = sim.writes_sent();
+        let report = execute_restore(
+            &mut Session::new(&mut sim),
+            &prepared,
+            &saved,
+            consent,
+            |_| ControlFlow::Continue(()),
+        );
+        let sent: Vec<(u8, u8)> = sim
+            .write_packets()
+            .skip(first)
+            .filter(|p| p.cmd() != 0x21)
+            .map(|p| (p.cmd(), p.sub()))
+            .collect();
+        assert_eq!(sent, [(0x22, 0x05)]);
+        assert_eq!(
+            report.error.as_ref().map(|e| e.kind),
+            Some(ErrorKind::NotPersisted)
+        );
+        assert_eq!(report.lost(), 1);
+        assert_eq!(
+            sim.persisted_table(p1, SimTable::AdvancedKeys),
+            Some(slots.as_slice())
+        );
         sim.assert_clean();
     }
 }

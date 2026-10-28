@@ -2,7 +2,10 @@
 
 use serde::Serialize;
 
-use super::common::{CommitTriggerReasonView, FileRef, ForeignActivityView, KeyRef, TableRef};
+use super::common::{
+    CommitTriggerReasonView, FileRef, ForeignActivityView, KeyRef, LayerView, ResendReasonView,
+    TableRef,
+};
 use super::error::AppError;
 
 /// How an operation ended.
@@ -87,6 +90,37 @@ pub struct RestoreReportView {
     pub foreign_activity: Option<ForeignActivityView>,
     /// Whether any table was written.
     pub anything_written: bool,
+    /// Macro slots left empty: the restore wrote macro slot 0 (which makes
+    /// the keyboard clear slots 1-9) and stopped before writing them again.
+    pub cleared_macros: Vec<ClearedMacroView>,
+    /// Keys left referring to an empty macro or advanced-key slot because
+    /// the restore stopped part-way.
+    pub dangling: Vec<DanglingBindingView>,
+}
+
+/// A macro slot a stop part-way left empty (Undo restores it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ClearedMacroView {
+    /// The profile.
+    pub profile: u8,
+    /// The library's slot 0..=9 (the UI shows slot + 1).
+    pub slot: u8,
+}
+
+/// A key that refers to an empty slot after a stop part-way (it does
+/// nothing until the slot is written; Undo restores both).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct DanglingBindingView {
+    /// The profile.
+    pub profile: u8,
+    /// The layer of the entry.
+    pub layer: LayerView,
+    /// The key.
+    pub key: KeyRef,
+    /// The empty slot (a macro or advanced-key table).
+    pub slot: TableRef,
 }
 
 /// The results of one profile.
@@ -111,6 +145,9 @@ pub struct ItemReportView {
     pub commit_trigger: Option<CommitTriggerReasonView>,
     /// An unchanged Fn keymap re-sent as the commit trigger.
     pub resent_unchanged: bool,
+    /// Set when it re-sent a macro slot whose content the plan does not
+    /// change (written again after macro slot 0).
+    pub resent: Option<ResendReasonView>,
     /// What happened.
     pub result: ItemResultView,
 }
@@ -260,13 +297,15 @@ pub struct PersistenceCheckView {
     pub not_checked: u16,
 }
 
-/// The final check of a restore.
+/// The final check of a restore: the SOCD power, one setting of the whole
+/// keyboard, read once more in the original profile after it was written
+/// in another one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct FinalCheckView {
-    /// The profiles read.
+    /// The profiles read (the original one).
     pub profiles: Vec<u8>,
-    /// Tables that no longer hold the backup's bytes.
+    /// What no longer holds the restored values.
     pub mismatches: Vec<FinalMismatchView>,
 }
 

@@ -146,9 +146,6 @@ pub fn plan_color_edit<T: Transport>(
             None,
             vec![Some(current.as_bytes().to_vec())],
         ));
-        warnings.push(EditWarning::PowerLossUntested {
-            tables: vec![CUSTOM1],
-        });
     }
     if !shown_now {
         if edit.switch_to_custom {

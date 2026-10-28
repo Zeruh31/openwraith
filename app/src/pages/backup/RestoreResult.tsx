@@ -1,14 +1,16 @@
 // The result of a restore: the headline (CLI precedence: lost, then may be
-// lost, then failed/cancelled), the persistence and final checks, each
-// item's result, the counts, the next steps and the report footer (safety
-// backup with Undo, the active profile, foreign activity).
+// lost, then failed/cancelled), what a stop part-way left behind (macros
+// emptied by the Macro 1 write, keys referring to an empty slot), the
+// persistence and final checks, each item's result, the counts, the next
+// steps and the report footer (safety backup with Undo, the active profile,
+// foreign activity).
 
 import { Button } from "../../components/Button";
 import { Callout } from "../../components/Feedback";
 import { Disclosure, KeyValueList, TechnicalDetails, type KeyValueItem } from "../../components/Layout";
 import { describeDetail, tableName } from "../../flow/labels";
 import { HEADLINE_TONE, ItemDetails, ItemResultBadge, KeyName, ReportFooter, TableName } from "../../flow/Report";
-import { useDict } from "../../i18n";
+import { keyName, useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
 import type { FinalCheckView, ItemReportView, ProfileReportView, RestoreReportView } from "../../ipc/bindings";
 import { useStatus } from "../../state/status";
@@ -16,6 +18,7 @@ import { groupReportItems, tallyReport, worstItem, type RestoreTally } from "./m
 import { numberList, persistenceSentences, restoreHeadline } from "./texts";
 
 function ResultRow({ item }: { item: ItemReportView }) {
+  const dict = useDict();
   return (
     <li className="ow-report__item">
       <span className="ow-report__name">
@@ -26,10 +29,51 @@ function ResultRow({ item }: { item: ItemReportView }) {
             <TableName table={item.table} /> · <KeyName keyRef={item.key} />
           </>
         )}
+        {item.resent === null ? null : <span className="ow-muted ow-small"> · {dict.flow.resent[item.resent]}</span>}
       </span>
       <ItemResultBadge item={item} />
       <ItemDetails item={item} />
     </li>
+  );
+}
+
+/** Macros a stop part-way left empty and keys left referring to an empty slot (Undo restores both). */
+function LeftBehind({ report }: { report: RestoreReportView }) {
+  const dict = useDict();
+  const r = dict.backupRestore.result;
+  if (report.cleared_macros.length === 0 && report.dangling.length === 0) return null;
+  return (
+    <>
+      {report.cleared_macros.length === 0 ? null : (
+        <Callout kind="danger" title={r.clearedTitle}>
+          <p>{r.clearedBody}</p>
+          <ul>
+            {report.cleared_macros.map((c) => (
+              <li key={`${c.profile}-${c.slot}`}>{r.clearedItem({ n: c.profile, slot: c.slot + 1 })}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
+      {report.dangling.length === 0 ? null : (
+        <Callout kind="danger" title={r.danglingTitle}>
+          <p>{r.danglingBody}</p>
+          <ul>
+            {report.dangling.map((d) => {
+              const key = keyName(dict, d.key.name);
+              return (
+                <li key={`${d.profile}-${d.layer}-${d.key.index}`}>
+                  {r.danglingItem({
+                    n: d.profile,
+                    key: d.layer === "fn" ? `Fn + ${key}` : key,
+                    target: tableName(d.slot, dict),
+                  })}
+                </li>
+              );
+            })}
+          </ul>
+        </Callout>
+      )}
+    </>
   );
 }
 
@@ -160,6 +204,7 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
           </>
         )}
       </Callout>
+      <LeftBehind report={report} />
       {report.persistence === null ? null : (
         <section className="br-section">
           <h3 className="br-section__title">{r.persistenceTitle}</h3>

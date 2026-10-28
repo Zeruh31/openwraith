@@ -1166,7 +1166,7 @@ impl EditCommand for DeadBandCmd {
         )?;
         Ok(Planned {
             question: format!(
-                "Write the dead band ({}; it may apply to every profile) with profile {} active?",
+                "Write the dead band ({}) of profile {}?",
                 keys_count(plan.changes().len()),
                 plan.profile()
             ),
@@ -1335,8 +1335,7 @@ impl EditCommand for SocdCmd {
         }
         Ok(Planned {
             question: format!(
-                "Write SOCD (power and pairs; it may apply to every profile) with profile {} \
-                 active?",
+                "Write SOCD (the power of every profile and the pairs of profile {})?",
                 plan.profile()
             ),
             text,
