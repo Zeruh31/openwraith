@@ -31,11 +31,45 @@ export const shell: Messages<typeof en> = {
   nav: {
     label: "Sayfalar",
     device: "Klavye",
-    actuation: "Aktivasyon ve Rapid Trigger",
+    keys: "Tuşlar",
+    actuation: "Aktivasyon",
     lighting: "Işık",
-    backup: "Yedekle ve geri yükle",
+    backup: "Yedek ve profiller",
     settings: "Ayarlar",
     unwritten: "Yazılmamış değişiklikler",
+  },
+  tabs: {
+    label: (p) => `${p.page} bölümleri`,
+    unwritten: "Bu sekmede yazılmamış değişiklikler var",
+    pages: {
+      keys: {
+        assign: "Atamalar",
+        macros: "Makrolar",
+        advanced: "Gelişmiş tuşlar",
+      },
+      actuation: {
+        trigger: "Aktivasyon ve Rapid Trigger",
+        deadband: "Ölü bölge",
+        socd: "SOCD",
+        depth: "Tuş derinliği",
+      },
+      lighting: {
+        effect: "Efekt",
+        colors: "Tuş renkleri",
+      },
+    },
+  },
+  sections: {
+    share: "Profil paylaş",
+  },
+  placeholder: {
+    title: "Henüz hazır değil",
+    body: "OpenWraith'in bu bölümü hâlâ yapım aşamasında. Şimdilik klavyede hiçbir şey okumuyor ve yazmıyor.",
+  },
+  drafts: {
+    where: (p) => `${p.page} > ${p.tab}`,
+    entry: (p) => `${p.where}: ${p.count} yazılmamış değişiklik`,
+    entryUncounted: (p) => `${p.where}: yazılmamış değişiklikler`,
   },
   header: {
     profileLabel: "Etkin profil",
@@ -46,6 +80,8 @@ export const shell: Messages<typeof en> = {
       blocked: "Yazma duraklatıldı",
     },
     statusButton: "Klavye bağlantısının ayrıntıları",
+    live: "Canlı",
+    liveTitle: "Tuş derinliği görünümü açık. Durdurmak için Aktivasyon > Tuş derinliği sekmesini açın.",
   },
   status: {
     starting: "Başlatılıyor…",
@@ -110,6 +146,10 @@ export const shell: Messages<typeof en> = {
     staleTitle: "Gösterilen değerler güncel olmayabilir",
     staleBody: "Klavye okunduktan sonra klavyede bir şey değişti. Bir şey değiştirmeden önce klavyeyi yeniden okuyun.",
     untestedTitle: "Firmware henüz test edilmedi",
+    strayTravelTitle: "Tuş derinliği görünümü klavyede hâlâ açık olabilir",
+    strayTravelBody:
+      "Önceki bir tuş derinliği görünümü durdurulmamış olabilir (OpenWraith kapandı ya da klavyenin bağlantısı kesildi). Tuşlar normal şekilde çalışmaya devam eder; görünümü Tuş derinliği sekmesinden durdurun.",
+    strayTravelOpen: "Tuş derinliğine git",
     untestedBody: (p) =>
       `Bu klavyede ${p.firmware} sürümlü firmware var; OpenWraith ${p.tested} sürümüyle test edildi. Okuma güvenlidir. Her değişiklikten sonra sonucu denetleyin.`,
   },
@@ -125,7 +165,7 @@ export const shell: Messages<typeof en> = {
     title: (p) => `${p.n} numaralı profile geçilsin mi?`,
     body: "Klavye o profilin ışığına geçer; hiçbir ayar değiştirilmez.",
     saveWait: (p) => `OpenWraith önce klavyenin son değişikliğinizi kaydetmesi için ${p.seconds} bekler.`,
-    drafts: (p) => `Şu sayfalardaki yazılmamış değişiklikler atılacak: ${p.pages}.`,
+    drafts: "Şu yazılmamış değişiklikler atılacak:",
     confirm: (p) => `${p.n} numaralı profile geç`,
     already: (p) => `Klavye zaten profil ${p.n} üzerinde.`,
   },
@@ -134,6 +174,7 @@ export const shell: Messages<typeof en> = {
     profileChangedBody: "Ayarlar yeniden okundu.",
     connected: "Klavye bağlandı",
     disconnected: "Klavyenin bağlantısı kesildi",
+    socdToggled: (p) => (p.on ? "SOCD klavyeden açıldı (Fn + Sağ Shift)." : "SOCD klavyeden kapatıldı (Fn + Sağ Shift)."),
     switched: (p) => `Profil ${p.n} etkin`,
     switchWarnings: "Klavye olağan dışı yanıt verdi; teknik ayrıntılara bakın.",
   },

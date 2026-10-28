@@ -18,7 +18,7 @@ import { createMockBackend } from "../../preview/mockBackend";
 import { FIXTURES } from "../../preview/registry";
 import type { Fixture } from "../../preview/types";
 import { appInfoStore, DEFAULT_APP_INFO } from "../../state/appInfo";
-import { draftPages } from "../../state/drafts";
+import { draftEntries, draftPages } from "../../state/drafts";
 import { acknowledgeVendor, resetSession } from "../../state/session";
 import { snapshotStore } from "../../state/snapshot";
 import { INITIAL_STATUS, statusStore } from "../../state/status";
@@ -244,6 +244,25 @@ describe("editing", () => {
     expect(keyElement(W).textContent).toContain("●");
     expect(screen.getByText(/4 keys will change/)).toBeTruthy();
     expect(draftPages()).toContain("actuation");
+  });
+
+  it("registers the draft under the trigger tab", () => {
+    install("trigger_ready_mixed");
+    renderPage();
+    fireEvent.click(button(en.actuation.select.wasd));
+    setActuation(50);
+    expect(draftEntries()).toContainEqual({ page: "actuation", tab: "trigger", count: null });
+  });
+
+  it("says the live depth view holds the keyboard while it runs", () => {
+    install("trigger_ready_mixed", {
+      status: { busy: { op: "o-9", kind: "depth_view", last: null }, write_gate: { allowed: false, reasons: ["busy"] } },
+    });
+    renderPage();
+    fireEvent.click(button(en.actuation.select.wasd));
+    setActuation(50);
+    expect(applyButton()).toHaveProperty("disabled", true);
+    expect(screen.getByText(en.actuation.edit.depthRunning)).toBeTruthy();
   });
 
   it("discards the draft", () => {

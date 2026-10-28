@@ -111,6 +111,12 @@ export function Slider({
   );
 }
 
+/** The example a field's "enter a distance" hint gives: the middle of its own range (1.20 mm when it fits). */
+export function mmExample(min: number, max: number): number {
+  if (min <= 60 && 60 <= max) return 60;
+  return Math.min(max, Math.max(min, Math.round((min + max) / 2)));
+}
+
 /** Props of {@link MmField}. */
 export interface MmFieldProps {
   /** The accessible name (also used in the stepper buttons' names). */
@@ -155,7 +161,7 @@ export function MmField({
     setDraft(null);
     const parsed = format.parseMm(draft, unitUm);
     if (!parsed.ok) {
-      setNotice(dict.common.fields.invalidMm({ example: format.mmNumber(60, unitUm) }));
+      setNotice(dict.common.fields.invalidMm({ example: format.mmNumber(mmExample(min, max), unitUm) }));
       return;
     }
     const { units, clamped } = clampUnits(parsed.units, min, max);

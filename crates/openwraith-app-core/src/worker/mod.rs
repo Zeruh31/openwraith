@@ -86,6 +86,10 @@ pub(crate) struct Worker<B: DeviceBackend> {
     /// only when the worker owns it: a request admitted meanwhile keeps its
     /// admission.
     pub(crate) owns_busy: bool,
+    /// SOCD pushes of the session already acted on.
+    pub(crate) socd_pushes_seen: u64,
+    /// `StrayTravelTest` was sent for this connection.
+    pub(crate) stray_notified: bool,
 }
 
 impl<B: DeviceBackend> Worker<B> {
@@ -127,6 +131,8 @@ impl<B: DeviceBackend> Worker<B> {
             read_retries: 0,
             pending_release: false,
             owns_busy: false,
+            socd_pushes_seen: 0,
+            stray_notified: false,
         }
     }
 
@@ -366,6 +372,104 @@ impl<B: DeviceBackend> Worker<B> {
                 reply,
             } => {
                 let result = self.apply_restore(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareKeymapEdit { intent, reply } => {
+                let result = self.prepare_keymap_edit(&intent);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ApplyKeymapEdit {
+                token,
+                progress,
+                reply,
+            } => {
+                let result = self.apply_keymap_edit(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareColorEdit { intent, reply } => {
+                let result = self.prepare_color_edit(&intent);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ApplyColorEdit {
+                token,
+                progress,
+                reply,
+            } => {
+                let result = self.apply_color_edit(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareDeadBandEdit { intent, reply } => {
+                let result = self.prepare_dead_band_edit(&intent);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ApplyDeadBandEdit {
+                token,
+                progress,
+                reply,
+            } => {
+                let result = self.apply_dead_band_edit(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareSocdEdit { intent, reply } => {
+                let result = self.prepare_socd_edit(&intent);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ApplySocdEdit {
+                token,
+                progress,
+                reply,
+            } => {
+                let result = self.apply_socd_edit(&token, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PreparePresetEdit { intent, reply } => {
+                let result = self.prepare_preset_edit(&intent);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::StartDepthView { sink, reply } => {
+                let result = self.depth_view_request(sink);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::CloseStrayTravelTest { reply } => {
+                let result = self.close_stray_travel_test();
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ExportProfile {
+                intent,
+                progress,
+                reply,
+            } => {
+                let result = self.export_profile(&intent, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::PrepareImport {
+                intent,
+                progress,
+                reply,
+            } => {
+                let result = self.prepare_import(&intent, progress);
+                self.release();
+                let _ = reply.send(result);
+            }
+            Request::ApplyImport {
+                token,
+                progress,
+                reply,
+            } => {
+                let result = self.apply_import(&token, progress);
                 self.release();
                 let _ = reply.send(result);
             }

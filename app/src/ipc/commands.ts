@@ -16,18 +16,39 @@ import type {
   BackupKind,
   BackupSaved,
   CloseChoice,
+  ColorEditIntent,
+  ColorEditPreview,
+  ColorsState,
+  DeadBandEditIntent,
+  DeadBandEditPreview,
+  DeadBandState,
+  DepthFrame,
+  DepthStopRequest,
+  DepthViewReport,
   DeviceId,
   DeviceSnapshot,
   DeviceStatus,
   DialogText,
   EditReportView,
+  ExportIntent,
+  ExportedProfile,
   FileRef,
   FileToken,
+  ImportIntent,
+  ImportPreview,
+  ImportSummaryView,
+  KeymapEditIntent,
+  KeymapEditPreview,
+  KeysState,
   LastReport,
   LightEditIntent,
   LightEditPreview,
+  MacroLibraryView,
+  MacroProgramView,
   OpId,
   PlanToken,
+  PresetEditIntent,
+  PresetsView,
   ProfileSwitchPreview,
   ProfileSwitchReport,
   ProgressEvent,
@@ -39,8 +60,13 @@ import type {
   Settings,
   SimAction,
   SimInfo,
+  SocdEditIntent,
+  SocdEditPreview,
+  SocdStateView,
+  TravelCloseReport,
   TriggerEditIntent,
   TriggerEditPreview,
+  UserPresetIntent,
 } from "./bindings";
 import { toAppError } from "./errors";
 
@@ -78,6 +104,37 @@ export const COMMAND_NAMES = [
   "prepare_restore",
   "apply_restore",
   "discard_plan",
+  "get_keys_state",
+  "prepare_keymap_edit",
+  "apply_keymap_edit",
+  "list_macro_library",
+  "save_library_macro",
+  "rename_library_macro",
+  "delete_library_macro",
+  "get_colors_state",
+  "prepare_color_edit",
+  "apply_color_edit",
+  "get_dead_band_state",
+  "prepare_dead_band_edit",
+  "apply_dead_band_edit",
+  "get_socd_state",
+  "prepare_socd_edit",
+  "apply_socd_edit",
+  "list_presets",
+  "save_user_preset",
+  "delete_user_preset",
+  "prepare_preset_edit",
+  "start_depth_view",
+  "stop_depth_view",
+  "close_stray_travel_test",
+  "choose_export_destination",
+  "export_profile",
+  "open_import_file",
+  "prepare_import",
+  "apply_import",
+  "get_hints_shown",
+  "mark_hint_shown",
+  "reset_hints_shown",
 ] as const;
 
 /** The developer simulator's commands (`command_names.rs`: `DEV_COMMANDS`). */
@@ -123,6 +180,37 @@ export type Args = {
   prepare_restore: { intent: RestoreIntent };
   apply_restore: { token: PlanToken };
   discard_plan: { token: PlanToken };
+  get_keys_state: Record<string, never>;
+  prepare_keymap_edit: { intent: KeymapEditIntent };
+  apply_keymap_edit: { token: PlanToken };
+  list_macro_library: Record<string, never>;
+  save_library_macro: { name: string; program: MacroProgramView };
+  rename_library_macro: { hash: string; name: string };
+  delete_library_macro: { hash: string };
+  get_colors_state: Record<string, never>;
+  prepare_color_edit: { intent: ColorEditIntent };
+  apply_color_edit: { token: PlanToken };
+  get_dead_band_state: Record<string, never>;
+  prepare_dead_band_edit: { intent: DeadBandEditIntent };
+  apply_dead_band_edit: { token: PlanToken };
+  get_socd_state: Record<string, never>;
+  prepare_socd_edit: { intent: SocdEditIntent };
+  apply_socd_edit: { token: PlanToken };
+  list_presets: Record<string, never>;
+  save_user_preset: { preset: UserPresetIntent };
+  delete_user_preset: { id: string };
+  prepare_preset_edit: { intent: PresetEditIntent };
+  start_depth_view: Record<string, never>;
+  stop_depth_view: { reason: DepthStopRequest };
+  close_stray_travel_test: Record<string, never>;
+  choose_export_destination: { profile: number; dialog: DialogText };
+  export_profile: { intent: ExportIntent };
+  open_import_file: { dialog: DialogText };
+  prepare_import: { intent: ImportIntent };
+  apply_import: { token: PlanToken };
+  get_hints_shown: Record<string, never>;
+  mark_hint_shown: { hint: string };
+  reset_hints_shown: Record<string, never>;
   dev_sim_action: { action: SimAction };
   dev_sim_info: Record<string, never>;
 };
@@ -161,6 +249,37 @@ export type Results = {
   prepare_restore: RestorePreview;
   apply_restore: RestoreReportView;
   discard_plan: null;
+  get_keys_state: KeysState | null;
+  prepare_keymap_edit: KeymapEditPreview;
+  apply_keymap_edit: EditReportView;
+  list_macro_library: MacroLibraryView;
+  save_library_macro: MacroLibraryView;
+  rename_library_macro: MacroLibraryView;
+  delete_library_macro: MacroLibraryView;
+  get_colors_state: ColorsState | null;
+  prepare_color_edit: ColorEditPreview;
+  apply_color_edit: EditReportView;
+  get_dead_band_state: DeadBandState | null;
+  prepare_dead_band_edit: DeadBandEditPreview;
+  apply_dead_band_edit: EditReportView;
+  get_socd_state: SocdStateView | null;
+  prepare_socd_edit: SocdEditPreview;
+  apply_socd_edit: EditReportView;
+  list_presets: PresetsView;
+  save_user_preset: PresetsView;
+  delete_user_preset: PresetsView;
+  prepare_preset_edit: TriggerEditPreview;
+  start_depth_view: DepthViewReport;
+  stop_depth_view: boolean;
+  close_stray_travel_test: TravelCloseReport;
+  choose_export_destination: FileRef | null;
+  export_profile: ExportedProfile;
+  open_import_file: ImportSummaryView | null;
+  prepare_import: ImportPreview;
+  apply_import: RestoreReportView;
+  get_hints_shown: string[];
+  mark_hint_shown: string[];
+  reset_hints_shown: string[];
   dev_sim_action: SimInfo;
   dev_sim_info: SimInfo;
 };
@@ -174,7 +293,14 @@ export type ProgressCommand =
   | "backup_active_profile"
   | "apply_all_profile_backup"
   | "prepare_restore"
-  | "apply_restore";
+  | "apply_restore"
+  | "apply_keymap_edit"
+  | "apply_color_edit"
+  | "apply_dead_band_edit"
+  | "apply_socd_edit"
+  | "export_profile"
+  | "prepare_import"
+  | "apply_import";
 
 /** A progress listener. */
 export type OnProgress = (event: ProgressEvent) => void;
@@ -250,6 +376,55 @@ export const api = {
   applyRestore: (token: PlanToken, onProgress: OnProgress) =>
     callWithChannel("apply_restore", { token }, "progress", onProgress),
   discardPlan: (token: PlanToken) => call("discard_plan", { token }),
+  /** The keymap group of the last full read (no traffic); refetch when `snapshot_revision` changes. */
+  getKeysState: () => call("get_keys_state", {}),
+  prepareKeymapEdit: (intent: KeymapEditIntent) => call("prepare_keymap_edit", { intent }),
+  applyKeymapEdit: (token: PlanToken, onProgress: OnProgress) =>
+    callWithChannel("apply_keymap_edit", { token }, "progress", onProgress),
+  listMacroLibrary: () => call("list_macro_library", {}),
+  /** Adds a macro to the library of this PC, or renames the entry with the same program. */
+  saveLibraryMacro: (name: string, program: MacroProgramView) => call("save_library_macro", { name, program }),
+  renameLibraryMacro: (hash: string, name: string) => call("rename_library_macro", { hash, name }),
+  deleteLibraryMacro: (hash: string) => call("delete_library_macro", { hash }),
+  /** Custom colour table 1 of the last full read (no traffic); refetch after a colour edit and when `snapshot_revision` changes. */
+  getColorsState: () => call("get_colors_state", {}),
+  prepareColorEdit: (intent: ColorEditIntent) => call("prepare_color_edit", { intent }),
+  applyColorEdit: (token: PlanToken, onProgress: OnProgress) =>
+    callWithChannel("apply_color_edit", { token }, "progress", onProgress),
+  /** The dead band of the last full read (no traffic); refetch after a dead-band edit and when `snapshot_revision` changes. */
+  getDeadBandState: () => call("get_dead_band_state", {}),
+  prepareDeadBandEdit: (intent: DeadBandEditIntent) => call("prepare_dead_band_edit", { intent }),
+  applyDeadBandEdit: (token: PlanToken, onProgress: OnProgress) =>
+    callWithChannel("apply_dead_band_edit", { token }, "progress", onProgress),
+  /** SOCD of the last full read (no traffic); refetch after a SOCD edit, on `socd_toggled_on_keyboard` and when `snapshot_revision` changes. */
+  getSocdState: () => call("get_socd_state", {}),
+  prepareSocdEdit: (intent: SocdEditIntent) => call("prepare_socd_edit", { intent }),
+  applySocdEdit: (token: PlanToken, onProgress: OnProgress) =>
+    callWithChannel("apply_socd_edit", { token }, "progress", onProgress),
+  listPresets: () => call("list_presets", {}),
+  /** Saves a user preset (values outside the keyboard's limits are refused, never clamped). */
+  saveUserPreset: (preset: UserPresetIntent) => call("save_user_preset", { preset }),
+  deleteUserPreset: (id: string) => call("delete_user_preset", { id }),
+  /** A preset as a trigger plan; `applyTriggerEdit` writes it. */
+  preparePresetEdit: (intent: PresetEditIntent) => call("prepare_preset_edit", { intent }),
+  /** Runs the live key-depth view; resolves with its report when it stopped. */
+  startDepthView: (onFrame: (frame: DepthFrame) => void) =>
+    callWithChannel("start_depth_view", {}, "channel", onFrame),
+  stopDepthView: (reason: DepthStopRequest) => call("stop_depth_view", { reason }),
+  /** Sends the close of a key-depth test left open (a user click only). */
+  closeStrayTravelTest: () => call("close_stray_travel_test", {}),
+  chooseExportDestination: (profile: number, dialog: DialogText) =>
+    call("choose_export_destination", { profile, dialog }),
+  exportProfile: (intent: ExportIntent, onProgress: OnProgress) =>
+    callWithChannel("export_profile", { intent }, "progress", onProgress),
+  openImportFile: (dialog: DialogText) => call("open_import_file", { dialog }),
+  prepareImport: (intent: ImportIntent, onProgress: OnProgress) =>
+    callWithChannel("prepare_import", { intent }, "progress", onProgress),
+  applyImport: (token: PlanToken, onProgress: OnProgress) =>
+    callWithChannel("apply_import", { token }, "progress", onProgress),
+  getHintsShown: () => call("get_hints_shown", {}),
+  markHintShown: (hint: string) => call("mark_hint_shown", { hint }),
+  resetHintsShown: () => call("reset_hints_shown", {}),
 };
 
 /**

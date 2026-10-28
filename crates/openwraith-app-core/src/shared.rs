@@ -1,5 +1,5 @@
 //! State shared by the worker thread and the command handlers: the published
-//! status and snapshot, the subscriber, the running operation's cancel flag,
+//! status and snapshot, the keymap group of the last read, the subscriber, the running operation's cancel flag,
 //! the file registry, the close flags and the admission flag.
 
 use std::path::PathBuf;
@@ -8,15 +8,27 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::dto::{
-    AppEvent, AppInfo, ConnectionState, DeviceSnapshot, DeviceStatus, FileRef, InterruptedOp,
-    LastReport, Notice, OpId, ProgressEvent, WriteGate,
+    AppEvent, AppInfo, ConnectionState, DepthStopReason, DeviceSnapshot, DeviceStatus, FileRef,
+    InterruptedOp, LastReport, Notice, OpId, ProgressEvent, TravelStateView, TravelStatusView,
+    WriteGate,
 };
 use crate::files::{FileKind, FileRegistry};
+use crate::ops::editors::EditorsCache;
+use crate::ops::keymap::KeysCache;
 use crate::sink::{EventSink, ExitHook};
 use crate::tokens::TokenMint;
 
 /// Status updates while reading are sent at most this often.
 const READING_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The live key-depth view, from its admission on: its operation (once
+/// the worker started it) and why it was asked to stop (the first reason
+/// wins). A stop that arrives before the operation started is kept, and the
+/// view then never opens the test.
+struct DepthRun {
+    op: Option<OpId>,
+    reason: Option<DepthStopReason>,
+}
 
 /// The running operation's cancellation.
 struct CurrentOp {
@@ -47,6 +59,16 @@ pub(crate) struct Shared {
     exited: AtomicBool,
     status: Mutex<StatusCell>,
     snapshot: Mutex<Option<DeviceSnapshot>>,
+    /// The keymap group of the last full read (the Keys page).
+    keys: Mutex<Option<Arc<KeysCache>>>,
+    /// The colours, dead band and SOCD of the last full read (patched after
+    /// their edits and by SOCD pushes).
+    editors: Mutex<Option<Arc<EditorsCache>>>,
+    /// The running live key-depth view.
+    depth: Mutex<Option<DepthRun>>,
+    /// The marker of a live view of an earlier run was there at the start
+    /// (until a close is acknowledged).
+    travel_marker_left: AtomicBool,
     last_report: Mutex<Option<LastReport>>,
     subscriber: Mutex<Option<Arc<dyn EventSink>>>,
     current: Mutex<Option<CurrentOp>>,
@@ -84,10 +106,19 @@ impl Shared {
                     close_requested: false,
                     interrupted: None,
                     sim,
+                    travel: TravelStatusView {
+                        state: TravelStateView::Closed,
+                        stray_reports: 0,
+                        marker_left: false,
+                    },
                 },
                 last_reading_publish: None,
             }),
             snapshot: Mutex::new(None),
+            keys: Mutex::new(None),
+            editors: Mutex::new(None),
+            depth: Mutex::new(None),
+            travel_marker_left: AtomicBool::new(false),
             last_report: Mutex::new(None),
             subscriber: Mutex::new(None),
             current: Mutex::new(None),
@@ -204,6 +235,103 @@ impl Shared {
     /// Replaces the snapshot.
     pub(crate) fn set_snapshot(&self, snapshot: Option<DeviceSnapshot>) {
         *lock(&self.snapshot) = snapshot;
+    }
+
+    /// The keymap group of the last full read.
+    pub(crate) fn keys(&self) -> Option<Arc<KeysCache>> {
+        lock(&self.keys).clone()
+    }
+
+    /// Replaces the keymap group (with every full read; `None` with the
+    /// snapshot).
+    pub(crate) fn set_keys(&self, keys: Option<Arc<KeysCache>>) {
+        *lock(&self.keys) = keys;
+    }
+
+    /// The colours, dead band and SOCD of the last full read.
+    pub(crate) fn editors(&self) -> Option<Arc<EditorsCache>> {
+        lock(&self.editors).clone()
+    }
+
+    /// Replaces them (with every full read; `None` with the snapshot).
+    pub(crate) fn set_editors(&self, editors: Option<Arc<EditorsCache>>) {
+        *lock(&self.editors) = editors;
+    }
+
+    /// Changes them in place (a copy is changed and stored); nothing
+    /// without a cache.
+    pub(crate) fn update_editors(&self, f: impl FnOnce(&mut EditorsCache)) {
+        let mut slot = lock(&self.editors);
+        if let Some(current) = slot.as_ref() {
+            let mut next = EditorsCache::clone(current);
+            f(&mut next);
+            *slot = Some(Arc::new(next));
+        }
+    }
+
+    // ----- the live key-depth view -----
+
+    /// Registers an admitted live view before the worker handles it (a stop
+    /// sent meanwhile is kept).
+    pub(crate) fn reserve_depth(&self) {
+        *lock(&self.depth) = Some(DepthRun {
+            op: None,
+            reason: None,
+        });
+    }
+
+    /// Registers the running live view's operation; a stop that arrived
+    /// since the admission is kept and cancels it at once.
+    pub(crate) fn start_depth(&self, op: OpId) {
+        let stopped = {
+            let mut depth = lock(&self.depth);
+            let run = depth.get_or_insert(DepthRun {
+                op: None,
+                reason: None,
+            });
+            run.op = Some(op.clone());
+            run.reason.is_some()
+        };
+        if stopped {
+            self.cancel(&op);
+        }
+    }
+
+    /// Forgets the live view; returns why it was asked to stop, if it was.
+    pub(crate) fn end_depth(&self) -> Option<DepthStopReason> {
+        lock(&self.depth).take().and_then(|run| run.reason)
+    }
+
+    /// Why the live view was asked to stop, if it was.
+    pub(crate) fn depth_stop_reason(&self) -> Option<DepthStopReason> {
+        lock(&self.depth).as_ref().and_then(|run| run.reason)
+    }
+
+    /// Asks the live view to stop (the first reason is kept), also before
+    /// the worker started it; false when none was admitted.
+    pub(crate) fn stop_depth(&self, reason: DepthStopReason) -> bool {
+        let op = {
+            let mut depth = lock(&self.depth);
+            let Some(run) = depth.as_mut() else {
+                return false;
+            };
+            run.reason.get_or_insert(reason);
+            run.op.clone()
+        };
+        if let Some(op) = op {
+            self.cancel(&op);
+        }
+        true
+    }
+
+    /// Whether the marker of an earlier run's live view was found.
+    pub(crate) fn travel_marker_left(&self) -> bool {
+        self.travel_marker_left.load(Ordering::SeqCst)
+    }
+
+    /// Records whether the marker of an earlier run's live view is there.
+    pub(crate) fn set_travel_marker_left(&self, left: bool) {
+        self.travel_marker_left.store(left, Ordering::SeqCst);
     }
 
     /// The last report.

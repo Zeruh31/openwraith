@@ -1015,6 +1015,1087 @@ fn backup_restore() -> Vec<Rec> {
     out
 }
 
+impl Rec {
+    /// `get_keys_state` (a direct command: the view of the last full read).
+    fn keys_state(&mut self) -> crate::dto::KeysState {
+        self.call("get_keys_state", json!({}), |h, _| Ok(h.keys()))
+            .unwrap()
+    }
+
+    fn prepare_keymap(
+        &mut self,
+        intent: crate::dto::KeymapEditIntent,
+    ) -> Result<crate::dto::KeymapEditPreview, AppError> {
+        self.call(
+            "prepare_keymap_edit",
+            json!({ "intent": intent.clone() }),
+            |h, _| h.prepare_keymap(intent),
+        )
+    }
+
+    fn apply_keymap(
+        &mut self,
+        token: &crate::dto::PlanToken,
+        on: impl FnOnce(&Watch),
+    ) -> Result<crate::dto::EditReportView, AppError> {
+        let token = token.clone();
+        self.call("apply_keymap_edit", json!({"token": token}), |h, w| {
+            on(w);
+            h.apply_keymap(&token, w)
+        })
+    }
+}
+
+/// A ready keyboard whose keymap group holds every kind of entry and slot
+/// (`tests::keymap::keys_seed`).
+fn keys_seeded(id: &'static str) -> Rec {
+    Rec::new(id, super::keymap::seeded())
+}
+
+/// A ready keyboard with macros in slots 1 and 2 bound to Q (base) and W
+/// (Fn).
+fn keys_two_macros(id: &'static str) -> Rec {
+    let mut h = Harness::new(1);
+    h.with_sim(super::keymap::two_macros);
+    h.until_ready();
+    Rec::new(id, h)
+}
+
+/// The Keys page's scenarios.
+fn keys() -> Vec<Rec> {
+    use super::keymap::{CAPS, E, F2, GRAVE, R, TWO, tap_view};
+    use crate::dto::{
+        ActionValue, AdvancedDefView, BuiltinAckIntent, DksRowView, DksStepView,
+        KeymapChangeIntent, LayerView, MouseActionView, TableRef,
+    };
+    let mut out = Vec::new();
+
+    // The three tabs: remaps on both layers, Fn built-ins, a macro on the
+    // Fn layer, an orphan macro, an entry kept as read, DKS / Mod-Tap /
+    // Toggle, a slot of another type, a broken reference; the library of
+    // this PC names slot 2's macro.
+    let mut r = keys_seeded("keys_ready");
+    r.keys_state();
+    r.call("list_macro_library", json!({}), |h, _| {
+        crate::library::save(&h.worker.config, "Type A", &tap_view(0x04, 30))?;
+        crate::library::save(&h.worker.config, "Copy", &tap_view(0x06, 0))?;
+        crate::library::list(&h.worker.config)
+    })
+    .unwrap();
+    out.push(r);
+
+    // Remaps on both layers, a non-critical built-in replaced (acknowledged)
+    // and a swap.
+    let assign_intent = |h: &Harness| {
+        let mut intent = h.keymap_intent(vec![
+            KeymapChangeIntent::Assign {
+                layer: LayerView::Base,
+                key: R,
+                action: ActionValue::Combo {
+                    modifiers: vec![0xE0],
+                    key: 0x06,
+                },
+            },
+            KeymapChangeIntent::Assign {
+                layer: LayerView::Fn,
+                key: F2,
+                action: ActionValue::Mouse {
+                    action: MouseActionView::Back,
+                },
+            },
+            KeymapChangeIntent::Swap {
+                layer: LayerView::Base,
+                first: CAPS,
+                second: GRAVE,
+            },
+        ]);
+        intent.builtin_acks = vec![BuiltinAckIntent {
+            key: F2,
+            critical: false,
+        }];
+        intent
+    };
+    let mut r = keys_seeded("keys_preview_assign");
+    r.keys_state();
+    let intent = assign_intent(&r.h);
+    r.prepare_keymap(intent).unwrap();
+    out.push(r);
+
+    let mut r = keys_seeded("keys_apply_ok");
+    r.keys_state();
+    let intent = assign_intent(&r.h);
+    let preview = r.prepare_keymap(intent).unwrap();
+    r.apply_keymap(&Rec::token(&preview.token), |_| {}).unwrap();
+    r.keys_state();
+    out.push(r);
+
+    // With "check that the keyboard kept it".
+    let mut r = keys_seeded("keys_apply_checked");
+    r.keys_state();
+    let mut intent = r.h.keymap_intent(vec![KeymapChangeIntent::BindMacro {
+        layer: LayerView::Fn,
+        key: R,
+        program: tap_view(0x05, 50),
+        slot: None,
+    }]);
+    intent.check_persistence = true;
+    let preview = r.prepare_keymap(intent).unwrap();
+    r.apply_keymap(&Rec::token(&preview.token), |_| {}).unwrap();
+    r.keys_state();
+    out.push(r);
+
+    // Fn + 2 without the critical acknowledgement: refused.
+    let mut r = keys_seeded("keys_refused_critical");
+    r.keys_state();
+    let intent = r.h.keymap_intent(vec![KeymapChangeIntent::Assign {
+        layer: LayerView::Fn,
+        key: TWO,
+        action: ActionValue::Key { usage: 0x04 },
+    }]);
+    r.prepare_keymap(intent).unwrap_err();
+    out.push(r);
+
+    // Advanced slot 5 holds a kind OpenWraith keeps as read: replacing it
+    // is refused until the user agrees that Undo can't bring it back.
+    let mut r = keys_seeded("keys_refused_not_undoable");
+    r.keys_state();
+    let toggle = |h: &Harness, allow: bool| {
+        let mut intent = h.keymap_intent(vec![KeymapChangeIntent::SetAdvanced {
+            slot: 5,
+            def: AdvancedDefView::Toggle { key: 0x0B },
+        }]);
+        intent.allow_not_undoable = allow;
+        intent
+    };
+    let intent = toggle(&r.h, false);
+    r.prepare_keymap(intent).unwrap_err();
+    let intent = toggle(&r.h, true);
+    r.prepare_keymap(intent).unwrap();
+    out.push(r);
+
+    // A DKS bound to a key: the unchanged Fn keymap before the slot; a tap
+    // at stage 4 is not yet verified.
+    let dks_on_e = |h: &Harness| {
+        h.keymap_intent(vec![KeymapChangeIntent::BindAdvanced {
+            layer: LayerView::Base,
+            key: E,
+            def: AdvancedDefView::Dks {
+                first_point: 12,
+                rows: vec![
+                    Some(DksRowView {
+                        key: 0x08,
+                        steps: vec![
+                            DksStepView::Tap,
+                            DksStepView::None,
+                            DksStepView::None,
+                            DksStepView::Tap,
+                        ],
+                    }),
+                    Some(DksRowView {
+                        key: 0x15,
+                        steps: vec![
+                            DksStepView::None,
+                            DksStepView::Hold,
+                            DksStepView::None,
+                            DksStepView::None,
+                        ],
+                    }),
+                    None,
+                    None,
+                ],
+            },
+            slot: None,
+        }])
+    };
+    let mut r = Rec::ready("keys_preview_advanced");
+    r.keys_state();
+    let intent = dks_on_e(&r.h);
+    r.prepare_keymap(intent).unwrap();
+    out.push(r);
+
+    // The same DKS written: base keymap, the Fn keymap that commits it, the
+    // slot (written even after Stop, it completes the binding).
+    let mut r = Rec::ready("keys_apply_advanced");
+    r.keys_state();
+    let intent = dks_on_e(&r.h);
+    let preview = r.prepare_keymap(intent).unwrap();
+    r.apply_keymap(&Rec::token(&preview.token), |_| {}).unwrap();
+    r.keys_state();
+    out.push(r);
+
+    // A content-only change of an advanced key (the seeded Mod-Tap on G,
+    // held 400 ms: not yet verified): the Fn keymap goes first, so the
+    // keyboard keeps the slot (commit trigger "advanced_keys").
+    let mut r = keys_seeded("keys_preview_advanced_edit");
+    r.keys_state();
+    let intent = r.h.keymap_intent(vec![KeymapChangeIntent::SetAdvanced {
+        slot: 1,
+        def: AdvancedDefView::ModTap {
+            tap: 0x0a,
+            hold: 0xe0,
+            hold_ms: 400,
+        },
+    }]);
+    r.prepare_keymap(intent).unwrap();
+    out.push(r);
+
+    // Macro slot 0: slots 1 and 2 are re-sent right after it.
+    let slot0 = |h: &Harness| {
+        h.keymap_intent(vec![
+            KeymapChangeIntent::SetMacro {
+                slot: 0,
+                program: tap_view(0x06, 10),
+            },
+            KeymapChangeIntent::Assign {
+                layer: LayerView::Base,
+                key: GRAVE,
+                action: ActionValue::Key { usage: 0x29 },
+            },
+        ])
+    };
+    let mut r = keys_two_macros("keys_preview_slot0");
+    r.keys_state();
+    let intent = slot0(&r.h);
+    r.prepare_keymap(intent).unwrap();
+    out.push(r);
+
+    // "New macro…" on a key that runs Macro 1 on its own (R here): the
+    // library reuses Macro 1 rather than a free slot, so slots 1 and 2 are
+    // re-sent right after it.
+    let mut h = Harness::new(1);
+    h.with_sim(super::keymap::two_macros);
+    h.until_ready();
+    let first = h.keymap_intent(vec![KeymapChangeIntent::BindMacro {
+        layer: LayerView::Base,
+        key: R,
+        program: tap_view(0x06, 10),
+        slot: Some(0),
+    }]);
+    let preview = h.prepare_keymap(first).unwrap();
+    h.apply_keymap(&Harness::token(&preview.token), &h.watch())
+        .unwrap();
+    let mut r = Rec::new("keys_preview_new_on_macro1", h);
+    r.keys_state();
+    let intent = r.h.keymap_intent(vec![KeymapChangeIntent::BindMacro {
+        layer: LayerView::Base,
+        key: R,
+        program: tap_view(0x07, 10),
+        slot: None,
+    }]);
+    let preview = r.prepare_keymap(intent).unwrap();
+    assert!(
+        preview
+            .slot_changes
+            .iter()
+            .any(|c| c.slot == TableRef::Macro { slot: 0 }),
+        "the new macro goes into Macro 1"
+    );
+    out.push(r);
+
+    // Stop right after slot 0: the re-sends still go out, the unrelated
+    // layer change does not.
+    let mut r = keys_two_macros("keys_apply_cancelled_after_slot0");
+    r.keys_state();
+    let intent = slot0(&r.h);
+    let preview = r.prepare_keymap(intent).unwrap();
+    r.apply_keymap(&Rec::token(&preview.token), |w| {
+        w.cancel_when(|e| {
+            matches!(
+                e.step,
+                ProgressStep::Writing {
+                    table: TableRef::Macro { slot: 0 },
+                    packet,
+                    packets,
+                    ..
+                } if packet == packets && packet > 0
+            )
+        });
+    })
+    .unwrap();
+    r.keys_state();
+    out.push(r);
+
+    // The re-send of slot 1 fails: slots 1 and 2 are left empty, Q and Fn +
+    // W refer to them.
+    let mut r = keys_two_macros("keys_apply_failed_cleared");
+    r.h.with_sim(|s| {
+        s.freeze(SimTable::Macro(
+            openwraith_hid::protocol::MacroSlotId::new(1).unwrap(),
+        ));
+    });
+    r.keys_state();
+    let intent = r.h.keymap_intent(vec![KeymapChangeIntent::SetMacro {
+        slot: 0,
+        program: tap_view(0x06, 10),
+    }]);
+    let preview = r.prepare_keymap(intent).unwrap();
+    r.apply_keymap(&Rec::token(&preview.token), |_| {}).unwrap();
+    r.keys_state();
+    out.push(r);
+
+    // A library file that cannot be read is kept aside.
+    let mut r = Rec::ready("keys_library_invalid");
+    r.call("list_macro_library", json!({}), |h, _| {
+        std::fs::write(crate::library::path(&h.worker.config), "{ not json").unwrap();
+        crate::library::list(&h.worker.config)
+    })
+    .unwrap();
+    out.push(r);
+
+    out
+}
+
+// ----- colours, dead band, SOCD, presets -----
+
+impl Rec {
+    fn colors_state(&mut self) -> crate::dto::ColorsState {
+        self.call("get_colors_state", json!({}), |h, _| Ok(h.colors()))
+            .unwrap()
+    }
+
+    fn dead_band_state(&mut self) -> crate::dto::DeadBandState {
+        self.call("get_dead_band_state", json!({}), |h, _| Ok(h.dead_band()))
+            .unwrap()
+    }
+
+    fn socd_state(&mut self) -> crate::dto::SocdStateView {
+        self.call("get_socd_state", json!({}), |h, _| Ok(h.socd()))
+            .unwrap()
+    }
+
+    fn list_presets(&mut self) -> Result<crate::dto::PresetsView, AppError> {
+        self.call("list_presets", json!({}), |h, _| {
+            let limits = h.snapshot().triggers.limits;
+            crate::ops::presets::list(&h.worker.config, limits)
+        })
+    }
+}
+
+fn color_intent(r: &Rec, keys: &[(u8, &str)], switch: bool) -> crate::dto::ColorEditIntent {
+    crate::dto::ColorEditIntent {
+        colors: keys
+            .iter()
+            .map(|(key, color)| crate::dto::KeyColorIntent {
+                key: *key,
+                color: (*color).to_string(),
+            })
+            .collect(),
+        switch_to_custom: switch,
+        check_persistence: false,
+        based_on: r.h.colors().revision,
+    }
+}
+
+fn dead_band_intent(
+    r: &Rec,
+    keys: &[u8],
+    top: Option<u16>,
+    bottom: Option<u16>,
+) -> crate::dto::DeadBandEditIntent {
+    crate::dto::DeadBandEditIntent {
+        keys: keys.to_vec(),
+        top,
+        bottom,
+        check_persistence: false,
+        based_on: r.h.dead_band().revision,
+    }
+}
+
+fn socd_intent(
+    r: &Rec,
+    power: Option<bool>,
+    pairs: Option<&[(u8, u8, u8)]>,
+) -> crate::dto::SocdEditIntent {
+    crate::dto::SocdEditIntent {
+        power,
+        pairs: pairs.map(|p| {
+            p.iter()
+                .map(|&(key1, key2, mode)| crate::dto::SocdPairIntent { key1, key2, mode })
+                .collect()
+        }),
+        allow_not_undoable: false,
+        check_persistence: false,
+        based_on: r.h.socd().revision,
+    }
+}
+
+/// A ready keyboard whose light is in the factory mode (not Custom).
+fn static_light(id: &'static str) -> Rec {
+    let mut h = Harness::new(1);
+    h.with_sim(|s| {
+        s.set_table(
+            profile(1),
+            SimTable::MainLight,
+            openwraith_hid::sim::FACTORY_LIGHT.to_vec(),
+        );
+    });
+    h.until_ready();
+    Rec::new(id, h)
+}
+
+/// The editors of the Actuation and Lighting pages.
+fn editors() -> Vec<Rec> {
+    let mut out = Vec::new();
+
+    // Key colours.
+    let mut r = Rec::ready("colors_ready");
+    r.colors_state();
+    out.push(r);
+
+    let mut r = static_light("colors_preview_not_shown");
+    r.colors_state();
+    let intent = color_intent(&r, &[(W, "#00ff00"), (A, "#00ff00")], false);
+    r.call(
+        "prepare_color_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_colors(intent),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = static_light("colors_preview_switch");
+    r.colors_state();
+    let intent = color_intent(&r, &[(W, "#00ff00"), (A, "#00ff00")], true);
+    r.call(
+        "prepare_color_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_colors(intent),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("colors_apply_ok");
+    r.colors_state();
+    let intent = color_intent(
+        &r,
+        &[
+            (W, "#0000ff"),
+            (A, "#0000ff"),
+            (S, "#0000ff"),
+            (D, "#0000ff"),
+        ],
+        false,
+    );
+    let preview = r
+        .call(
+            "prepare_color_edit",
+            json!({ "intent": intent.clone() }),
+            |h, _| h.prepare_colors(intent),
+        )
+        .unwrap();
+    let token = Rec::token(&preview.token);
+    r.call("apply_color_edit", json!({"token": token}), |h, w| {
+        h.apply_colors(&token, w)
+    })
+    .unwrap();
+    r.colors_state();
+    out.push(r);
+
+    // Dead band.
+    let mut r = Rec::ready("dead_band_ready");
+    r.dead_band_state();
+    out.push(r);
+
+    let mut r = Rec::ready("dead_band_preview");
+    r.dead_band_state();
+    let intent = dead_band_intent(&r, &[W, A, S, D], Some(50), Some(10));
+    r.call(
+        "prepare_dead_band_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_dead_band(intent),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("dead_band_apply_ok");
+    r.dead_band_state();
+    let intent = dead_band_intent(&r, &[W, A, S, D], Some(5), Some(5));
+    let preview = r
+        .call(
+            "prepare_dead_band_edit",
+            json!({ "intent": intent.clone() }),
+            |h, _| h.prepare_dead_band(intent),
+        )
+        .unwrap();
+    let token = Rec::token(&preview.token);
+    r.call("apply_dead_band_edit", json!({"token": token}), |h, w| {
+        h.apply_dead_band(&token, w)
+    })
+    .unwrap();
+    r.dead_band_state();
+    out.push(r);
+
+    let mut r = Rec::ready("dead_band_refused_range");
+    r.dead_band_state();
+    let intent = dead_band_intent(&r, &[W], Some(51), None);
+    r.call(
+        "prepare_dead_band_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_dead_band(intent),
+    )
+    .unwrap_err();
+    out.push(r);
+
+    // SOCD.
+    let mut r = Rec::ready("socd_ready");
+    r.socd_state();
+    out.push(r);
+
+    let mut h = Harness::new(1);
+    h.with_sim(|s| {
+        let mut pairs = vec![0u8; 80];
+        pairs[..12].copy_from_slice(&[
+            0x01, 0x00, 0x04, 0x07, 0x01, 0x01, 0x1a, 0x16, 0x01, 0x03, 0x50, 0x4f,
+        ]);
+        s.set_table(profile(1), SimTable::SocdPairs, pairs);
+        let mut settings = s
+            .table(profile(1), SimTable::SocdSettings)
+            .unwrap()
+            .to_vec();
+        settings[0] = 1;
+        s.set_table(profile(1), SimTable::SocdSettings, settings);
+    });
+    h.until_ready();
+    let mut r = Rec::new("socd_ready_pairs", h);
+    r.socd_state();
+    out.push(r);
+
+    let mut r = Rec::ready("socd_preview");
+    r.socd_state();
+    let intent = socd_intent(&r, Some(true), Some(&[(A, D, 1), (W, S, 2), (Q, E, 3)]));
+    r.call(
+        "prepare_socd_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_socd(intent),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("socd_apply_ok");
+    r.socd_state();
+    let intent = socd_intent(&r, Some(true), Some(&[(A, D, 1)]));
+    let preview = r
+        .call(
+            "prepare_socd_edit",
+            json!({ "intent": intent.clone() }),
+            |h, _| h.prepare_socd(intent),
+        )
+        .unwrap();
+    let token = Rec::token(&preview.token);
+    r.call("apply_socd_edit", json!({"token": token}), |h, w| {
+        h.apply_socd(&token, w)
+    })
+    .unwrap();
+    r.socd_state();
+    out.push(r);
+
+    // Fn + Right Shift on the keyboard while a SOCD plan is open.
+    let mut r = Rec::ready("socd_toggled");
+    r.socd_state();
+    let intent = socd_intent(&r, None, Some(&[(A, D, 4)]));
+    r.call(
+        "prepare_socd_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_socd(intent),
+    )
+    .unwrap();
+    r.h.with_sim(|s| s.press_socd_hotkey_at(std::time::Duration::from_millis(50)));
+    r.wait(300);
+    r.socd_state();
+    out.push(r);
+
+    // Presets: the built-in table, a user preset and one outside the
+    // keyboard's limits (refused, never clamped).
+    let mut r = Rec::ready("presets_ready");
+    let path = r.h.worker.config.settings_path.clone().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"language":"system","theme":"system","presets":[
+            {"id":"u-1","name":"Valorant","actuation":30,"rapid_trigger":{"mode":"same","sensitivity":8}},
+            {"id":"u-2","name":"Too deep","actuation":250,"rapid_trigger":{"mode":"off"}}]}"#,
+    )
+    .unwrap();
+    r.list_presets().unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("presets_preview");
+    r.list_presets().unwrap();
+    let intent = crate::dto::PresetEditIntent {
+        preset: crate::dto::PresetRef::Builtin {
+            id: "fast".to_string(),
+        },
+        keys: vec![W, A, S, D],
+        based_on: r.h.snapshot().revision,
+    };
+    r.call(
+        "prepare_preset_edit",
+        json!({ "intent": intent.clone() }),
+        |h, _| h.prepare_preset(intent),
+    )
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("presets_save_refused");
+    r.list_presets().unwrap();
+    let preset = crate::dto::UserPresetIntent {
+        id: None,
+        name: "Too deep".to_string(),
+        actuation: 250,
+        rapid_trigger: RtIntent::Off,
+    };
+    r.call(
+        "save_user_preset",
+        json!({ "preset": preset.clone() }),
+        |h, _| {
+            let limits = h.snapshot().triggers.limits;
+            crate::ops::presets::save(&h.worker.config, &preset, limits)
+        },
+    )
+    .unwrap_err();
+    out.push(r);
+
+    // A preset of the user's own, saved (it is listed after the built-ins).
+    let mut r = Rec::ready("presets_save_ok");
+    r.list_presets().unwrap();
+    let preset = crate::dto::UserPresetIntent {
+        id: None,
+        name: "Valorant".to_string(),
+        actuation: 30,
+        rapid_trigger: RtIntent::Same { sensitivity: 8 },
+    };
+    r.call(
+        "save_user_preset",
+        json!({ "preset": preset.clone() }),
+        |h, _| {
+            let limits = h.snapshot().triggers.limits;
+            crate::ops::presets::save(&h.worker.config, &preset, limits)
+        },
+    )
+    .unwrap();
+    out.push(r);
+
+    // A built-in preset applied: its plan is a trigger plan, written by the
+    // trigger edit's apply step.
+    let mut r = Rec::ready("presets_apply_ok");
+    r.list_presets().unwrap();
+    let intent = crate::dto::PresetEditIntent {
+        preset: crate::dto::PresetRef::Builtin {
+            id: "fast".to_string(),
+        },
+        keys: vec![W, A, S, D],
+        based_on: r.h.snapshot().revision,
+    };
+    let preview = r
+        .call(
+            "prepare_preset_edit",
+            json!({ "intent": intent.clone() }),
+            |h, _| h.prepare_preset(intent),
+        )
+        .unwrap();
+    let token = Rec::token(&preview.token);
+    r.call("apply_trigger_edit", json!({"token": token}), |h, w| {
+        h.apply_trigger(&token, w)
+    })
+    .unwrap();
+    out.push(r);
+
+    out
+}
+
+// ----- the live key-depth view -----
+
+/// A hook on frames (`false`: the receiver is gone).
+type FrameHook = Box<dyn FnMut(&crate::dto::DepthFrame, &crate::shared::Shared) -> bool + Send>;
+
+/// Records frames; the hook runs on each.
+struct FrameRecorder {
+    frames: Mutex<Vec<crate::dto::DepthFrame>>,
+    hook: Mutex<FrameHook>,
+    shared: Arc<crate::shared::Shared>,
+}
+
+impl crate::sink::DepthSink for FrameRecorder {
+    fn send(&self, frame: crate::dto::DepthFrame) -> bool {
+        let keep = {
+            let mut hook = self.hook.lock().unwrap();
+            (*hook)(&frame, &self.shared)
+        };
+        self.frames.lock().unwrap().push(frame);
+        keep
+    }
+}
+
+/// W, A and D move (a slow press, a quick tap, a hold).
+fn script_keys(h: &Harness) {
+    use std::time::Duration;
+    h.with_sim(|s| {
+        s.travel_script(
+            pos(W),
+            &[
+                (Duration::from_millis(100), 15),
+                (Duration::from_millis(172), 40),
+                (Duration::from_millis(244), 80),
+                (Duration::from_millis(316), 120),
+                (Duration::from_millis(388), 60),
+            ],
+        );
+        s.travel_script(
+            pos(A),
+            &[
+                (Duration::from_millis(200), 30),
+                (Duration::from_millis(202), 150),
+                (Duration::from_millis(204), 70),
+            ],
+        );
+        s.travel_script(pos(D), &[(Duration::from_millis(300), 90)]);
+    });
+}
+
+impl Rec {
+    /// `start_depth_view`; the frames go to `ui.depth_frames`.
+    fn depth_view(
+        &mut self,
+        hook: impl FnMut(&crate::dto::DepthFrame, &crate::shared::Shared) -> bool + Send + 'static,
+    ) -> Result<crate::dto::DepthViewReport, AppError> {
+        let sink = Arc::new(FrameRecorder {
+            frames: Mutex::new(Vec::new()),
+            hook: Mutex::new(Box::new(hook)),
+            shared: Arc::clone(&self.h.shared),
+        });
+        let inner = Arc::clone(&sink);
+        let result = self.call("start_depth_view", json!({}), |h, _| h.depth_view(inner));
+        let frames = sink.frames.lock().unwrap().clone();
+        self.ui = Some(json!({ "depth_frames": frames }));
+        result
+    }
+}
+
+/// The Key depth tab.
+fn depth() -> Vec<Rec> {
+    use crate::dto::DepthStopReason;
+    let mut out = Vec::new();
+
+    // Live frames; Stop after W reached its deepest point.
+    let mut r = Rec::ready("depth_live");
+    script_keys(&r.h);
+    r.depth_view(|frame, shared| {
+        // W is back at rest.
+        if frame.keys.iter().any(|k| k.index == W && k.depth == 0) {
+            shared.stop_depth(DepthStopReason::Requested);
+        }
+        true
+    })
+    .unwrap();
+    out.push(r);
+
+    for (id, reason) in [
+        ("depth_stopped_page_left", DepthStopReason::PageLeft),
+        ("depth_stopped_window_hidden", DepthStopReason::WindowHidden),
+    ] {
+        let mut r = Rec::ready(id);
+        script_keys(&r.h);
+        r.depth_view(move |_, shared| {
+            shared.stop_depth(reason);
+            true
+        })
+        .unwrap();
+        out.push(r);
+    }
+
+    let mut r = Rec::ready("depth_stopped_no_movement");
+    r.depth_view(|_, _| true).unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("depth_stopped_channel_closed");
+    script_keys(&r.h);
+    r.depth_view(|_, _| false).unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("depth_stopped_reset");
+    script_keys(&r.h);
+    let sim = r.h.sim.clone();
+    r.depth_view(move |_, _| {
+        sim.apply(SimAction::KeyboardReset).unwrap();
+        true
+    })
+    .unwrap();
+    r.h.with_sim(|s| s.allow_travel_left_open());
+    out.push(r);
+
+    let mut r = Rec::ready("depth_stopped_other_program");
+    script_keys(&r.h);
+    let sim = r.h.sim.clone();
+    r.depth_view(move |_, _| {
+        sim.apply(SimAction::VendorHeartbeat {
+            count: 1,
+            interval_ms: 0,
+        })
+        .unwrap();
+        true
+    })
+    .unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("depth_stopped_profile_changed");
+    script_keys(&r.h);
+    let sim = r.h.sim.clone();
+    r.depth_view(move |_, _| {
+        sim.apply(SimAction::KeyboardSwitch {
+            profile: 2,
+            after_ms: 0,
+            report: true,
+        })
+        .unwrap();
+        true
+    })
+    .unwrap();
+    r.wait(1000);
+    out.push(r);
+
+    // A live view an earlier run left open: the marker at start, the notice,
+    // and "Stop it".
+    let h = Harness::new(1);
+    let marker = h.worker.config.travel_marker_path();
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "{}").unwrap();
+    h.shared
+        .set_travel_marker_left(crate::ops::travel::marker_left(&h.worker.config));
+    h.with_sim(|s| s.leave_travel_open());
+    let mut r = Rec::new("depth_stray_marker", h);
+    r.mark();
+    r.h.until_ready();
+    r.wait(300);
+    r.call("close_stray_travel_test", json!({}), |h, _| h.close_stray())
+        .unwrap();
+    out.push(r);
+
+    out
+}
+
+// ----- sharing a profile -----
+
+impl Rec {
+    fn export(
+        &mut self,
+        profile: u8,
+        name: &str,
+        switch: bool,
+    ) -> Result<crate::dto::ExportedProfile, AppError> {
+        let name = name.to_string();
+        let file = self
+            .call(
+                "choose_export_destination",
+                json!({"profile": profile, "dialog": dialog()}),
+                |h, _| Ok(Some(h.destination(&name))),
+            )
+            .unwrap()
+            .unwrap();
+        let intent = crate::dto::ExportIntent {
+            source: crate::dto::ExportSource::Keyboard,
+            profile,
+            label: Some("Tournament".to_string()),
+            destination: file.token,
+            confirmed_switch: switch,
+        };
+        self.call(
+            "export_profile",
+            json!({ "intent": intent.clone() }),
+            |h, w| h.export(intent, w),
+        )
+    }
+
+    fn open_import(&mut self, path: PathBuf) -> crate::dto::ImportSummaryView {
+        self.call("open_import_file", json!({"dialog": dialog()}), |h, _| {
+            crate::ops::share::import_summary(&h.shared, &path).map(Some)
+        })
+        .unwrap()
+        .unwrap()
+    }
+
+    fn prepare_import(
+        &mut self,
+        intent: crate::dto::ImportIntent,
+    ) -> Result<crate::dto::ImportPreview, AppError> {
+        self.call(
+            "prepare_import",
+            json!({ "intent": intent.clone() }),
+            |h, w| h.prepare_import(intent, w),
+        )
+    }
+}
+
+/// A profile file of profile 1 with a macro, its Fn + 2 and Fn + Space
+/// replaced (critical built-ins: profile 2, reset) when `critical`; the
+/// keyboard back as before.
+fn share_file(h: &mut Harness, critical: bool) -> PathBuf {
+    share_file_with(h, critical, |_| {})
+}
+
+/// [`share_file`], with `tweak` applied to the simulator before the export.
+fn share_file_with(
+    h: &mut Harness,
+    critical: bool,
+    tweak: impl FnOnce(&mut openwraith_hid::DeviceSim),
+) -> PathBuf {
+    use crate::dto::{ActionValue, BuiltinAckIntent, KeymapChangeIntent, LayerView};
+    let mut changes = vec![KeymapChangeIntent::BindMacro {
+        layer: LayerView::Base,
+        key: super::keymap::CAPS,
+        program: super::keymap::tap_view(0x04, 20),
+        slot: None,
+    }];
+    let replaced = if critical {
+        vec![(super::keymap::TWO, 0x04), (super::keymap::SPACE, 0x05)]
+    } else {
+        Vec::new()
+    };
+    changes.extend(
+        replaced
+            .iter()
+            .map(|(key, usage)| KeymapChangeIntent::Assign {
+                layer: LayerView::Fn,
+                key: *key,
+                action: ActionValue::Key { usage: *usage },
+            }),
+    );
+    let mut intent = h.keymap_intent(changes);
+    intent.builtin_acks = replaced
+        .iter()
+        .map(|(key, _)| BuiltinAckIntent {
+            key: *key,
+            critical: true,
+        })
+        .collect();
+    let preview = h.prepare_keymap(intent).unwrap();
+    h.apply_keymap(&Harness::token(&preview.token), &h.watch())
+        .unwrap();
+    h.with_sim(tweak);
+    let destination = h.destination("shared.owprofile.json");
+    h.export(
+        crate::dto::ExportIntent {
+            source: crate::dto::ExportSource::Keyboard,
+            profile: 1,
+            label: Some("Tournament".to_string()),
+            destination: destination.token,
+            confirmed_switch: false,
+        },
+        &h.watch(),
+    )
+    .unwrap();
+    h.dir.path().join("shared.owprofile.json")
+}
+
+fn import_of(
+    summary: &crate::dto::ImportSummaryView,
+    include: crate::dto::ShareSelectionView,
+    allowed_critical_keys: Vec<u8>,
+) -> crate::dto::ImportIntent {
+    crate::dto::ImportIntent {
+        source: summary.file.file.token.clone(),
+        from: None,
+        into: 2,
+        include,
+        allowed_critical_keys,
+        allow_firmware_mismatch: false,
+        confirmed_switches: vec![2],
+    }
+}
+
+/// Share a profile (Backup & profiles).
+fn share() -> Vec<Rec> {
+    let mut out = Vec::new();
+
+    let mut r = Rec::ready("export_done");
+    r.export(1, "profile-1.owprofile.json", false).unwrap();
+    out.push(r);
+
+    let mut r = Rec::ready("export_needs_switch");
+    r.export(3, "profile-3.owprofile.json", false).unwrap_err();
+    r.export(3, "profile-3.owprofile.json", true).unwrap();
+    out.push(r);
+
+    let mut h = Harness::ready();
+    let path = share_file(&mut h, false);
+    let mut r = Rec::new("import_summary", h);
+    r.open_import(path);
+    out.push(r);
+
+    let mut h = Harness::ready();
+    let path = share_file(&mut h, false);
+    let mut r = Rec::new("import_preview", h);
+    let summary = r.open_import(path);
+    r.prepare_import(import_of(
+        &summary,
+        crate::ops::share::default_selection(),
+        Vec::new(),
+    ))
+    .unwrap();
+    out.push(r);
+
+    let mut h = Harness::ready();
+    let path = share_file(&mut h, true);
+    let mut r = Rec::new("import_refused_critical", h);
+    let summary = r.open_import(path);
+    let keys = crate::dto::ShareSelectionView {
+        keys: true,
+        ..crate::ops::share::default_selection()
+    };
+    r.prepare_import(import_of(&summary, keys, Vec::new()))
+        .unwrap();
+    // Both keys allowed: the keys are imported, both callouts stay.
+    r.prepare_import(import_of(
+        &summary,
+        keys,
+        vec![super::keymap::TWO, super::keymap::SPACE],
+    ))
+    .unwrap();
+    out.push(r);
+
+    // The file replaces Fn + 2 and Fn + Space, but its base W holds an entry
+    // OpenWraith does not write: the keys stay out whatever the permission,
+    // so no shortcut is named and the general note explains it.
+    let mut h = Harness::ready();
+    let path = share_file_with(&mut h, true, |s| {
+        let mut base = s
+            .table(profile(1), SimTable::Keymap(Layer::Base))
+            .unwrap()
+            .to_vec();
+        let at = usize::from(super::keymap::W) * 4;
+        base[at..at + 4].copy_from_slice(&[0x55, 0, 0, 0]);
+        s.set_table(profile(1), SimTable::Keymap(Layer::Base), base);
+    });
+    let mut r = Rec::new("import_keys_blocked_other", h);
+    let summary = r.open_import(path);
+    let keys = crate::dto::ShareSelectionView {
+        keys: true,
+        ..crate::ops::share::default_selection()
+    };
+    r.prepare_import(import_of(&summary, keys, Vec::new()))
+        .unwrap();
+    out.push(r);
+
+    let mut h = Harness::ready();
+    let path = share_file(&mut h, false);
+    let mut r = Rec::new("import_apply_ok", h);
+    let summary = r.open_import(path);
+    let keys = crate::dto::ShareSelectionView {
+        keys: true,
+        ..crate::ops::share::default_selection()
+    };
+    let preview = r
+        .prepare_import(import_of(&summary, keys, Vec::new()))
+        .unwrap();
+    let token = Rec::token(&preview.token);
+    r.call("apply_import", json!({"token": token}), |h, w| {
+        h.apply_import(&token, w)
+    })
+    .unwrap();
+    out.push(r);
+
+    out
+}
+
 /// Every scenario, rendered.
 fn render_all() -> BTreeMap<String, String> {
     let mut files = BTreeMap::new();
@@ -1024,6 +2105,10 @@ fn render_all() -> BTreeMap<String, String> {
         .chain(actuation())
         .chain(lighting())
         .chain(backup_restore())
+        .chain(keys())
+        .chain(editors())
+        .chain(depth())
+        .chain(share())
     {
         ids.push(rec.id);
         let (name, text) = rec.finish();

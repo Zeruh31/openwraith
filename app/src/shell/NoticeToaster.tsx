@@ -28,7 +28,14 @@ export function NoticeToaster() {
         // Only after a disconnection: the first connection needs no toast.
         if (lostOnce.current) toast({ kind: "success", title: dict.shell.notices.connected });
         break;
+      case "socd_toggled_on_keyboard":
+        // The SOCD power is one setting of the whole keyboard (Fn + Right Shift).
+        toast({ kind: "info", title: dict.shell.notices.socdToggled({ on: notice.power }) });
+        break;
       case "plan_invalidated":
+      case "depth_view_stopped":
+      case "stray_travel_test":
+        // Handled by the open write flow, the key-depth tab and the banner.
         break;
     }
   });

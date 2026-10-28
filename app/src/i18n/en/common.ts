@@ -7,6 +7,9 @@ export const common = {
   none: "None",
   yes: "Yes",
   no: "No",
+  tip: {
+    dismiss: "Got it",
+  },
   actions: {
     ok: "OK",
     cancel: "Cancel",
@@ -34,6 +37,81 @@ export const common = {
   profile: (p: { n: number }) => `Profile ${p.n}`,
   profileUnknown: "Profile ?",
   profiles: (p: { list: string }) => `Profiles ${p.list}`,
+  /** The three markers (one `Badge` component): text plus tooltip. */
+  badge: {
+    unverified: "Not yet verified",
+    unverifiedTip:
+      "The Wraith website sends the same bytes, but OpenWraith hasn't yet tested on a W75 that it does what the label says.",
+    unverifiedNotes: (p: { list: string }) => `Not tested yet: ${p.list}.`,
+    /**
+     * What isn't tested yet, by the library's own (English) note. A note
+     * without an entry here falls back to `noteOther`: the library's English
+     * text and its research question ids never reach the UI.
+     */
+    notes: {
+      "DKS tap at stage 4": "a tap at stage 4 of a dynamic keystroke",
+      'DKS "hold again" step': "the “let go and press again” step of a dynamic keystroke",
+      "Mod-Tap hold time other than 300 ms": "a Mod-Tap hold time other than 300 ms",
+      "SOCD modes 2 and 3": "SOCD modes 2 and 3",
+      "multimedia function named by the vendor site": "this media function (named by the Wraith website)",
+      "key combination with a right-side modifier": "a key combination with a right-side modifier",
+      "advanced-key binding on the Fn layer": "an advanced key on the Fn layer",
+    } as Record<string, string>,
+    noteOther: "this setting",
+    kept: "Kept as read",
+    keptTip:
+      "OpenWraith shows this as the keyboard stores it and leaves it unchanged; it can't edit it.",
+    keyboardWide: "Applies to all profiles",
+    keyboardWideTip: "This is one setting of the whole keyboard: changing it changes it on every profile.",
+  },
+  /** Shared pickers and editors (key picker, colour picker, step list, travel gauge, keyboard). */
+  pickers: {
+    keyPicker: {
+      noMatch: "No key matches",
+      pickOnBoard: "Pick on the board…",
+      boardTitle: "Pick a key",
+      boardHint: "Click a key, or move with the arrow keys and press Enter.",
+      boardLabel: "Keyboard: pick a key",
+      clear: "Clear",
+      options: (p: { label: string }) => `${p.label}: suggestions`,
+    },
+    color: {
+      area: "Saturation and brightness",
+      areaValue: (p: { s: number; v: number }) => `Saturation ${p.s} %, brightness ${p.v} %`,
+      hue: "Hue",
+      hueValue: (p: { deg: number }) => `${p.deg} degrees`,
+      hex: "Hex",
+      recent: "Recent colours",
+      current: (p: { hex: string }) => `Chosen colour ${p.hex}`,
+    },
+    steps: {
+      moveUp: "Move up",
+      moveDown: "Move down",
+      remove: "Remove",
+      moved: (p: { from: number; to: number }) => `Moved from position ${p.from} to ${p.to}.`,
+      removed: (p: { n: number }) => `Step ${p.n} removed.`,
+      hint: "Alt + Up or Alt + Down moves the focused step.",
+      position: (p: { n: number; total: number }) => `${p.n} of ${p.total}`,
+      empty: "No steps yet.",
+    },
+    gauge: {
+      label: "Key travel",
+      top: "Top: not pressed",
+      bottom: (p: { value: string }) => `Bottom: fully pressed (${p.value})`,
+      actuation: (p: { value: string }) => `Actuation point at ${p.value}`,
+      rtPress: (p: { value: string }) => `Rapid Trigger: presses again after ${p.value} downwards`,
+      rtRelease: (p: { value: string }) => `Rapid Trigger: releases after ${p.value} upwards`,
+      deadTop: (p: { value: string }) => `Top dead zone: the first ${p.value}`,
+      deadBottom: (p: { value: string }) => `Bottom dead zone: the last ${p.value}`,
+      point: (p: { label: string; value: string }) => `${p.label} at ${p.value}`,
+      depth: (p: { value: string }) => `Pressed ${p.value} now`,
+      peak: (p: { value: string }) => `Deepest so far ${p.value}`,
+    },
+    keyboard: {
+      knobTitle: "Knob",
+      knobInfo: "Show what the knob stores",
+    },
+  },
   unverified: {
     label: "Unverified",
     tooltip:
@@ -89,4 +167,14 @@ export const common = {
     body: "Something went wrong while showing this page. Nothing was written to the keyboard. The other pages still work.",
   },
   disclaimer: "OpenWraith is independent and not affiliated with Wraith.",
+  /** When the values shown were read, and the button that reads them again (every page). */
+  readAt: {
+    time: (p: { time: string }) => `Read at ${p.time}`,
+    again: "Read the keyboard again",
+  },
+  /** A page whose settings aren't read (yet). */
+  notRead: {
+    reading: "Reading the keyboard…",
+    goToKeyboard: "Go to the Keyboard page",
+  },
 } as const;

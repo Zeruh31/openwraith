@@ -1,7 +1,9 @@
 //! Mappings from the library's types to the IPC data types.
 
 mod change;
+pub(crate) mod editors;
 mod error;
+pub(crate) mod keys;
 mod plan;
 mod report;
 mod snapshot;

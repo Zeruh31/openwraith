@@ -11,18 +11,22 @@ use std::sync::{Arc, Mutex};
 use openwraith_app_core::WorkerHandle;
 use openwraith_app_core::dto::{
     AllProfilesPreview, AppError, AppEvent, AppInfo, BackupFileSummary, BackupKind, BackupSaved,
-    CloseChoice, DeviceId, DeviceSnapshot, DeviceStatus, DialogText, EditReportView, FileRef,
-    FileToken, LastReport, LightEditIntent, LightEditPreview, OpId, PlanToken,
-    ProfileSwitchPreview, ProfileSwitchReport, ProgressEvent, RestoreIntent, RestorePreview,
-    RestoreReportView, RevealTarget, SafetyBackupEntry, Settings, ThemeSetting, TriggerEditIntent,
-    TriggerEditPreview,
+    CloseChoice, ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent,
+    DeadBandEditPreview, DeadBandState, DepthFrame, DepthStopRequest, DepthViewReport, DeviceId,
+    DeviceSnapshot, DeviceStatus, DialogText, EditReportView, ExportIntent, ExportedProfile,
+    FileRef, FileToken, ImportIntent, ImportPreview, ImportSummaryView, KeymapEditIntent,
+    KeymapEditPreview, KeysState, LastReport, LightEditIntent, LightEditPreview, MacroLibraryView,
+    MacroProgramView, OpId, PlanToken, PresetEditIntent, PresetsView, ProfileSwitchPreview,
+    ProfileSwitchReport, ProgressEvent, RestoreIntent, RestorePreview, RestoreReportView,
+    RevealTarget, SafetyBackupEntry, Settings, SocdEditIntent, SocdEditPreview, SocdStateView,
+    ThemeSetting, TravelCloseReport, TriggerEditIntent, TriggerEditPreview, UserPresetIntent,
 };
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Runtime, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dialogs;
-use crate::sinks::{ChannelEvents, ChannelProgress};
+use crate::sinks::{ChannelDepth, ChannelEvents, ChannelProgress};
 
 /// The worker, managed by Tauri.
 pub type Worker<'a> = State<'a, Arc<WorkerHandle>>;
@@ -377,6 +381,325 @@ pub async fn apply_restore(
 #[tauri::command]
 pub fn discard_plan(token: PlanToken, worker: Worker<'_>) {
     worker.discard_plan(token);
+}
+
+// ----- the Keys page -----
+
+/// `get_keys_state`: the keymap group of the last full read (no traffic);
+/// `null` without a snapshot.
+#[tauri::command]
+pub fn get_keys_state(worker: Worker<'_>) -> Option<KeysState> {
+    worker.keys_state()
+}
+
+/// `prepare_keymap_edit`.
+#[tauri::command]
+pub async fn prepare_keymap_edit(
+    intent: KeymapEditIntent,
+    worker: Worker<'_>,
+) -> Result<KeymapEditPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.prepare_keymap_edit(intent)).await
+}
+
+/// `apply_keymap_edit`.
+#[tauri::command]
+pub async fn apply_keymap_edit(
+    token: PlanToken,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<EditReportView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.apply_keymap_edit(token, sink)).await
+}
+
+/// `list_macro_library`: the macros saved on this PC.
+#[tauri::command]
+pub async fn list_macro_library(worker: Worker<'_>) -> Result<MacroLibraryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.list_macro_library()).await
+}
+
+/// `save_library_macro`: adds a macro to the library (or renames the entry
+/// with the same program).
+#[tauri::command]
+pub async fn save_library_macro(
+    name: String,
+    program: MacroProgramView,
+    worker: Worker<'_>,
+) -> Result<MacroLibraryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.save_library_macro(&name, &program)).await
+}
+
+/// `rename_library_macro`.
+#[tauri::command]
+pub async fn rename_library_macro(
+    hash: String,
+    name: String,
+    worker: Worker<'_>,
+) -> Result<MacroLibraryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.rename_library_macro(&hash, &name)).await
+}
+
+/// `delete_library_macro`.
+#[tauri::command]
+pub async fn delete_library_macro(
+    hash: String,
+    worker: Worker<'_>,
+) -> Result<MacroLibraryView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.delete_library_macro(&hash)).await
+}
+
+// ----- key colours, dead band, SOCD, trigger presets -----
+
+/// `get_colors_state`: custom table 1 of the last full read (no traffic);
+/// `null` without a snapshot.
+#[tauri::command]
+pub fn get_colors_state(worker: Worker<'_>) -> Option<ColorsState> {
+    worker.colors_state()
+}
+
+/// `prepare_color_edit`.
+#[tauri::command]
+pub async fn prepare_color_edit(
+    intent: ColorEditIntent,
+    worker: Worker<'_>,
+) -> Result<ColorEditPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.prepare_color_edit(intent)).await
+}
+
+/// `apply_color_edit`.
+#[tauri::command]
+pub async fn apply_color_edit(
+    token: PlanToken,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<EditReportView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.apply_color_edit(token, sink)).await
+}
+
+/// `get_dead_band_state`: the dead band of the last full read (no
+/// traffic); `null` without a snapshot.
+#[tauri::command]
+pub fn get_dead_band_state(worker: Worker<'_>) -> Option<DeadBandState> {
+    worker.dead_band_state()
+}
+
+/// `prepare_dead_band_edit`.
+#[tauri::command]
+pub async fn prepare_dead_band_edit(
+    intent: DeadBandEditIntent,
+    worker: Worker<'_>,
+) -> Result<DeadBandEditPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.prepare_dead_band_edit(intent)).await
+}
+
+/// `apply_dead_band_edit`.
+#[tauri::command]
+pub async fn apply_dead_band_edit(
+    token: PlanToken,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<EditReportView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.apply_dead_band_edit(token, sink)).await
+}
+
+/// `get_socd_state`: SOCD of the last full read with the keyboard's pushes
+/// applied (no traffic); `null` without a snapshot.
+#[tauri::command]
+pub fn get_socd_state(worker: Worker<'_>) -> Option<SocdStateView> {
+    worker.socd_state()
+}
+
+/// `prepare_socd_edit`.
+#[tauri::command]
+pub async fn prepare_socd_edit(
+    intent: SocdEditIntent,
+    worker: Worker<'_>,
+) -> Result<SocdEditPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.prepare_socd_edit(intent)).await
+}
+
+/// `apply_socd_edit`.
+#[tauri::command]
+pub async fn apply_socd_edit(
+    token: PlanToken,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<EditReportView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.apply_socd_edit(token, sink)).await
+}
+
+/// `list_presets`: the built-in trigger presets and the user's.
+#[tauri::command]
+pub async fn list_presets(worker: Worker<'_>) -> Result<PresetsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.list_presets()).await
+}
+
+/// `save_user_preset`.
+#[tauri::command]
+pub async fn save_user_preset(
+    preset: UserPresetIntent,
+    worker: Worker<'_>,
+) -> Result<PresetsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.save_user_preset(&preset)).await
+}
+
+/// `delete_user_preset`.
+#[tauri::command]
+pub async fn delete_user_preset(id: String, worker: Worker<'_>) -> Result<PresetsView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.delete_user_preset(&id)).await
+}
+
+/// `prepare_preset_edit`: a preset as a trigger plan (`apply_trigger_edit`
+/// writes it).
+#[tauri::command]
+pub async fn prepare_preset_edit(
+    intent: PresetEditIntent,
+    worker: Worker<'_>,
+) -> Result<TriggerEditPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.prepare_preset_edit(intent)).await
+}
+
+// ----- the live key-depth view -----
+
+/// `start_depth_view`: frames on `channel` until the view stops; then its
+/// report.
+#[tauri::command]
+pub async fn start_depth_view(
+    channel: Channel<DepthFrame>,
+    worker: Worker<'_>,
+) -> Result<DepthViewReport, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = Arc::new(ChannelDepth(channel));
+    blocking(move || worker.start_depth_view(sink)).await
+}
+
+/// `stop_depth_view`: false when no view runs. This command answers at once
+/// on the main thread, while `start_depth_view` registers its view on a
+/// blocking thread a moment later: a stop sent in that gap answers false,
+/// and the Key depth tab sends it again while its start is on its way.
+#[tauri::command]
+pub fn stop_depth_view(reason: DepthStopRequest, worker: Worker<'_>) -> bool {
+    worker.stop_depth_view(reason)
+}
+
+/// `close_stray_travel_test` (a user click only).
+#[tauri::command]
+pub async fn close_stray_travel_test(worker: Worker<'_>) -> Result<TravelCloseReport, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.close_stray_travel_test()).await
+}
+
+// ----- sharing a profile -----
+
+/// `choose_export_destination`: the save dialog (`.owprofile.json`);
+/// `null` when cancelled.
+#[tauri::command]
+pub async fn choose_export_destination<R: Runtime>(
+    profile: u8,
+    dialog: DialogText,
+    app: AppHandle<R>,
+    worker: Worker<'_>,
+) -> Result<Option<FileRef>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || {
+        let name = worker.default_export_name(profile);
+        Ok(dialogs::choose_destination(&app, &dialog, &name)?
+            .map(|path| worker.register_destination(&path)))
+    })
+    .await
+}
+
+/// `export_profile`.
+#[tauri::command]
+pub async fn export_profile(
+    intent: ExportIntent,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<ExportedProfile, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.export_profile(intent, sink)).await
+}
+
+/// `open_import_file`: the open dialog; `null` when cancelled.
+#[tauri::command]
+pub async fn open_import_file<R: Runtime>(
+    dialog: DialogText,
+    app: AppHandle<R>,
+    worker: Worker<'_>,
+) -> Result<Option<ImportSummaryView>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || match dialogs::pick_backup(&app, &dialog)? {
+        Some(path) => worker.open_import_file(&path).map(Some),
+        None => Ok(None),
+    })
+    .await
+}
+
+/// `prepare_import`.
+#[tauri::command]
+pub async fn prepare_import(
+    intent: ImportIntent,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<ImportPreview, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.prepare_import(intent, sink)).await
+}
+
+/// `apply_import`.
+#[tauri::command]
+pub async fn apply_import(
+    token: PlanToken,
+    progress: Channel<ProgressEvent>,
+    worker: Worker<'_>,
+) -> Result<RestoreReportView, AppError> {
+    let worker = Arc::clone(worker.inner());
+    let sink = self::progress(progress);
+    blocking(move || worker.apply_import(token, sink)).await
+}
+
+// ----- one-time hints -----
+
+/// `get_hints_shown`.
+#[tauri::command]
+pub async fn get_hints_shown(worker: Worker<'_>) -> Result<Vec<String>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || Ok(worker.hints_shown())).await
+}
+
+/// `mark_hint_shown`.
+#[tauri::command]
+pub async fn mark_hint_shown(hint: String, worker: Worker<'_>) -> Result<Vec<String>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.mark_hint_shown(&hint)).await
+}
+
+/// `reset_hints_shown`.
+#[tauri::command]
+pub async fn reset_hints_shown(worker: Worker<'_>) -> Result<Vec<String>, AppError> {
+    let worker = Arc::clone(worker.inner());
+    blocking(move || worker.reset_hints_shown()).await
 }
 
 // ----- developer simulator (simulator builds only) -----

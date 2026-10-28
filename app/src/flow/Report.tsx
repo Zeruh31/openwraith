@@ -10,12 +10,15 @@ import { Disclosure, TechnicalDetails } from "../components/Layout";
 import { keyName, useDict, type Dict } from "../i18n";
 import { useFormat } from "../i18n/format";
 import type {
+  ClearedMacroView,
+  DanglingBindingView,
   EditReportView as EditReport,
   FileRef,
   ForeignActivityView,
   Headline,
   ItemReportView,
   KeyRef,
+  PersistenceCheckView,
   TableRef,
 } from "../ipc/bindings";
 import { api } from "../ipc/commands";
@@ -23,7 +26,7 @@ import { toAppError } from "../ipc/errors";
 import { navigate } from "../routes";
 import { useStatus } from "../state/status";
 import { toast } from "../state/toasts";
-import { describeDetail, tableName, warningText } from "./labels";
+import { describeDetail, keyRefText, tableName, warningText, writeReasonTexts } from "./labels";
 
 /** A table's localized name. */
 export function TableName({ table }: { table: TableRef }) {
@@ -217,14 +220,20 @@ export function countItems(items: readonly ItemReportView[]): {
   return { written, maybeLost, lost, total };
 }
 
-/** The headline of an edit report (keys or the light). */
+/**
+ * The headline of an edit report: trigger keys are counted ("2 keys
+ * written"); the light, and edits written as whole tables (keymaps, macro
+ * and advanced-key slots, key colours, dead band, SOCD), are not.
+ */
 export function editHeadline(report: EditReport, dict: Dict): string {
   const h = dict.flow.headline;
   const counts = countItems(report.items);
   const light = report.items.some((item) => item.table.table === "main_light");
+  const perKey = report.items.some((item) => item.key !== null);
   switch (report.headline) {
     case "done":
-      return light ? h.doneLight : h.doneKeys({ n: counts.written });
+      if (light) return h.doneLight;
+      return perKey ? h.doneKeys({ n: counts.written }) : h.done;
     case "nothing_to_do":
       return h.nothingToDo;
     case "cancelled":
@@ -246,10 +255,81 @@ export function editHeadline(report: EditReport, dict: Dict): string {
 
 const ITEMS_SHOWN = 12;
 
+/** One result row: the key or the table, why it was written (re-sends, the commit trigger), the result. */
+export function EditItemRow({ item }: { item: ItemReportView }) {
+  const dict = useDict();
+  const reasons = writeReasonTexts(item, dict);
+  return (
+    <li className="ow-report__item">
+      <span className="ow-report__name">
+        {item.key === null ? <TableName table={item.table} /> : <KeyName keyRef={item.key} />}
+        {reasons.length === 0 ? null : <span className="ow-report__reason ow-small ow-muted">{reasons.join(" ")}</span>}
+      </span>
+      <ItemResultBadge item={item} />
+      <ItemDetails item={item} />
+    </li>
+  );
+}
+
+/** Props of {@link LeftBehind}. */
+export interface LeftBehindProps {
+  cleared: readonly ClearedMacroView[];
+  dangling: readonly DanglingBindingView[];
+}
+
 /**
- * The result of a trigger or light edit: headline, the wait for the save,
- * the error if any, each item's result and the report footer. The words
- * "saved permanently" are never used: an edit's persistence isn't checked.
+ * What a stop part-way left behind: macros emptied by the Macro 1 write and
+ * keys left referring to an empty slot (Undo restores both).
+ */
+export function LeftBehind({ cleared, dangling }: LeftBehindProps) {
+  const dict = useDict();
+  const r = dict.flow.report;
+  if (cleared.length === 0 && dangling.length === 0) return null;
+  return (
+    <>
+      {cleared.length === 0 ? null : (
+        <Callout kind="danger" title={r.clearedTitle}>
+          <p>{r.clearedBody}</p>
+          <ul>
+            {cleared.map((c) => (
+              <li key={`${c.profile}-${c.slot}`}>{r.clearedItem({ n: c.slot + 1 })}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
+      {dangling.length === 0 ? null : (
+        <Callout kind="danger" title={r.danglingTitle}>
+          <p>{r.danglingBody}</p>
+          <ul>
+            {dangling.map((d) => (
+              <li key={`${d.profile}-${d.layer}-${d.key.index}`}>
+                {r.danglingItem({ key: keyRefText(d.key, d.layer, dict), target: tableName(d.slot, dict) })}
+              </li>
+            ))}
+          </ul>
+        </Callout>
+      )}
+    </>
+  );
+}
+
+/** The persistence check of an edit in words (kept / lost / not checked separately). */
+export function persistenceTexts(check: PersistenceCheckView, dict: Dict): string[] {
+  const r = dict.flow.report;
+  const texts: string[] = [];
+  if (check.persisted > 0 && check.lost === 0) texts.push(r.persistenceOk({ n: check.persisted }));
+  if (check.lost > 0) texts.push(r.persistenceLost({ lost: check.lost }));
+  if (check.not_checked > 0) texts.push(r.persistenceNotChecked({ n: check.not_checked }));
+  return texts;
+}
+
+/**
+ * The result of an edit (triggers, the light, key assignments): headline,
+ * the wait for the save, the error if any, a note when Stop came too late
+ * to skip anything, what a stop left behind (emptied macros, keys left on
+ * them), the persistence check, each item's result with its reasons, and
+ * the report footer (safety backup, Undo). The words "saved permanently"
+ * are never used; "Saved" appears only after a persistence check.
  */
 export function EditReportView({ report }: { report: EditReport }) {
   const dict = useDict();
@@ -257,13 +337,7 @@ export function EditReportView({ report }: { report: EditReport }) {
   const headline = editHeadline(report, dict);
   const items = report.items;
   const renderItem = (item: ItemReportView, index: number) => (
-    <li key={`${item.key?.index ?? "t"}-${index}`} className="ow-report__item">
-      <span className="ow-report__name">
-        {item.key === null ? <TableName table={item.table} /> : <KeyName keyRef={item.key} />}
-      </span>
-      <ItemResultBadge item={item} />
-      <ItemDetails item={item} />
-    </li>
+    <EditItemRow key={`${item.key?.index ?? "t"}-${index}`} item={item} />
   );
   return (
     <div className="ow-report">
@@ -271,6 +345,7 @@ export function EditReportView({ report }: { report: EditReport }) {
         {report.waited_for_commit_ms === null || !report.anything_written ? null : (
           <p>{dict.flow.headline.waited({ seconds: format.seconds(report.waited_for_commit_ms) })}</p>
         )}
+        {report.cancel_requested && report.outcome === "completed" ? <p>{dict.flow.report.cancelRequested}</p> : null}
         {report.error === null ? null : (
           <>
             <p>{dict.errors.kind[report.error.kind].title}</p>
@@ -279,6 +354,13 @@ export function EditReportView({ report }: { report: EditReport }) {
           </>
         )}
       </Callout>
+      <LeftBehind cleared={report.cleared_macros} dangling={report.dangling} />
+      {report.persistence === null ? null : (
+        <section className="ow-report__section">
+          <h3 className="ow-report__section-title">{dict.flow.report.persistenceTitle}</h3>
+          <p>{persistenceTexts(report.persistence, dict).join(" ")}</p>
+        </section>
+      )}
       {items.length === 0 ? null : (
         <>
           <ul className="ow-report__items">{items.slice(0, ITEMS_SHOWN).map(renderItem)}</ul>

@@ -1133,7 +1133,7 @@ chooses, ack
 | Crate | Contents |
 |---|---|
 | `crates/openwraith-app-core` | Everything but Tauri: the device worker and its connection state machine, the operations (prepare / apply), the IPC data types (`dto`; the TypeScript types are generated from them), the mappings from the library's types, the file registry, the operation journal, settings, the simulator backend (feature `sim`, or tests) and all Rust tests of the app. `#![forbid(unsafe_code)]`; `unwrap`, `expect` and `panic` are denied outside tests. |
-| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`), file dialogs from Rust (`dialogs.rs`), the close guard and the focus check (`window.rs`), paths (`paths.rs`). |
+| `app/src-tauri` (`openwraith-app`) | The Tauri glue: commands (`commands.rs`, names in `command_names.rs`), the core's sinks over `tauri::ipc::Channel` (`sinks.rs`: progress, events and the live key-depth frames), file dialogs from Rust (`dialogs.rs`), the close guard and the focus check (`window.rs`), paths (`paths.rs`). |
 
 `cargo test --workspace` needs no Node: the core's tests use the simulator
 under `cfg(test)`. The Tauri crate builds without a built frontend
@@ -1247,10 +1247,13 @@ check**: another profile or other bytes give `stale_plan`, and nothing is
 saved or written), saves and verifies the safety backup, writes the
 **operation journal**, and only then calls the library. The consent
 (`WriteConsent::new(Application)`) is built in one function
-(`ops/consent.rs`) and used only by the apply steps and by the restore's
-prepare step, whose comparison switches profiles after the user confirmed
-those switches (`confirmed_switches` must equal the switches computed from a
-fresh `21/11`).
+(`ops/consent.rs`) and used only by the apply steps and by the steps the
+user started explicitly: the restore's and the import's prepare step, whose
+comparison switches profiles after the user confirmed those switches
+(`confirmed_switches` must equal the switches computed from a fresh
+`21/11`), the export of a profile that is not active (switch agreed), the
+live key-depth view and the close of a key-depth test left open (both a
+user click).
 
 | UI action | Library calls | Writes |
 |---|---|---|
@@ -1261,15 +1264,117 @@ fresh `21/11`).
 | backup of the active profile | `read_all_observed`, `Backup::save` | none |
 | backup of all profiles | `read_all_profiles` | W1 only |
 | restore (and Undo) | `prepare_restore`; `save_safety`, `execute_restore` | as planned by the library |
+| keys, macros, advanced keys (`keymap_edit`) | `KeymapGroupState::from_snapshot` (the cached group, no traffic), `plan_keymap_edit`; `apply_keymap_edit` | the keymap group, in the library's order (macro slots incl. re-sends after slot 0, base, Fn, advanced slots) |
+| key colours (`color_edit`) | `plan_color_edit`; `apply_color_edit` | W4 (+ W2/W3 when the user opts into Custom) |
+| dead band (`dead_band_edit`) | `plan_dead_band_edit`; `apply_dead_band_edit` | W9 |
+| SOCD (`socd_edit`) | `plan_socd_edit`; `apply_socd_edit` | W11 |
+| trigger preset (`trigger_edit`) | `presets::preset_edit` -> the trigger plan; `apply_trigger_edit` | W8 (no write path of its own) |
+| live key depth (`depth_view`) | `travel::live_travel` (`CancelPolicy::Always`) | T1, T2 |
+| close a test left open (`travel_close`) | `Writer::close_stray_travel_test` | T2 |
+| export a profile (`export`) | `read_all_observed` / `read_profiles` (switch consent), `Backup::export_profile` | W1 only (another profile) |
+| import a profile (`import_prepare`, `import`) | `prepare_restore` with `ImportOptions`; `save_safety`, `execute_restore` | as planned by the library |
 
-Nothing else may write. A source-scan test (`tests::source_rules`) checks
-that no app code uses `write_guarded`, `write_commit_trigger`,
-`write_command` (the simulator backend aside), `WritePacket`, `WriteRequest`,
-`TriggerGrouping` / `SameSetting`, `CommitSettle`, `SessionOptions`,
-`writer_with`, hand-built `WriteOptions`, `HidTransport` or `unsafe`; that
-only the profile switch creates a writer; that the consent is built once and
-used by exactly the six allowed functions; and that hidapi is opened only by
-the HID backend.
+Every edit applies the same way: a drift check on exactly the tables the
+plan writes (the keymap group: both layers, every macro slot and `22 80`;
+SOCD: `24 01` / `24 02`), the safety backup (reasons `set-keys`,
+`set-colors`, `set-deadband`, `set-socd`, `import`; the backup page names
+them), the journal, the library call, then a read of what was written
+(after a keymap edit or an import, a full read). A keymap plan is made
+against the keymap group of the last full read without talking to the
+keyboard; the apply step's drift check and the library's re-read of each
+table before writing it keep that safe. Stop after the first keymap-group
+table makes the library finish what keeps the group consistent (the Fn
+keymap after the base keymap, bound slots, macro slots re-sent after slot
+0); the progress shows `finishing_keymap_group` meanwhile, and the report
+says when Stop came too late (`cancel_requested` with outcome `completed`).
+Every edit report is the shared `EditReportView` (now with the persistence
+check, `cancel_requested`, the macros emptied by a failed slot-0 write and
+the keys left on them); an import report is the restore report
+(`LastReport::Import`, shown in import words).
+
+Nothing else may write. A source-scan test (`tests::source_rules`) checks:
+
+- no app code uses `write_guarded`, `write_commit_trigger`, `write_command`
+  (the simulator backend aside), `WritePacket`, `WriteRequest`,
+  `TriggerGrouping` / `SameSetting`, `CommitSettle`, `SessionOptions`,
+  `writer_with`, hand-built `WriteOptions`, `HidTransport` or `unsafe`;
+- no app code builds or patches a table, a slot or a raw entry, or decodes
+  raw entries past the library's views (`set_entry`, `KeymapData`,
+  `MacroData`, `CanonicalMacro`, `AdvancedSlotData`, `SocdWrite`,
+  `SocdPairsData`, `TravelTestRequest`, `ColorTableData`, `DeadBandData`,
+  `DeadBandWrite`, `from_read_slot`, `KeyAction::decode*`,
+  `MacroProgram::decode`), and none leaves out the Fn keymap that makes the
+  keyboard keep a group (`OmitForSlotsOnly`, a hardware-test mode);
+- the intents the frontend sends carry no bytes, hex or paths (keys by
+  index, colours as `#rrggbb`, values in trigger units);
+- only the profile switch creates a writer, and `ops/travel.rs` one more,
+  used for nothing but `close_stray_travel_test`; `live_travel` and
+  `close_stray_travel_test` are called only in `ops/travel.rs`, and
+  `.profile_switcher(` (standing rules, Phase 5b-2) only in
+  `ops/auto_profile.rs`;
+- each editor's apply calls its own library entry point, and the preset
+  path ends in the trigger plan;
+- the consent is built once and used in exactly 14 places (the apply steps
+  and the explicitly started steps above);
+- hidapi is opened only by the HID backend.
+
+**Editor views and revisions.** Every full read (connect, refresh, after a
+keymap edit, a restore or an import, a profile switch) caches the views of
+the editors besides the snapshot: the keymap group (`get_keys_state`) and
+the colour table, the dead band and SOCD (`get_colors_state`,
+`get_dead_band_state`, `get_socd_state`). These commands never talk to the
+keyboard (`null` before the first read). Each view has its own `revision`,
+which its intents send as `based_on`: an edit of one part never changes
+another part's revision, so a colour draft survives a dead-band write, and
+trigger or light edits leave a Keys draft valid. A trigger preset uses the
+snapshot's revision like a trigger edit. The keyboard's own SOCD switch
+(Fn + Right Shift pushes `24 02 .. PP`) updates the SOCD view, sends
+`Notice::SocdToggledOnKeyboard` and invalidates a pending plan made against
+the old power: a SOCD edit, a restore that compared the SOCD table, or an
+import that writes it (an import keeps the keyboard's power). Other plans
+stay valid. The push is never taken for another program.
+
+**Live key depth.** `start_depth_view(channel)` holds the busy flag while
+it runs (every other operation is refused with `operation_running`; the
+write gate shows `busy`) and returns when the view stopped, with a
+`DepthViewReport`. Frames (`DepthFrame`: the keys that moved, with depth
+and held peak in trigger units) are coalesced to at most 60 a second and
+sent only on movement; the keyboard sends about 14 reports a second on a
+slow press. It stops on `stop_depth_view` (Stop, the window hidden, the tab
+or page left), app exit (the window closes after the close, without the
+close guard), a reloaded window (`subscribe`) or a failed channel, 5
+minutes without movement, 60 minutes, a reset, a lost connection, another
+program and a profile switch on the keyboard; every stop also sends
+`Notice::DepthViewStopped`. The handle registers the view at its
+admission, so a stop sent before the worker starts it (a tab switched at
+once) is kept and the test is never opened. Before T1 the worker writes the
+marker `<state dir>/travel-test-open` and removes it only after a close it
+sent was acknowledged (T2); a start refused before anything was opened
+leaves the marker as it was (an earlier run's stays, its own goes). A
+marker found at start, or stream
+reports while no test is open, set `DeviceStatus.travel` (`marker_left`,
+`stray_reports`; `maybe_open` after an unacknowledged close) and send
+`Notice::StrayTravelTest`; `close_stray_travel_test` runs on a user click
+only. Travel samples never enter the session's events.
+
+**Export and import.** `choose_export_destination` and `open_import_file`
+open the Rust dialogs and hand out file tokens. An export is
+`Backup::export_profile` (scope `profile_export`, no USB serial; the whole
+profile, since the library has no category filter yet); the active profile
+is a pure read, another profile needs `confirmed_switch`. An import is a
+restore with `ImportOptions`: the chosen categories (triggers and lighting
+by default), into a chosen profile (`confirmed_switches` when it is not
+active), a critical Fn override (Fn + 1..4, Fn + Space) only when every
+such key is named in `allowed_critical_keys`. The library stops at the
+first critical key, so the app finds them all (`critical_fn_overrides`, in
+the blocked and the allowed preview alike, each with its own danger note)
+and refuses a permission that doesn't cover the file (`stale_plan`). Keys
+the library blocks for another cause (an entry, macro or slot OpenWraith
+doesn't write) replace nothing, so the list is empty then;
+`other_cause_blocked` marks every chosen part left out for a cause the
+permission doesn't lift (the review's general note). An
+import token is a different plan kind from a restore token, so each apply
+refuses the other.
 
 ### Files
 
@@ -1280,8 +1385,9 @@ folder (`OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups`
 and are never deleted; every report carries its safety backup, and Undo
 restores it through the normal restore flow. The **journal**
 (`<app local data>/state/operation-journal.json`) is written atomically
-after the safety backup and before the first write packet of a trigger
-edit, a light edit or a restore, and removed when the report is built. A
+after the safety backup and before the first write packet of every write
+(a trigger, light, keymap, colour, dead-band or SOCD edit, a restore or an
+import), and removed when the report is built. A
 journal left behind is moved at the next start to
 `state/interrupted-operation.json` and shown with its safety backup at
 every start until the user dismisses it: later writes use
@@ -1307,9 +1413,11 @@ copy, and a deleted file is an error, not a plan.
 |---|---|
 | Safety backups | the CLI's folder: `OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups` |
 | Operation journal | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\operation-journal.json`; an interrupted one: `interrupted-operation.json` next to it |
-| Settings (language, theme) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` |
+| Settings (language, theme, trigger presets, tips shown) | `%APPDATA%\io.github.zeruh31.openwraith\settings.json` (unknown fields are kept; an unreadable file is kept as `settings.invalid-<stamp>.json` before it is replaced) |
+| Macro library ("this PC") | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json` (matched to keyboard slots by content hash; an unreadable file is kept as `macro-library.invalid-<stamp>.json`) |
+| Key-depth test marker | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\travel-test-open` (a live view that may still be on) |
 | WebView2 data | `%LOCALAPPDATA%\io.github.zeruh31.openwraith\EBWebView\` |
-| Simulator safety backups and journal | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` |
+| Simulator safety backups, journal, marker and macro library | `OPENWRAITH_SIM_DIR`, else `%LOCALAPPDATA%\io.github.zeruh31.openwraith\sim\` |
 
 ### Closing
 
@@ -1348,11 +1456,24 @@ answers each command as follows:
 - it keeps a small status model, so that busy states, profile switches and
   banners behave like the app's;
 - after the fixture's last call, it replays the recorded events, so the app
-  ends in the recorded final state.
+  ends in the recorded final state (events recorded before the first call,
+  such as a connection that hears a key-depth test left open, are replayed
+  at `subscribe`);
+- the live key-depth view replays the frames the fixture recorded
+  (`ui.depth_frames`, since a fixture has no field for a channel) at their
+  recorded times, holds the busy flag and the "open" travel state, and
+  resolves with the recorded report when the page stops it (or at once for
+  a stop the backend decided);
+- the macro library of "this PC" and the tips shown are kept in memory,
+  starting from the recorded ones.
 
 Commands that a fixture didn't record are answered from its state,
 synthesized (profile switch, reconnect, simulator actions), or borrowed from
-another fixture (`fallback=0` turns that off). Only `main.tsx`'s
+another fixture (`fallback=0` turns that off); the editors' views answer
+`null` while the fixture has no keyboard read. Each page composes its
+scenarios in `preview/scenarios/<page>.ts` (a fixture, a route with its
+`?tab=`, and UI state the page reads with `previewUi`, e.g. a seeded draft
+that opens the review). Only `main.tsx`'s
 `MODE === "mock"` branch imports the preview. The production build drops it,
 and `npm run build` fails if `dist/` contains preview code. The "Preview"
 button in the header's middle opens the scenario picker; `freeze=1` hides it
@@ -1474,7 +1595,10 @@ or i18n library.
     comparison that switches profiles goes back to that dialog when the
     tick is needed again.
 - **Writes.** Every write goes through `flow/WriteFlow` (prepare, review,
-  Write, progress, result). The review's title asks the question ("Change
+  Write, progress, result); a page can word a refused prepare itself
+  (`prepareError`, e.g. the keymap and editor refusals) and add review
+  options that discard the plan and prepare again (`reviewOptions`, e.g.
+  the persistence check or "also switch the effect to Custom"). The review's title asks the question ("Change
   the lighting of profile 1?"); while it runs and on the result the dialog
   has a neutral title ("Lighting change"). A page can add a line under a
   failed apply (`errorNote`, e.g. "No backup file was saved."):
@@ -1500,9 +1624,15 @@ or i18n library.
     There "Run the restore again" is a hint (the backup is no longer
     loaded), and a write that ends after its page went away still spends
     its draft (the page's apply call clears it).
-- **Pages.** Pages are lazy routes (`#/device`, `#/actuation`, `#/lighting`,
-  `#/backup`, `#/settings`), each in its own error boundary. The W75 drawing
-  is `components/keyboard`:
+- **Pages.** Pages are lazy routes (`#/device`, `#/keys`, `#/actuation`,
+  `#/lighting`, `#/backup`, `#/settings`), each in its own error boundary.
+  Keys, Actuation and Lighting have tabs (`?tab=`, `routes.ts` `PAGE_TABS`;
+  an unknown tab falls back to the first): Keys `assign`, `macros`,
+  `advanced`; Actuation `trigger`, `deadband`, `socd`, `depth`; Lighting
+  `effect`, `colors`. The tab bar (`shell/PageTabs`) is a row of links with
+  `aria-current` (each tab is a URL), injected under the page header, with a
+  dot on each tab that has a draft. The W75 drawing is
+  `components/keyboard`:
   - our own key-unit geometry, from PROTOCOL.md section 5;
   - a pure selection model, where the knob is never selectable;
   - a multi-select listbox component. Each key's accessible name starts
@@ -1510,14 +1640,58 @@ or i18n library.
     parentheses when the legend is not the full name, e.g. "ESC (Escape)",
     "SPACE (Boşluk)"), the value and the chip, separated by spaces; longer
     text is its accessible description. Pages mark keys through `KeyVisual.flag` (`data-flag`) and
-    `KeyVisual.tooltip`.
-- **Drafts.** Unwritten changes register with `state/drafts` (the nav dot,
-  and the profile-switch confirmation lists them): `registerDraft` for a
-  draft kept in a module store that survives leaving the page (Actuation,
-  with its key selection, and Lighting), `useDraft` for one that lives in a
-  page component (no page uses it at the moment). The stores follow the snapshot themselves: a draft made
-  on another profile or connection is discarded (with a toast) whether its
-  page is shown or not, and never comes back.
+    `KeyVisual.tooltip`, and draw on caps with `sublegend`, `swatch` (a
+    colour, always also in the description), `fill` (key depth) and
+    `badge`; `selection: "single"` (`aria-multiselectable=false`),
+    `onActivate` (Enter or a double-click) and a knob popover serve the Keys
+    tabs.
+- **Shared editor components** (`components/`): `Badge` / `EvidenceBadge`
+  ("Not yet verified" only from the library's `EvidenceView`, "Kept as
+  read", "Applies to all profiles"), `ActionPicker` (combobox + listbox with
+  `aria-activedescendant`; searches English and Turkish names, library
+  names, `KeyboardEvent.code` aliases and hex; a shortcut builder of one or
+  two modifiers and a key), `KeyPicker`, `ColorPicker` (S/V square and hue
+  as `role="slider"`), `StepList` (Alt + Up/Down moves a step),
+  `TravelGauge` (with a text alternative), `ConfirmCheckbox` (never
+  pre-ticked) and `Tip` (a one-time tip, remembered in `hints_shown`;
+  Settings shows them again). The action catalogue (every assignable
+  action with its evidence, the DKS grammar, the Mod-Tap rule) and the
+  macro recorder's `KeyboardEvent.code` table are generated from Rust into
+  `app/src/generated/`.
+- **Keys page.** `pages/keys/shared` holds the keys-state store (refetched
+  when `snapshot_revision` changes), the intent builders, the words for
+  actions and slots, and `KeymapEditFlow`: the review (Layer | Key | Now |
+  New, then the writes in execution order, each explained by its own
+  fields: the commit trigger, a re-send after macro slot 0, a binding
+  written even after Stop), the refusals answered inside the flow (a
+  critical Fn built-in, a slot kept as read) and the optional persistence
+  check (never pre-ticked; ticking it prepares again).
+- **Header and banners.** The header shows a **Live** pill while the
+  key-depth view runs (`busy.kind === "depth_view"` or
+  `travel.state === "open"`); it links to the tab that stops it, and the
+  busy reason everywhere names the view. A banner leads to the Key depth
+  tab when a test may still be open (`travel.state === "maybe_open"`,
+  stray reports or the marker), except on that tab, which shows its own
+  "Stop it"; the close is sent there, after the vendor-site tick.
+- **Drafts.** Unwritten changes register with `state/drafts` per page and
+  tab, with a count (the nav dot is any tab's draft; the profile-switch
+  confirmation lists "Keys > Macros: 1 unwritten change"):
+  `registerDraft(page, discard, {tab, count})` for a draft kept in a module
+  store that survives leaving the page (every editor tab, Actuation with
+  its key selection), `useDraft` for one that lives in a page component.
+  The stores follow their view themselves (the owner is the connection's
+  generation and the profile): a draft made on another profile or
+  connection is discarded (with a toast) whether its page is shown or not,
+  and never comes back; a newer read of the same profile drops only the
+  changes the keyboard already has. The Keys tabs keep absolute targets
+  (what a key should end up doing), so a draft survives a re-read; the key
+  colours draft has its own undo history.
+- **Live key depth** (Actuation > Key depth). Start needs the vendor-site
+  tick, like a write; the tab stops the view with `page_left` when it
+  unmounts and with `window_hidden` on `visibilitychange`, shows why the
+  backend stopped it ("Paused…" with Resume after 5 minutes without
+  movement), and is silent for screen readers unless "Announce the depth"
+  is on (at most four times a second), with a hidden table of the depths.
 - **Layout.** `.ow-main` is the only scroll container and the containing
   block of absolutely positioned descendants (`position: relative`), so the
   window itself never scrolls and the header stays in place. A page's
@@ -1537,13 +1711,18 @@ or i18n library.
 | Test | Checks |
 |---|---|
 | `tests::connection`, `tests::gate` | observation, other programs (zero packets), profile changes, the focus check, unplug and replug, reset (zero packets until reconnect), several keyboards, open backoff, unsupported model, drift check, stale and single-use tokens, panic -> fault |
-| `tests::foreign` | another program heard during a read is never re-armed away (refresh and the first read); a read stops sending once another program is heard (connect, refresh, the safety read: at most the request in flight), and sends nothing when it was heard before; the focus check and the view refresh after an edit stop the same way; after a trigger edit, light edit, profile switch or restore that heard another program, nothing more is sent |
+| `tests::foreign` | another program heard during a read is never re-armed away (refresh and the first read); a read stops sending once another program is heard (connect, refresh, the safety read: at most the request in flight), and sends nothing when it was heard before; the focus check and the view refresh after an edit stop the same way; after a trigger, light, keymap, colour, dead-band or SOCD edit, a profile switch or a restore that heard another program, nothing more is sent; each v0.2 editor checks for other programs before its first write |
 | `tests::fault` | nothing leaves `Fault`; a panic in the worker's own read releases the busy flag, a panic in a tick keeps a queued request's admission; "Stop safely and close" during the worker's own read exits once |
 | `tests::trigger`, `tests::light`, `tests::profile`, `tests::backup`, `tests::restore` | the operations end to end on the simulator: one key per packet, the journal during the write, the wait for the save, persisted / lost / may be lost, cancellation (keymap group included), the consent echo, Undo |
 | `tests::admission` | a second operation is refused at once; close deferral; the interrupted-operation journal (kept by later writes until dismissed; dismissing never deletes a running write's journal) |
-| `tests::interleavings` | 150 seeded random sequences of commands and keyboard events against the write-path invariants (`INTERLEAVING_SEEDS=5000` runs more) |
+| `tests::keymap` | keys, macros and advanced keys end to end: consent and single-use tokens, the drift check on the group tables, re-sends after macro slot 0 (also after Stop), a failed write with emptied macros and dangling keys, critical Fn built-ins, the persistence option, the journal, swap, deletes before the changes that reuse a key's slot, a new slot on a key whose slot the edit also changes refused, refused intents |
+| `tests::editors` | colours, dead band, SOCD and presets: own revisions (a write of one leaves the others' drafts valid), the drift checks (colours, dead band, SOCD power and pairs), the SOCD journal, refusals before traffic (never clamped; preset names 1-40 characters, at most 32 presets), the opt-in switch to Custom, the keyboard's SOCD push (only a plan made against the SOCD power is invalidated: SOCD edit, restore comparing SOCD, import writing SOCD; tests in `tests::restore` and `tests::share` too), the SOCD mode evidence against the library |
+| `tests::travel` | the live view: frames coalesced and sent only on movement, every stop reason (time limit, lost connection and a reloaded window included), a stop sent before the worker started the view, the marker written before T1 and removed only after an acknowledged close (a refused start keeps an earlier run's), a marker left at start, stray reports, the close on a user click |
+| `tests::share` | export (no traffic for the active profile, switch consent for another) and import (chosen categories into a chosen profile, every critical Fn override named and each needing the permission, import and restore tokens not interchangeable) |
+| `tests::interleavings` | 150 seeded random sequences of commands and keyboard events (SOCD edits and pushes, stray streams and live views included) against the write-path invariants (`INTERLEAVING_SEEDS=5000` runs more) |
 | `tests::source_rules`, `tests::commands_sync` | the source rules above; command names, argument names and progress channels (against the `#[tauri::command]` signatures), capabilities, CSP, installer metadata and license files, and the simulator's configuration and scripts |
-| `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
+| `tests::bindings`, `tests::fixtures` | the generated TypeScript (bindings, W75 keys, the action catalogue, the `KeyboardEvent.code` table, fixtures) is up to date (`UPDATE_BINDINGS=1` / `UPDATE_FIXTURES=1` rewrite them) |
+| frontend (Vitest) | per tab: the draft to the exact recorded intent, review, write and report on the recorded fixtures; the DKS grid round trip for every grammar-valid row; the recorder's code table; catalogue search in English and Turkish; tab draft dots; i18n parity, no JSX literals, WCAG contrast of the tokens (badges and keycaps included) |
 
 ### Security
 
@@ -1607,8 +1786,8 @@ Still open:
   the `Evidence` values that stay unverified (multimedia indices other than
   `12`, `24`, `25` and `32`; a DKS tap at stage 4 and "hold again"; Mod-Tap
   hold times other than 300 ms; advanced-key bindings on the Fn layer; SOCD
-  modes 2 and 3), the labels of `W75_FN_BUILTINS` other than F1-F4 and
-  R-Shift (`FnBuiltin::confirmed`), and the simulator's GUESSes (the chunk
+  modes 2 and 3), the labels of `W75_FN_BUILTINS` other than F1-F4, 1, 2
+  and R-Shift (`FnBuiltin::confirmed`), and the simulator's GUESSes (the chunk
   of a slot-0 macro write that clears slots 1-9, an `18 02` written after
   advanced-key slots, `set_travel_survives_select`); flip them one result
   at a time. Wheel down and two-modifier combinations count as confirmed by

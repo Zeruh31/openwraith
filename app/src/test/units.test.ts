@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { mmExample } from "../components/Fields";
 import { contrastRatio, hexToRgb, isHexColor, normalizeHex } from "../format/color";
 import { clampUnits, formatMmNumber, parseMmText, unitsToMm } from "../format/units";
 import { makeFormat } from "../i18n/format";
@@ -77,5 +78,24 @@ describe("colours", () => {
   it("compute WCAG contrast", () => {
     expect(contrastRatio("#000000", "#ffffff")).toBeCloseTo(21);
     expect(contrastRatio("#777777", "#777777")).toBeCloseTo(1);
+  });
+});
+
+describe("the distance field's example", () => {
+  it("always lies in the field's own range", () => {
+    // Actuation 0.10-3.40 mm keeps 1.20 mm; the dead band (0-1.00 mm) gets 0.50 mm.
+    expect(mmExample(5, 170)).toBe(60);
+    expect(mmExample(0, 50)).toBe(25);
+    expect(mmExample(1, 85)).toBe(60);
+    for (const [min, max] of [
+      [0, 50],
+      [5, 170],
+      [0, 10],
+      [61, 90],
+    ] as const) {
+      const example = mmExample(min, max);
+      expect(example).toBeGreaterThanOrEqual(min);
+      expect(example).toBeLessThanOrEqual(max);
+    }
   });
 });

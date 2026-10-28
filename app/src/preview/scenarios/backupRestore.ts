@@ -67,4 +67,27 @@ export const scenarios: PreviewScenario[] = [
   },
   { id: "undo_preview", fixture: "undo_preview", route: "#/backup", ui: backup({ run: "compare" }) },
   { id: "restore_invalid_file", fixture: "restore_invalid_file", route: "#/backup", ui: backup({ run: "open_file" }) },
+  // Share a profile.
+  { id: "export_done", fixture: "export_done", route: "#/backup", ui: backup({ share: "export" }) },
+  {
+    id: "export_needs_switch",
+    fixture: "export_needs_switch",
+    route: "#/backup",
+    ui: backup({ share: "export", exportProfile: 3 }),
+  },
+  { id: "import_summary", fixture: "import_summary", route: "#/backup", ui: backup({ share: "open_import" }) },
+  { id: "import_preview", fixture: "import_preview", route: "#/backup", ui: backup({ share: "import", into: 2 }) },
+  {
+    id: "import_refused_critical",
+    fixture: "import_refused_critical",
+    route: "#/backup",
+    ui: backup({ share: "import", into: 2, keys: true }),
+  },
+  {
+    id: "import_keys_blocked_other",
+    fixture: "import_keys_blocked_other",
+    route: "#/backup",
+    ui: backup({ share: "import", into: 2, keys: true }),
+  },
+  { id: "import_apply_ok", fixture: "import_apply_ok", route: "#/backup", ui: backup({ share: "import", into: 2, keys: true }) },
 ];

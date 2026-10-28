@@ -57,7 +57,7 @@ export const device: Messages<typeof en> = {
     title: "Bir şey değiştirmeden önce",
     step1: "Bütün wraith.software sekmelerini kapatın. Başka bir sekmeye geçmek yetmez.",
     step2: "Her zaman geri dönebilmek için dört profilin hepsini bir kez yedekleyin.",
-    step2Action: "Yedekle ve geri yükle sayfasına git",
+    step2Action: "Yedek ve profiller sayfasına git",
     step3: "Her değişiklikten önce kendiliğinden yedek alınır ve değişiklik geri alınabilir.",
     dismiss: "Anladım",
   },

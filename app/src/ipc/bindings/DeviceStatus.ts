@@ -3,6 +3,7 @@ import type { ConnectionState } from "./ConnectionState";
 import type { DeviceIdentityView } from "./DeviceIdentityView";
 import type { InterruptedOp } from "./InterruptedOp";
 import type { OpInfo } from "./OpInfo";
+import type { TravelStatusView } from "./TravelStatusView";
 import type { WriteGate } from "./WriteGate";
 
 /**
@@ -60,4 +61,8 @@ interrupted: InterruptedOp | null,
 /**
  * Whether this is the developer simulator.
  */
-sim: boolean, };
+sim: boolean, 
+/**
+ * Whether a key-depth test is (or may be) open on the keyboard.
+ */
+travel: TravelStatusView, };

@@ -1,0 +1,370 @@
+/* Keys > Advanced keys (prefix keys-adv-): tiles, slot cards, the editor
+   dialog (DKS grid, step strip, quick starts), the live sentence. No fixed
+   widths on buttons (Turkish is about 30 % longer). */
+
+.keys-adv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.keys-adv-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.keys-adv-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.keys-adv-section__title {
+  font-size: var(--text-lg);
+}
+
+.keys-adv-section__subtitle {
+  font-size: var(--text-md);
+}
+
+/* ---------- tiles ---------- */
+
+.keys-adv-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.keys-adv-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.keys-adv-tile:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.keys-adv-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.keys-adv-tile__name {
+  font-weight: 600;
+}
+
+/* ---------- cards ---------- */
+
+.keys-adv-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.keys-adv-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.keys-adv-card--drafted {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.keys-adv-card--deleted .keys-adv-card__sentence {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.keys-adv-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.keys-adv-card__title {
+  font-size: var(--text-md);
+}
+
+.keys-adv-card__badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.keys-adv-card__bindings,
+.keys-adv-card__orphan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.keys-adv-card__orphan {
+  color: var(--warning-fg);
+}
+
+.keys-adv-card__binding {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.keys-adv-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-1);
+}
+
+.keys-adv-tag {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-weak);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+/* ---------- editor ---------- */
+
+.keys-adv-editor__body {
+  min-width: 0;
+}
+
+.keys-adv-target__layer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.keys-adv-target__layer-row,
+.keys-adv-label,
+.keys-adv-keyfield__row,
+.keys-adv-quick__item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.keys-adv-keyfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.keys-adv-value {
+  min-width: 4.5em;
+  font-weight: 600;
+}
+
+.keys-adv-point {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.keys-adv-point > .ow-slider {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.keys-adv-quick__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.keys-adv-sentence {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+/* ---------- the DKS grid ---------- */
+
+.keys-adv-dks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.keys-adv-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-x: auto;
+}
+
+.keys-adv-grid__row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1.3fr) repeat(4, minmax(4.5rem, 1fr)) auto;
+  align-items: stretch;
+  gap: var(--space-1);
+}
+
+.keys-adv-grid__head {
+  padding: 0 var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.keys-adv-grid__head--stage {
+  text-align: center;
+}
+
+.keys-adv-grid__key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.keys-adv-grid__keybutton,
+.keys-adv-step {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.keys-adv-grid__keybutton {
+  font-weight: 600;
+  text-align: left;
+}
+
+.keys-adv-grid__cell {
+  display: flex;
+  min-width: 0;
+}
+
+.keys-adv-step {
+  flex: 1;
+  font-size: var(--text-sm);
+}
+
+.keys-adv-step--none {
+  color: var(--text-muted);
+  border-style: dashed;
+}
+
+.keys-adv-step--tap {
+  background: var(--accent-weak);
+  font-weight: 600;
+}
+
+/* A hold lasts until the next point: drawn as a bar to the right edge. */
+.keys-adv-step--hold,
+.keys-adv-step--hold_again {
+  background: linear-gradient(90deg, var(--accent-weak), var(--accent-weak) 70%, transparent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.keys-adv-step--hold_again {
+  border-style: double;
+  border-width: 3px;
+}
+
+.keys-adv-step--current {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.keys-adv-grid__keybutton:focus-visible,
+.keys-adv-step:focus-visible,
+.keys-adv-tile:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.keys-adv-grid__keybutton:disabled,
+.keys-adv-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.keys-adv-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The step names are long in Turkish: the strip wraps instead of overflowing the dialog. */
+.keys-adv-strip .ow-segmented {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+@media (forced-colors: active) {
+  .keys-adv-step,
+  .keys-adv-grid__keybutton,
+  .keys-adv-tile {
+    border: 1px solid ButtonText;
+    forced-color-adjust: none;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .keys-adv-step--tap,
+  .keys-adv-step--hold,
+  .keys-adv-step--hold_again,
+  .keys-adv-step--current {
+    border-color: Highlight;
+    outline-color: Highlight;
+  }
+
+  .keys-adv-card--drafted {
+    border-color: Highlight;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .keys-adv-tile,
+  .keys-adv-step {
+    transition: none;
+  }
+}

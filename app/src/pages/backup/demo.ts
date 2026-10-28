@@ -12,6 +12,17 @@ export interface BackupDemo {
   profiles?: number[] | undefined;
   /** Tick "Restore anyway" for a backup made with other firmware. */
   allowFirmware?: boolean | undefined;
+  /**
+   * "Share a profile": export (save dialog, then the export), open a profile
+   * file, or open one and compare it (the import review).
+   */
+  share?: "export" | "open_import" | "import" | undefined;
+  /** The profile exported (default: the active one). */
+  exportProfile?: number | undefined;
+  /** The profile imported into (default: the active one). */
+  into?: number | undefined;
+  /** Also tick "Key assignments, macros and advanced keys" for the import. */
+  keys?: boolean | undefined;
 }
 
 /** The delay before a demo action starts (the page has rendered by then). */

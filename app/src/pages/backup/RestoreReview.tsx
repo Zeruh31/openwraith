@@ -1,8 +1,9 @@
 // The review of a restore plan (the WriteFlow's body): the facts, warnings,
 // then one section per profile with what will be written, what isn't
-// restored and why, and what already matches; totals at the end.
+// restored and why, and what already matches; totals at the end. An import
+// of a profile file uses the same review in import words (`variant`).
 
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 
 import { Callout } from "../../components/Feedback";
 import { Icon } from "../../components/Icon";
@@ -41,10 +42,35 @@ import {
   skipReasonText,
   tableGroupName,
   triggerText,
+  type ReviewVariant,
 } from "./texts";
 
 /** Changes listed per table before "N more" (keys with dead bands or colours). */
 const LIST_LIMIT = 12;
+
+/** The flow the review belongs to (its sections read it for their words). */
+const VariantContext = createContext<ReviewVariant>("restore");
+
+/** The review's words that differ between a restore and an import. */
+function useReviewWords() {
+  const dict = useDict();
+  const variant = useContext(VariantContext);
+  const t = dict.backupRestore.review;
+  const s = dict.backupRestore.share.review;
+  const importing = variant === "import";
+  return {
+    variant,
+    importing,
+    backupColumn: importing ? s.columnFile : t.columns.backup,
+    profileSkipped: importing ? s.profileSkipped : t.profileSkipped,
+    notRestored: importing ? s.notImported : t.notRestored,
+    notInBackup: importing ? s.notInFile : t.notInBackup,
+    fileLabel: importing ? s.file : t.facts.file,
+    madeLabel: importing ? s.fileMade : t.facts.backupMade,
+    nothing: importing ? s.nothing : t.nothing,
+    nothingSkips: importing ? s.nothingSkips : t.nothingSkips,
+  };
+}
 
 type ChangeOf<K extends ChangeView["kind"]> = Extract<ChangeView, { kind: K }>;
 
@@ -77,11 +103,16 @@ function FromTo({ from, to }: { from: string; to: string }) {
 function TriggerTable({ rows }: { rows: readonly TriggerRow[] }) {
   const dict = useDict();
   const format = useFormat();
+  const words = useReviewWords();
   const c = dict.backupRestore.review.columns;
   const columns: TableColumn<TriggerRow>[] = [
     { key: "key", header: c.key, rowHeader: true, render: (row) => <KeyName keyRef={row.key} /> },
     { key: "now", header: c.now, render: (row) => triggerText(row.now, dict, format) },
-    { key: "backup", header: c.backup, render: (row) => <strong>{triggerText(row.backup, dict, format)}</strong> },
+    {
+      key: "backup",
+      header: words.backupColumn,
+      render: (row) => <strong>{triggerText(row.backup, dict, format)}</strong>,
+    },
   ];
   return <Table columns={columns} rows={rows} rowKey={(row) => String(row.key.index)} limit={LIST_LIMIT} />;
 }
@@ -97,6 +128,7 @@ interface LightRow {
 function LightChange({ old, next }: { old: LightBytesView; next: LightBytesView }) {
   const dict = useDict();
   const format = useFormat();
+  const words = useReviewWords();
   const c = dict.backupRestore.changes;
   const cols = dict.backupRestore.review.columns;
   if (old.state === "raw" || next.state === "raw") {
@@ -143,7 +175,11 @@ function LightChange({ old, next }: { old: LightBytesView; next: LightBytesView 
   const columns: TableColumn<LightRow>[] = [
     { key: "setting", header: cols.setting, rowHeader: true, render: (row) => row.label },
     { key: "now", header: cols.now, render: (row) => row.now },
-    { key: "backup", header: cols.backup, render: (row) => (row.changed ? <strong>{row.backup}</strong> : row.backup) },
+    {
+      key: "backup",
+      header: words.backupColumn,
+      render: (row) => (row.changed ? <strong>{row.backup}</strong> : row.backup),
+    },
   ];
   return (
     <Table
@@ -267,13 +303,14 @@ function WriteRow({ item }: { item: WriteItem }) {
 function SkipRow({ item }: { item: SkipItem }) {
   const dict = useDict();
   const format = useFormat();
+  const words = useReviewWords();
   const cause = item.reason.code === "keymap_group_blocked" ? blockCauseTechnical(item.reason.cause) : null;
   return (
     <li className="br-item">
       <p className="br-item__title">
         <ItemName table={item.table} keyRef={item.key} />
       </p>
-      <p>{skipReasonText(item.reason, dict, format)}</p>
+      <p>{skipReasonText(item.reason, dict, format, words.variant)}</p>
       <TechnicalDetails>{cause === null ? item.message : `${item.message}\n${cause}`}</TechnicalDetails>
     </li>
   );
@@ -304,6 +341,7 @@ function ProfilePlan({ group }: { group: ProfileGroup }) {
   const dict = useDict();
   const format = useFormat();
   const t = dict.backupRestore.review;
+  const words = useReviewWords();
   const writes = group.triggers.length + group.writes.length;
   const unchanged = condenseTables(group.unchanged);
   const missing = condenseTables(group.notInBackup);
@@ -313,7 +351,7 @@ function ProfilePlan({ group }: { group: ProfileGroup }) {
         <Icon name="chevron" size={16} className="br-acc__chevron" />
         <span className="br-acc__title">{t.profileSummary({ n: group.profile, changes: group.changes })}</span>
         {group.skips.length > 0 ? (
-          <span className="br-chip br-chip--warning">{t.profileSkipped({ n: group.skips.length })}</span>
+          <span className="br-chip br-chip--warning">{words.profileSkipped({ n: group.skips.length })}</span>
         ) : null}
       </summary>
       <div className="br-acc__body">
@@ -336,7 +374,7 @@ function ProfilePlan({ group }: { group: ProfileGroup }) {
         )}
         {group.skips.length === 0 ? null : (
           <section className="br-section">
-            <h3 className="br-section__title">{t.notRestored}</h3>
+            <h3 className="br-section__title">{words.notRestored}</h3>
             <ul className="br-items">
               {group.skips.map((item, index) => (
                 <SkipRow key={index} item={item} />
@@ -350,7 +388,7 @@ function ProfilePlan({ group }: { group: ProfileGroup }) {
           </Disclosure>
         )}
         {missing.length === 0 ? null : (
-          <Disclosure summary={t.notInBackup({ n: group.notInBackup.length })}>
+          <Disclosure summary={words.notInBackup({ n: group.notInBackup.length })}>
             <p className="ow-muted">{format.list(missing.map((g) => tableGroupName(g, dict)))}</p>
           </Disclosure>
         )}
@@ -364,17 +402,18 @@ function PlanFacts({ preview }: { preview: RestorePreview }) {
   const dict = useDict();
   const format = useFormat();
   const t = dict.backupRestore.review;
+  const words = useReviewWords();
   const plan = preview.plan;
   const unknown = dict.common.unknown;
   const items: KeyValueItem[] = [
     {
       key: "file",
-      label: t.facts.file,
+      label: words.fileLabel,
       value: <span className="ow-mono ow-break ow-selectable">{preview.source.file.file_name}</span>,
     },
     {
       key: "made",
-      label: t.facts.backupMade,
+      label: words.madeLabel,
       value: t.madeWith({ date: format.dateTime(plan.backup_created_at), firmware: plan.backup_firmware ?? unknown }),
     },
     {
@@ -389,17 +428,33 @@ function PlanFacts({ preview }: { preview: RestorePreview }) {
   return <KeyValueList items={items} />;
 }
 
+/** Props of {@link RestoreReview} and {@link RestoreNothing}. */
+export interface RestoreReviewProps {
+  preview: RestorePreview;
+  /** An import of a profile file uses import words (default: a restore). */
+  variant?: ReviewVariant | undefined;
+}
+
 /** The restore review: what will change in each profile, and what won't. */
-export function RestoreReview({ preview }: { preview: RestorePreview }) {
+export function RestoreReview({ preview, variant = "restore" }: RestoreReviewProps) {
+  return (
+    <VariantContext value={variant}>
+      <ReviewBody preview={preview} />
+    </VariantContext>
+  );
+}
+
+function ReviewBody({ preview }: { preview: RestorePreview }) {
   const dict = useDict();
   const format = useFormat();
   const t = dict.backupRestore.review;
+  const words = useReviewWords();
   const plan = preview.plan;
   const groups = groupPlan(plan);
   const scope = groups.map((group) => group.profile);
   const changed = profilesWithChanges(groups);
   const changes = planChanges(groups);
-  const undo = preview.source.kind === "safety";
+  const undo = preview.source.kind === "safety" && !words.importing;
   const technical = [
     t.packets({ writes: plan.totals.writes, packets: plan.totals.packets }),
     ...plan.totals.per_profile.map((p) => t.packetsProfile({ n: p.profile, writes: p.writes, packets: p.packets })),
@@ -430,17 +485,25 @@ export function RestoreReview({ preview }: { preview: RestorePreview }) {
 }
 
 /** "Nothing to write", with the warnings and what can't be restored. */
-export function RestoreNothing({ preview }: { preview: RestorePreview }) {
+export function RestoreNothing({ preview, variant = "restore" }: RestoreReviewProps) {
+  return (
+    <VariantContext value={variant}>
+      <NothingBody preview={preview} />
+    </VariantContext>
+  );
+}
+
+function NothingBody({ preview }: { preview: RestorePreview }) {
   const dict = useDict();
-  const t = dict.backupRestore.review;
+  const words = useReviewWords();
   const groups = groupPlan(preview.plan).filter((group) => group.skips.length > 0);
   return (
     <div className="br-review">
-      <Callout kind="info" title={t.nothing} />
+      <Callout kind="info" title={words.nothing} />
       <PlanWarnings warnings={preview.plan.warnings} />
       {groups.length === 0 ? null : (
         <section className="br-section">
-          <h3 className="br-section__title">{t.nothingSkips}</h3>
+          <h3 className="br-section__title">{words.nothingSkips}</h3>
           {groups.map((group) => (
             <div key={group.profile} className="br-section">
               <p className="ow-strong">{dict.common.profile({ n: group.profile })}</p>

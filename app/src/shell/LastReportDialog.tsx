@@ -26,7 +26,12 @@ import { readAgain } from "./actions";
 const REPORT_KINDS: readonly OpKind[] = [
   "trigger_edit",
   "light_edit",
+  "keymap_edit",
+  "color_edit",
+  "dead_band_edit",
+  "socd_edit",
   "restore",
+  "import",
   "profile_switch",
   "backup_all",
   "backup_active",
@@ -123,9 +128,11 @@ export function LastReportDialog() {
       body = <EditReportView report={shown.report} />;
       break;
     case "restore":
+    case "import":
       body = (
         <RestoreResult
           report={shown.report}
+          variant={shown.kind}
           onReadAgain={() => {
             close();
             readAgain();

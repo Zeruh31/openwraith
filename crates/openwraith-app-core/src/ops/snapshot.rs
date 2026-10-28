@@ -12,6 +12,7 @@ use openwraith_hid::{
     read_all_observed,
 };
 
+use super::keymap::KeysCache;
 use super::progress::{CancelPolicy, OpProgress};
 use crate::backend::DeviceBackend;
 use crate::dto::{
@@ -193,13 +194,20 @@ impl<B: DeviceBackend> Worker<B> {
         )))
     }
 
-    /// Makes `backup` (a fresh read of the active profile) the snapshot.
+    /// Makes `backup` (a fresh read of the active profile) the snapshot,
+    /// and its keymap group the Keys page's.
     pub(crate) fn set_snapshot(&mut self, backup: &Backup) -> DeviceSnapshot {
         self.snapshot_revision = self.snapshot_revision.wrapping_add(1);
         let snapshot = snapshot_from_backup(backup, self.snapshot_revision, self.generation);
         self.active_profile = backup.active_profile;
         self.stale = false;
         self.snapshot = Some(snapshot.clone());
+        self.shared
+            .set_keys(Some(Arc::new(KeysCache::new(backup, &snapshot))));
+        self.shared
+            .set_editors(Some(Arc::new(super::editors::EditorsCache::new(
+                backup, &snapshot,
+            ))));
         self.shared.set_snapshot(Some(snapshot.clone()));
         snapshot
     }

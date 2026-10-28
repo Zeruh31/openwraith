@@ -12,15 +12,32 @@
 //! | backup of the active profile | `read_all_observed`, `Backup::save` | none |
 //! | backup of all profiles | `read_all_profiles` | W1 only |
 //! | restore | `prepare_restore`; `save_safety`, `execute_restore` | as planned |
+//! | keymap / macro / advanced-key edit | `KeymapGroupState::from_snapshot`, `plan_keymap_edit_on`; `apply_keymap_edit` | the keymap group, in the site's order |
+//! | key colours | `plan_color_edit`; `apply_color_edit` | W4 (+ W2/W3 to Custom, opt-in) |
+//! | dead band | `plan_dead_band_edit`; `apply_dead_band_edit` | W9 |
+//! | SOCD | `plan_socd_edit`; `apply_socd_edit` | W11 |
+//! | trigger preset | `preset_edit` -> the trigger edit above | W8 |
+//! | live key depth | `live_travel` | T1, T2 |
+//! | stray close | `Writer::close_stray_travel_test` | T2 |
+//! | export | `read_all_observed` or `read_profiles` (switch consent), `Backup::export_profile` | W1 only |
+//! | import | `prepare_restore` with `ImportOptions`; `execute_restore` | as planned |
 
 pub(crate) mod backup;
+pub(crate) mod colors;
 pub(crate) mod consent;
+pub(crate) mod dead_band;
+pub(crate) mod editors;
 pub(crate) mod journal;
+pub(crate) mod keymap;
 pub(crate) mod light;
+pub(crate) mod presets;
 pub(crate) mod profile;
 pub(crate) mod progress;
 pub(crate) mod restore;
+pub(crate) mod share;
 pub(crate) mod snapshot;
+pub(crate) mod socd;
+pub(crate) mod travel;
 pub(crate) mod trigger;
 
 use std::path::Path;
@@ -102,6 +119,7 @@ impl<B: DeviceBackend> Worker<B> {
         let mut progress = self.begin_op(kind, sink, policy);
         let result = f(self, &mut progress);
         self.after_op_state();
+        self.check_socd_pushes();
         self.end_op();
         result
     }

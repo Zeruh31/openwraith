@@ -160,6 +160,7 @@ export const errors: Messages<typeof en> = {
     safety_dir_unavailable: "Güvenlik yedeği klasörü kullanılamıyor",
     fault: "OpenWraith bir iç hatayla karşılaştı; uygulamayı yeniden başlatın",
   },
+  depthViewRunning: "Tuş derinliği görünümü açık. Önce Aktivasyon > Tuş derinliği sekmesinden durdurun.",
   planInvalidation: {
     superseded: "Daha yeni bir plan onun yerini aldı.",
     expired: "10 dakikadan daha eski.",
@@ -204,5 +205,48 @@ export const errors: Messages<typeof en> = {
     missing_reply: "Yanıt yok",
     invalid_reply: "Geçersiz yanıt",
     differs: "Farklı değerler",
+  },
+  keymap: {
+    keyRef: (p) => `${p.key} (#${p.index})`,
+    keyRefFn: (p) => `Fn + ${p.key} (#${p.index})`,
+    no_changes: "Değiştirilecek bir şey yok.",
+    too_many_changes: (p) => `Bir seferde çok fazla değişiklik var (en çok ${p.max}). Önce bir kısmını yazın.`,
+    not_a_key: (p) => `Bu klavyede #${p.index} numaralı tuş yok.`,
+    slot_out_of_range: (p) => `Bu klavyede ${p.slot} yok.`,
+    not_offered: "OpenWraith bu eylemi tuşlar için sunmuyor.",
+    invalid_combo: "Bir kısayol için bir ya da iki farklı değiştirici tuş ve başka bir tuş gerekir.",
+    macro_too_long: (p) => `Makroda ${p.steps} adım var; klavye en çok ${p.max} adım saklar.`,
+    macro_unbalanced: (p) =>
+      `Makronun ${p.step}. adımı uymuyor: basılan her tuş bir kez de bırakılmalıdır. "Sonda hepsini bırak" basılı kalan tuşları düzeltir.`,
+    macro_last_delay: "Makronun son adımından sonra bekleme olamaz.",
+    macro_times_zero: "Bir makro en az bir kez çalmalıdır.",
+    dks_shape: "Dinamik tuş vuruşu için her biri dört adımlı bir ile dört arasında tuş gerekir.",
+    dks_point: (p) => `İlk nokta (${p.value}) 0,1 mm ile ${p.max} arasında olmalıdır.`,
+    dks_steps: (p) => `Dinamik tuş vuruşunun ${p.row}. satırı klavyenin kabul ettiği bir birleşim değil.`,
+    mt_hold_time: (p) => `Basılı tutma süresi (${p.value}) ${p.min} ile ${p.max} arasında, 10 ms'lik adımlarla olmalıdır.`,
+    swap_not_writable: (p) =>
+      `${p.key} OpenWraith'in okunduğu gibi koruduğu bir değer taşıyor: yerine başka bir şey atanabilir ama yer değiştirilemez.`,
+    knob: "Döner düğmeyi klavye yönetir; OpenWraith onu asla değiştirmez.",
+    fn_key: "Fn tuşu yeniden atanamaz.",
+    fn_locked: (p) => `${p.key}, Fn katmanında klavye tarafından kilitli.`,
+    builtin_not_acknowledged: (p) =>
+      `${p.key} klavyenin kendi işlevini çalıştırır (${p.function}). Yerine başka bir şey atamak istediğinizi onaylayın.`,
+    builtin_not_acknowledged_critical: (p) =>
+      `${p.key} klavyenin temel kısayollarından biri (${p.function}). Yerine başka bir şey atamak için açık onayınız gerekir.`,
+    no_usage: (p) => `${p.key} tuşunun kendine ait bir tuş kodu yok, bu yüzden makro başlatamaz.`,
+    unknown_model: "OpenWraith bu klavyenin tuş düzenini bilmiyor.",
+    no_free_slot: {
+      macro: "Tüm makro yuvaları dolu. Önce bir makroyu silin.",
+      advanced: "Tüm gelişmiş tuş yuvaları dolu. Önce bir gelişmiş tuşu silin.",
+    },
+    slot_already_bound: (p) => `${p.slot} zaten ${p.key} tarafından kullanılıyor.`,
+    binding_to_empty_slot: (p) => `${p.key} boş olan ${p.slot} yuvasına bağlanacaktı.`,
+    new_slot_replaces_edit: (p) =>
+      `${p.key} şu anda ${p.slot} yuvasını çalıştırıyor ve değişiklikleriniz bu yuvayı da düzenliyor. ${p.key} için yeni bir tane aynı yuvaya yazılır ve iki değişiklikten biri kaybolur. Önce düzenlemeyi yazın ya da onun yerine yuvayı silin.`,
+    slot_still_referenced: (p) =>
+      `${p.slot} hâlâ şu tuşlar tarafından kullanılıyor: ${p.keys}. Önce bu tuşları değiştirin ya da onu tuşlarıyla birlikte silin.`,
+    unsupported_current_table: (p) =>
+      `${p.table} OpenWraith'in birebir yeniden oluşturamayacağı bir şey içeriyor; Geri al onu geri getiremez.`,
+    other: "Tuş atamaları bu şekilde değiştirilemez.",
   },
 };

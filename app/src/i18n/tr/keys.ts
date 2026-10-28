@@ -1,0 +1,357 @@
+// Tuşlar sayfasının ortak sözcükleri (üç sekme ve eylem gösteren ortak
+// bileşenler): katmanlar, kaynaklar, eylem adları ve grupları, eylem seçici,
+// klavyenin yerleşik Fn işlevleri, tuş ataması incelemesi ve notları.
+
+import type { keys as en } from "../en/keys";
+import type { Messages } from "../types";
+
+export const keys: Messages<typeof en> = {
+  title: "Tuşlar",
+  description:
+    "Etkin profilde her tuşun ne yaptığı: temel ve Fn katmanındaki ataması, makrolar ve gelişmiş tuşlar.",
+  tip: {
+    title: "Tuş değişiklikleri nasıl yazılır",
+    body: "Her değişiklik, İncele ve yaz'ı seçene kadar taslak olarak kalır. OpenWraith yazmadan önce bir güvenlik yedeği alır ve her raporda Geri al bulunur. Fn + 1-4 ve Fn + Boşluk korunur: bunların yerine başka bir şey atamak ek bir onay gerektirir.",
+  },
+  board: {
+    title: (p) => `Profil ${p.n} tuşları`,
+    readAt: (p) => `Okunma: ${p.time}`,
+    readAgain: "Klavyeyi yeniden oku",
+  },
+  empty: {
+    title: "Henüz gösterilecek tuş ataması yok",
+    reading: "Klavye okunuyor…",
+    body: "Tuşların ne yaptığını görmek ve değiştirmek için klavyeyi bağlayın.",
+    failed: "Tuş atamaları yüklenemedi.",
+  },
+  stale: "Klavye okunduktan sonra üzerinde bir şey değişti. Tuş atamalarını değiştirmeden önce yeniden okuyun.",
+  disabled: {
+    unreadable_table: (p) =>
+      `${p.table} okunamadı, bu yüzden tuş atamaları şimdi değiştirilemez. Klavyeyi yeniden okuyun.`,
+    unsupported: "OpenWraith bu klavyenin tuş atamalarını değiştiremez.",
+  },
+  advancedDisabled:
+    "Bu klavyede gelişmiş tuşlar değiştirilemez: OpenWraith klavyenin mesafe birimini bilmiyor.",
+  layers: {
+    base: "Temel katman",
+    fn: "Fn katmanı",
+  },
+  layerShort: {
+    base: "Temel",
+    fn: "Fn",
+  },
+  onFn: (p) => `Fn + ${p.key}`,
+  fnLocked:
+    "Fn tuşu yeniden atanamaz: o olmadan Fn katmanına ve klavyenin kendi kısayollarına ulaşamazsınız.",
+  knob: "Döner düğmeyi klavye yönetir. OpenWraith kayıtlı girdilerini gösterir ama asla değiştirmez.",
+  knobEntry: (p) => `Döner düğme girdisi ${p.n} (${p.layer}): ${p.text}`,
+  builtinProfile: (p) =>
+    p.k === p.n
+      ? `Fn + ${p.k} tuşu ${p.likely === true ? "büyük olasılıkla " : ""}${p.k} numaralı profile, yani değiştirdiğiniz profile geçer; bu yüzden bu profilde hiçbir yere geçmez ve yerine başka bir şey atamak bir şey kaybettirmez. Klavyenin kendi kısayolu olduğu için yine de onayınız gerekir.`
+      : `Fn + ${p.k} tuşu ${p.likely === true ? "büyük olasılıkla " : ""}${p.k} numaralı profile geçer. Buraya başka bir şey atarsanız, ${p.n} numaralı profil etkinken klavyeden ${p.k} numaralı profile geçemezsiniz; yalnızca OpenWraith'ten geçebilirsiniz.`,
+  builtinReset:
+    "Fn + Boşluk (basılı tutulunca) klavyeyi sıfırlar. Yerine başka bir şey atanınca ne olacağı test edilmedi.",
+  builtinWarning: (p) =>
+    `${p.key} klavyenin kendi işlevini çalıştırır (${p.function}). Başka bir şey atarsanız, tuşu yeniden Varsayılan yapana dek bu profilde o işlev olmaz.`,
+  builtinConfirmProfile: (p) =>
+    p.k === p.n
+      ? `${p.n} numaralı profilde Fn + ${p.k} değiştirilsin (yalnızca bu profile geçer)`
+      : `${p.n} numaralı profil etkinken Fn + ${p.k} artık ${p.k} numaralı profile geçmeyecek`,
+  builtinConfirmReset: (p) => `${p.n} numaralı profil etkinken Fn + Boşluk artık klavyeyi sıfırlamayacak`,
+  builtinCaps: {
+    "2": "Medya",
+    "3": "Ses −",
+    "4": "Ses +",
+    "5": "Sessiz",
+    "6": "Durdur",
+    "7": "Önceki",
+    "8": "Oynat",
+    "9": "Sonraki",
+    "10": "E-posta",
+    "11": "Ana sayfa",
+    "12": "Hesap",
+    "13": "Ara",
+    "14": "Ekle",
+    "23": "Profil 1",
+    "24": "Profil 2",
+    "25": "Profil 3",
+    "26": "Profil 4",
+    "33": "Hız −",
+    "34": "Hız +",
+    "36": "Işık kapalı",
+    "37": "Son",
+    "58": "Tüm ışık",
+    "68": "Windows modu",
+    "69": "Mac modu",
+    "101": "SOCD",
+    "102": "Parlak +",
+    "111": "Win kilidi",
+    "116": "Sıfırla",
+    "123": "Yön",
+    "124": "Parlak −",
+    "125": "Renk",
+  },
+  builtins: {
+    "2": "Medya oynatıcı",
+    "3": "Sesi azalt",
+    "4": "Sesi artır",
+    "5": "Sessiz",
+    "6": "Durdur",
+    "7": "Önceki parça",
+    "8": "Oynat/Duraklat",
+    "9": "Sonraki parça",
+    "10": "E-posta",
+    "11": "Tarayıcı ana sayfası",
+    "12": "Hesap makinesi",
+    "13": "Tarayıcıda ara",
+    "14": "Ekle (Insert)",
+    "23": "Profil 1",
+    "24": "Profil 2",
+    "25": "Profil 3",
+    "26": "Profil 4",
+    "33": "Işık hızını azalt",
+    "34": "Işık hızını artır",
+    "36": "Tüm ışıkları kapat",
+    "37": "Son (End)",
+    "58": "Tüm aydınlatma",
+    "68": "Windows modu",
+    "69": "Mac modu",
+    "101": "SOCD aç/kapat",
+    "102": "Parlaklığı artır",
+    "111": "Windows tuşu kilidi",
+    "116": "Sıfırla (basılı tutunca)",
+    "123": "Efekt yönü",
+    "124": "Parlaklığı azalt",
+    "125": "Efekt rengi",
+  },
+  builtinLabelUnconfirmed: "Klavyenin bu işlev için kullandığı ad henüz bir W75'te denetlenmedi.",
+  origin: {
+    default: "Varsayılan",
+    remapped: "Değiştirildi",
+    macro_slot: "Makro çalıştırır",
+    advanced_slot: "Gelişmiş tuş",
+    preserved: "Okunduğu gibi korunur",
+  },
+  action: {
+    default: "Varsayılan",
+    defaultBuiltin: (p) => `Varsayılan: ${p.function}`,
+    macro: (p) => `Makro ${p.n}`,
+    macroNamed: (p) => `Makro ${p.n} · ${p.name}`,
+    advanced: (p) => `Gelişmiş tuş ${p.n}`,
+    advancedTyped: (p) => `Gelişmiş tuş ${p.n} · ${p.type}`,
+    keypad: (p) => `Sayısal tuş takımı ${p.key}`,
+    kept: (p) => `${p.kind} (okunduğu gibi korunur)`,
+  },
+  preservedKinds: {
+    fn_key: "Fn tuşu",
+    lighting: "Işık işlevi",
+    function: "Klavye işlevi",
+    gamepad: "Oyun kumandası girdisi",
+    key: "Tuş kodu",
+    media: "Medya tuşu",
+    mouse: "Fare eylemi",
+    combo: "Kısayol",
+    macro: "Makro bağlantısı",
+    advanced: "Gelişmiş tuş bağlantısı",
+    unknown: "Bilinmeyen girdi",
+  },
+  advancedTypes: {
+    dks: "Dinamik tuş vuruşu (DKS)",
+    mod_tap: "Dokun ya da basılı tut",
+    toggle: "Aç/kapat",
+  },
+  playModes: {
+    once: "Bir kez çalar",
+    times: (p) => `${p.n} kez çalar`,
+    toggle: "Bir basış başlatır, sonraki basış durdurur",
+    while_held: "Basılı tutuldukça yineler",
+  },
+  slot: {
+    empty: "Boş",
+    keptAsRead: "Okunduğu gibi korunur",
+    macro: (p) => `${p.steps} adım · ${p.play}`,
+    used: (p) => `${p.total} yuvanın ${p.n} tanesi kullanılıyor`,
+    usedBy: (p) => `Kullanan: ${p.keys}`,
+    orphan: "Hiçbir tuş kullanmıyor",
+  },
+  groups: {
+    default: "Varsayılan",
+    letters: "Harfler",
+    digits: "Rakamlar",
+    basic: "Temel tuşlar",
+    symbols: "Simgeler",
+    function: "İşlev tuşları",
+    system: "Sistem",
+    navigation: "Gezinme",
+    arrows: "Ok tuşları",
+    keypad: "Sayısal tuş takımı",
+    international: "Uluslararası",
+    modifiers: "Değiştirici tuşlar",
+    playback: "Oynatma",
+    browser: "Tarayıcı",
+    apps: "Uygulamalar",
+    mouse_buttons: "Fare düğmeleri",
+    mouse_wheel: "Fare tekerleği",
+  },
+  actionNames: {
+    default: "Varsayılan",
+    "key:2a": "Geri silme",
+    "key:2c": "Boşluk",
+    "key:2d": "Eksi (-)",
+    "key:2e": "Eşittir (=)",
+    "key:2f": "Sol köşeli ayraç ([)",
+    "key:30": "Sağ köşeli ayraç (])",
+    "key:31": "Ters eğik çizgi (\\)",
+    "key:33": "Noktalı virgül (;)",
+    "key:34": "Tırnak (')",
+    "key:35": "Ters tırnak (`)",
+    "key:36": "Virgül (,)",
+    "key:37": "Nokta (.)",
+    "key:38": "Eğik çizgi (/)",
+    "key:46": "Ekran görüntüsü (Print Screen)",
+    "key:47": "Kaydırma kilidi (Scroll Lock)",
+    "key:48": "Duraklat (Pause)",
+    "key:49": "Ekle (Insert)",
+    "key:4d": "Son (End)",
+    "key:53": "Sayı kilidi (Num Lock)",
+    "key:64": "ABD dışı ters eğik çizgi (\\)",
+    "key:65": "Menü",
+    "key:e7": "Sağ Windows",
+    "media:10": "Sesi artır",
+    "media:11": "Sesi azalt",
+    "media:12": "Sessiz",
+    "media:13": "Oynat/Duraklat",
+    "media:14": "Sonraki parça",
+    "media:15": "Önceki parça",
+    "media:16": "Durdur",
+    "media:20": "E-posta",
+    "media:21": "Tarayıcıda ara",
+    "media:22": "Sık kullanılanlar",
+    "media:23": "Tarayıcı ana sayfası",
+    "media:24": "Tarayıcıda geri",
+    "media:25": "Tarayıcıda ileri",
+    "media:26": "Tarayıcıda durdur",
+    "media:27": "Yenile",
+    "media:30": "Medya oynatıcı",
+    "media:32": "Hesap makinesi",
+    "media:34": "Bu bilgisayar",
+    "mouse:left": "Sol tık",
+    "mouse:right": "Sağ tık",
+    "mouse:middle": "Orta tık",
+    "mouse:back": "Geri düğmesi (X1)",
+    "mouse:forward": "İleri düğmesi (X2)",
+    "mouse:wheel_up": "Tekerlek yukarı",
+    "mouse:wheel_down": "Tekerlek aşağı",
+  },
+  picker: {
+    title: (p) => `${p.key} tuşunu değiştir`,
+    search: "Eylem ara",
+    searchHint: "Bir ad, 0x04 gibi bir tuş kodu ya da Ctrl C gibi bir kısayol.",
+    searchHintKeys: "Bir ad ya da 0x04 gibi bir tuş kodu.",
+    options: "Eylemler",
+    tabsLabel: "Eylem türleri",
+    tabs: {
+      keys: "Tuşlar",
+      media: "Medya",
+      mouse: "Fare",
+      shortcuts: "Kısayollar",
+      macros: "Makrolar",
+      advanced: "Gelişmiş",
+      default: "Varsayılan",
+    },
+    results: (p) => `${p.n} eylem`,
+    noResults: "Eşleşen bir şey yok.",
+    current: "Şu anki",
+    choose: "Seç",
+    defaultHint: "Tuşa bu katmandaki kendi işlevini geri verir.",
+    shortcut: {
+      modifiers: "Değiştirici tuşlar (bir ya da iki)",
+      key: "Tuş",
+      keyPlaceholderHint: "Değiştiricilerle birlikte basılacak tuşu seçin.",
+      use: (p) => `${p.combo} kullan`,
+      needModifier: "Bir ya da iki değiştirici tuş seçin.",
+      needKey: "Tuşu seçin.",
+      max: "En çok iki değiştirici tuş.",
+    },
+    macros: {
+      empty: "Klavyede henüz makro yok. Makrolar sekmesinden bir tane oluşturun.",
+    },
+    advanced: {
+      empty: "Henüz gelişmiş tuş yok. Gelişmiş tuşlar sekmesinden bir tane oluşturun.",
+    },
+  },
+  library: {
+    invalidKept: "Makro kitaplığı dosyası okunamadı",
+    invalidKeptBody: (p) =>
+      `OpenWraith onu ${p.file} adıyla sakladı ve boş bir kitaplıkla başladı. Klavyenizdeki makrolar bundan etkilenmez.`,
+  },
+  review: {
+    title: (p) => {
+      switch (p.what) {
+        case "macros":
+          return `Profil ${p.n} makroları değiştirilsin mi?`;
+        case "advanced":
+          return `Profil ${p.n} gelişmiş tuşları değiştirilsin mi?`;
+        case "mixed":
+          return `Profil ${p.n} tuşları, makroları ve gelişmiş tuşları değiştirilsin mi?`;
+        default:
+          return `Profil ${p.n} tuş atamaları değiştirilsin mi?`;
+      }
+    },
+    nothingTitle: "Değiştirilecek bir şey yok",
+    nothing: "Klavyede zaten bu tuş atamaları var.",
+    summary: (p) => {
+      const parts = [
+        p.keys === 0 ? null : `${p.keys} tuş`,
+        p.macros === 0 ? null : `${p.macros} makro`,
+        p.advanced === 0 ? null : `${p.advanced} gelişmiş tuş`,
+      ].filter((part): part is string => part !== null);
+      const what = parts.length === 0 ? "Görünür bir değişiklik yok" : `${parts.join(" ve ")} değişir`;
+      return `${what}; ${p.writes} yazma yapılır.`;
+    },
+    entriesTitle: "Tuşlar",
+    columns: {
+      layer: "Katman",
+      key: "Tuş",
+      now: "Şu an",
+      new: "Yeni",
+    },
+    slotsTitle: "Makrolar ve gelişmiş tuşlar",
+    writesTitle: "OpenWraith'in yazdıkları, bu sırayla",
+    unchanged: "Değişmeden",
+    packets: (p) => `${p.n} paket`,
+    commitNote: {
+      baseKeymap:
+        "Klavye değişen tuş atamalarını ancak ardından eksiksiz bir Fn katmanı gelirse saklar; bu yüzden OpenWraith Fn katmanını hemen ardından gönderir.",
+      advancedKeys:
+        "Klavye gelişmiş tuşları ancak önlerinde eksiksiz bir Fn katmanı varsa saklar; bu yüzden OpenWraith Fn katmanını önce gönderir.",
+      ownOnly: "Klavye bunları kendi başına saklar: başka bir şey gönderilmesi gerekmez.",
+    },
+    warningsTitle: "Dikkat",
+    warnings: {
+      builtin: (p) => `${p.key} bu profilde artık klavyenin kendi işlevini (${p.function}) çalıştırmaz.`,
+      unverified: (p) => `Bir W75'te henüz doğrulanmadı: ${p.what}.`,
+      malformed_reference_preserved: (p) =>
+        `${p.key} OpenWraith'in okuyamadığı bir girdi taşıyor; değiştirilmeden geri yazılır.`,
+      dangling_reference_preserved: (p) => `${p.key} boş olan ${p.slot} yuvasına bağlı; değiştirilmeden geri yazılır.`,
+      transient_binding: (p) =>
+        `Kısa bir süre bir tuş, henüz yazılmamış ${p.slot} yuvasına bağlı olur. O anda durdurursanız OpenWraith onu yine de yazar.`,
+      orphan_slot_kept: (p) => `${p.slot} hiçbir tuş kullanmasa da korunur.`,
+      not_undoable: (p) =>
+        `Geri al, ${p.table} yuvasının şu an taşıdığını geri getiremez: OpenWraith onu birebir yeniden oluşturamaz.`,
+    },
+    persistence: {
+      check: (p) =>
+        `Klavyenin sakladığını denetle (${p.m} numaralı profile geçip geri döner; ışık bir an değişir)`,
+      forced: "OpenWraith bu değişikliği profil değiştirip geri dönerek denetler.",
+      tables: (p) => `Denetlenenler: ${p.list}.`,
+    },
+    criticalTitle: "Bu, klavyenin temel kısayollarından birinin yerine geçer",
+    ownProfileTitle: "Bu, klavyenin aynı profile geçen kısayolunun yerine geçer",
+    criticalNeeded: "Onaylamak için kutuyu işaretleyin, sonra yeniden inceleyin.",
+    notUndoableTitle: "Geri al bunu geri getiremez",
+    notUndoableConfirm: "Geri al'ın bu yuvanın şu an taşıdığını geri getiremeyeceğini anlıyorum",
+    notUndoableNeeded: "Yine de devam etmek için kutuyu işaretleyin, sonra yeniden inceleyin.",
+    reviewAgain: "Yeniden incele",
+  },
+};

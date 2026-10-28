@@ -15,6 +15,10 @@ report: EditReportView, } | { "kind": "restore",
 /**
  * The report.
  */
+report: RestoreReportView, } | { "kind": "import", 
+/**
+ * The report.
+ */
 report: RestoreReportView, } | { "kind": "profile_switch", 
 /**
  * The report.

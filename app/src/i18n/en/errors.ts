@@ -176,6 +176,8 @@ export const errors = {
     safety_dir_unavailable: "The safety-backup folder can't be used",
     fault: "OpenWraith hit an internal error; restart it",
   } satisfies Record<WriteBlockReason, string>,
+  /** The "busy" reason while the live key-depth view holds the keyboard. */
+  depthViewRunning: "The key-depth view is running. Stop it on Actuation > Key depth first.",
   planInvalidation: {
     superseded: "A newer plan replaced it.",
     expired: "It is more than 10 minutes old.",
@@ -221,4 +223,53 @@ export const errors = {
     invalid_reply: "Invalid reply",
     differs: "Different values",
   } satisfies Record<MismatchKindView, string>,
+  /**
+   * Why a key-assignment change was refused (nothing was written). Keys are
+   * named with their layer and number ("Fn + F1 (#2)"); slots are 1-based.
+   */
+  keymap: {
+    keyRef: (p: { key: string; index: number }) => `${p.key} (#${p.index})`,
+    keyRefFn: (p: { key: string; index: number }) => `Fn + ${p.key} (#${p.index})`,
+    no_changes: "There is nothing to change.",
+    too_many_changes: (p: { max: number }) => `That is too many changes at once (at most ${p.max}). Write some of them first.`,
+    not_a_key: (p: { index: number }) => `Key #${p.index} doesn't exist on this keyboard.`,
+    slot_out_of_range: (p: { slot: string }) => `${p.slot} doesn't exist on this keyboard.`,
+    not_offered: "OpenWraith doesn't offer this action for a key.",
+    invalid_combo: "A shortcut needs one or two different modifier keys and one other key.",
+    macro_too_long: (p: { steps: number; max: number }) =>
+      `The macro has ${p.steps} steps; the keyboard holds at most ${p.max}.`,
+    macro_unbalanced: (p: { step: number }) =>
+      `Step ${p.step} of the macro doesn't fit: every key that goes down has to come up again, once. "Release all at end" fixes keys left held.`,
+    macro_last_delay: "The last step of a macro can't wait after it.",
+    macro_times_zero: "A macro has to play at least once.",
+    dks_shape: "A dynamic keystroke needs one to four keys, each with four steps.",
+    dks_point: (p: { value: string; max: string }) => `The first point (${p.value}) has to be between 0.1 mm and ${p.max}.`,
+    dks_steps: (p: { row: number }) => `Row ${p.row} of the dynamic keystroke isn't a combination the keyboard accepts.`,
+    mt_hold_time: (p: { value: string; min: string; max: string }) =>
+      `The hold time (${p.value}) has to be between ${p.min} and ${p.max}, in steps of 10 ms.`,
+    swap_not_writable: (p: { key: string }) =>
+      `${p.key} holds something OpenWraith keeps as read: it can be replaced, but not swapped.`,
+    knob: "The knob is managed by the keyboard; OpenWraith never changes it.",
+    fn_key: "The Fn key can't be reassigned.",
+    fn_locked: (p: { key: string }) => `${p.key} is locked by the keyboard on the Fn layer.`,
+    builtin_not_acknowledged: (p: { key: string; function: string }) =>
+      `${p.key} runs the keyboard's own function (${p.function}). Confirm that you want to replace it.`,
+    builtin_not_acknowledged_critical: (p: { key: string; function: string }) =>
+      `${p.key} is one of the keyboard's essential shortcuts (${p.function}). Replacing it needs your explicit confirmation.`,
+    no_usage: (p: { key: string }) => `${p.key} has no key code of its own, so it can't start a macro.`,
+    unknown_model: "OpenWraith doesn't know this keyboard's key layout.",
+    no_free_slot: {
+      macro: "Every macro slot is in use. Delete a macro first.",
+      advanced: "Every advanced-key slot is in use. Delete an advanced key first.",
+    },
+    slot_already_bound: (p: { slot: string; key: string }) => `${p.slot} is already used by ${p.key}.`,
+    binding_to_empty_slot: (p: { key: string; slot: string }) => `${p.key} would refer to ${p.slot}, which is empty.`,
+    new_slot_replaces_edit: (p: { key: string; slot: string }) =>
+      `${p.key} runs ${p.slot}, which your changes also edit. A new one for ${p.key} would go into that slot, and one of the two changes would be lost. Write the edit first, or delete ${p.slot} instead.`,
+    slot_still_referenced: (p: { slot: string; keys: string }) =>
+      `${p.slot} is still used by ${p.keys}. Change those keys first, or delete it together with its keys.`,
+    unsupported_current_table: (p: { table: string }) =>
+      `${p.table} holds something OpenWraith can't reproduce exactly, so Undo couldn't bring it back.`,
+    other: "The key assignments can't be changed this way.",
+  },
 } as const;

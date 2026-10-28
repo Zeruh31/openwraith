@@ -110,3 +110,27 @@ describe("resolveLang", () => {
     expect(resolveLang("en", "tr-TR", [])).toBe("en");
   });
 });
+
+describe("the library's not-yet-verified notes", () => {
+  it("have their own words in both languages for every note the recorded fixtures carry", async () => {
+    const { FIXTURES } = await import("../preview/registry");
+    const seen = new Set<string>();
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item);
+        return;
+      }
+      if (value === null || typeof value !== "object") return;
+      const record = value as Record<string, unknown>;
+      if (typeof record["what"] === "string" && typeof record["question"] === "string") seen.add(record["what"]);
+      for (const item of Object.values(record)) walk(item);
+    };
+    walk(FIXTURES);
+    expect(seen.size).toBeGreaterThan(0);
+    for (const lang of ["en", "tr"] as const) {
+      const notes: Readonly<Record<string, string | undefined>> = DICTIONARIES[lang].common.badge.notes;
+      for (const what of seen) expect(notes[what], `${lang}: ${what}`).toBeTruthy();
+      expect(Object.keys(notes).sort()).toEqual(Object.keys(DICTIONARIES.en.common.badge.notes).sort());
+    }
+  });
+});

@@ -98,6 +98,11 @@ pub(crate) fn safety_reason(reason: &str) -> SafetyReason {
         "set-trigger" => SafetyReason::SetTrigger,
         "set-light" => SafetyReason::SetLight,
         "restore" => SafetyReason::Restore,
+        "set-keys" => SafetyReason::SetKeys,
+        "set-colors" => SafetyReason::SetColors,
+        "set-deadband" => SafetyReason::SetDeadband,
+        "set-socd" => SafetyReason::SetSocd,
+        "import" => SafetyReason::Import,
         _ => SafetyReason::Other,
     }
 }
@@ -206,6 +211,16 @@ mod tests {
             parse_safety_name("openwraith-W75HEARGB-20261024-073000-restore-3.owbackup.json")
                 .unwrap();
         assert_eq!(safety_reason(&numbered.reason), SafetyReason::Restore);
+        for (reason, expected) in [
+            ("set-keys", SafetyReason::SetKeys),
+            ("set-colors", SafetyReason::SetColors),
+            ("set-deadband", SafetyReason::SetDeadband),
+            ("set-socd", SafetyReason::SetSocd),
+            ("import", SafetyReason::Import),
+            ("something-new", SafetyReason::Other),
+        ] {
+            assert_eq!(safety_reason(reason), expected, "{reason}");
+        }
         assert!(parse_safety_name("notes.txt").is_none());
         assert!(parse_safety_name("openwraith-undated.owbackup.json").is_none());
     }

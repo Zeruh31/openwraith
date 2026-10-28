@@ -85,6 +85,7 @@ export function reportOf(last: LastReport): unknown {
   switch (last.kind) {
     case "edit":
     case "restore":
+    case "import":
     case "profile_switch":
       return last.report;
     case "backup":

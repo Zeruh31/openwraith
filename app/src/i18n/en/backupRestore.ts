@@ -1,6 +1,7 @@
-// The Backup & Restore page (owned by the backup-restore page agent): backing
-// up, the restore wizard, the plan review, the restore report and the list
-// of safety backups. Every backend code has a text (typed records below).
+// The Backup & profiles page (owned by the backup-restore page agent): backing
+// up, the restore wizard, the plan review, the restore report, sharing a
+// profile (export and import) and the list of safety backups. Every backend
+// code has a text (typed records below).
 
 import type {
   BackupFileKind,
@@ -8,12 +9,13 @@ import type {
   LayerView,
   PlanWarningView,
   SafetyReason,
+  ShareSelectionView,
   SkipReasonView,
 } from "../../ipc/bindings";
 
 export const backupRestore = {
-  title: "Backup & Restore",
-  description: "Save the keyboard's settings to a file and bring them back later.",
+  title: "Backup & profiles",
+  description: "Save the keyboard's settings to a file, bring them back later and share a profile.",
   /** Why an action is unavailable (shown under the button). */
   reasons: {
     notConnected: "Connect the keyboard and wait until it has been read.",
@@ -279,7 +281,7 @@ export const backupRestore = {
     },
     nextSteps: "Next steps",
     runAgain: "Run the restore again",
-    runAgainHint: "To run it again, choose the backup on the Backup & Restore page and compare it with the keyboard.",
+    runAgainHint: "To run it again, choose the backup on the Backup & profiles page and compare it with the keyboard.",
     connectFirst: "Connect the keyboard first.",
   },
   safety: {
@@ -358,8 +360,12 @@ export const backupRestore = {
     imported: (p: { from: number; into: number }) =>
       `Profile ${p.from} of the file is written to profile ${p.into} of the keyboard.`,
     imported_macros: (p: { slots: string }) => `Macros from the file are written: ${p.slots}.`,
-    fn_builtin_overridden: (p: { index: number }) =>
-      `The Fn layer replaces one of the keyboard's own Fn shortcuts (key number ${p.index}).`,
+    fn_builtin_overridden: (p: { key: string; kind: "other" | "profile" | "reset" }) =>
+      p.kind === "reset"
+        ? `The Fn layer replaces Fn + ${p.key}, which (held) resets the keyboard. What happens when it is replaced has not been tested.`
+        : p.kind === "profile"
+          ? `The Fn layer replaces Fn + ${p.key}, the keyboard's own switch to profile ${p.key}.`
+          : `The Fn layer replaces one of the keyboard's own Fn shortcuts: Fn + ${p.key}.`,
     import_kept_as_read: (p: { layer: string; keys: string }) =>
       `In the file, ${p.layer} differ at positions that are never imported (the knob, the Fn key, keys the keyboard locks): ${p.keys}. The keyboard's entries are kept.`,
     unverified: (p: { layer: string; index: number }) =>
@@ -370,6 +376,202 @@ export const backupRestore = {
     set_trigger: "Before an actuation change",
     set_light: "Before a lighting change",
     restore: "Before a restore",
+    set_keys: "Before a key change",
+    set_colors: "Before a key-colour change",
+    set_deadband: "Before a dead-band change",
+    set_socd: "Before a SOCD change",
+    import: "Before an import",
     other: "Safety backup",
   } satisfies Record<SafetyReason, string>,
+  /** Share a profile: export one profile to a file, import a profile file into a profile. */
+  share: {
+    title: "Share a profile",
+    intro:
+      "Save one profile to a file to share it or keep it, and import a profile file into any of the keyboard's profiles.",
+    noSerial: "A profile file never holds the keyboard's USB serial number.",
+    /** Titles and filter names of the system file dialogs. */
+    dialog: {
+      save: "Save the profile file",
+      saveFilter: "OpenWraith profile files",
+      open: "Choose a profile file to import",
+      openFilter: "OpenWraith profile files and backups",
+    },
+    profileOption: (p: { n: number; active: boolean }) => (p.active ? `Profile ${p.n} (active)` : `Profile ${p.n}`),
+    /** The parts of a profile, as the import offers them. */
+    parts: {
+      triggers: "Actuation and Rapid Trigger",
+      lighting: "Lighting and key colours",
+      keys: "Key assignments, macros and advanced keys",
+      dead_band: "Dead band",
+      socd: "SOCD key pairs",
+    } satisfies Record<keyof ShareSelectionView, string>,
+    export: {
+      title: "Export a profile",
+      intro: "OpenWraith reads the profile from the keyboard now and saves it as a profile file (.owprofile.json).",
+      profile: "Profile",
+      name: "Name (optional)",
+      nameHint: "Saved in the file, for example “Tournament”. You choose the file name next.",
+      holds:
+        "The file holds the whole profile: actuation and Rapid Trigger, lighting and key colours, key assignments with macros and advanced keys, dead band and SOCD key pairs. Whoever imports it chooses which parts to use; only actuation and lighting are chosen by default.",
+      macrosNote: "Macros are saved as the keys they press, so anyone you give the file to can read them.",
+      switchNote: (p: { n: number }) =>
+        `Reading profile ${p.n} switches the keyboard to it and back (the lighting changes briefly). No setting is changed.`,
+      button: (p: { n: number }) => `Export profile ${p.n}…`,
+      consentTitle: "Switch profiles to read it?",
+      consentBody: (p: { n: number; active: number }) =>
+        `To read profile ${p.n}, the keyboard switches to it and back to profile ${p.active} (the lighting changes briefly). No setting is changed.`,
+      consentBodyUnknown: (p: { n: number }) =>
+        `To read profile ${p.n}, the keyboard switches to it and back (the lighting changes briefly). No setting is changed.`,
+      consentConfirm: "Switch and export",
+      saved: "Profile file saved",
+      savedSummary: (p: { n: number; firmware: string }) => `Profile ${p.n} · firmware ${p.firmware}`,
+      switched: (p: { n: number }) => `To read it, the keyboard switched to profile ${p.n} and back.`,
+      file: "File:",
+      noFileSaved: "No profile file was saved.",
+    },
+    /** What a profile file holds. */
+    contents: {
+      title: "What the file holds",
+      titleOf: (p: { n: number }) => `What profile ${p.n} of the file holds`,
+      otherProfile: (p: { n: number }) => `The review shows what profile ${p.n} of the file holds.`,
+      none: "No settings OpenWraith can read.",
+      missing: (p: { list: string }) => `Not in the file: ${p.list}.`,
+      advanced: (p: { n: number }) => (p.n === 1 ? "1 advanced key is in use." : `${p.n} advanced keys are in use.`),
+      macrosTitle: "Macros, as the keys they press",
+      macro: (p: { n: number; steps: number; play: string }) =>
+        p.steps === 1 ? `Macro ${p.n} · 1 step · ${p.play}` : `Macro ${p.n} · ${p.steps} steps · ${p.play}`,
+      macroUnknown: (p: { n: number }) =>
+        `Macro ${p.n} can't be shown as steps, so the key assignments, macros and advanced keys can't be imported from this file.`,
+      press: (p: { key: string }) => `Press ${p.key}`,
+      release: (p: { key: string }) => `Release ${p.key}`,
+      wait: (p: { step: string; ms: string }) => `${p.step}, then wait ${p.ms} ms`,
+    },
+    import: {
+      title: "Import a profile",
+      intro:
+        "Write the settings of a profile file into one of the keyboard's profiles. OpenWraith first compares and shows what would change; nothing is written until you confirm.",
+      open: "Open a profile file…",
+      openOther: "Open another profile file…",
+      backupsToo: "A backup file works too: its active profile is offered first.",
+      facts: {
+        made: "Made",
+        keyboard: "Keyboard",
+        firmware: "Firmware",
+        profiles: "Profiles in the file",
+        tool: "Made with",
+      },
+      simulator: "Made by the developer simulator: it doesn't hold a real keyboard's settings.",
+      otherKeyboardTitle: "This file is for another keyboard",
+      otherKeyboardBody: (p: { model: string }) =>
+        `It was made on ${p.model}. OpenWraith imports a profile only into the same model.`,
+      notChecked: "No keyboard is connected, so OpenWraith hasn't checked yet whether this file fits it.",
+      from: "Profile of the file",
+      into: "Import into profile",
+      intoHint: (p: { n: number }) =>
+        `Comparing reads profile ${p.n}: the keyboard switches to it and back (the lighting changes briefly).`,
+      parts: "What to import",
+      partsHint:
+        "Actuation and lighting are chosen by default. Choose the other parts only if you want them exactly as in the file.",
+      notInFile: "Not in this file.",
+      keysHint: "Replaces the profile's key assignments, macros and advanced keys as a whole.",
+      socdHint: "Whether SOCD is on is one setting for the whole keyboard: it stays as it is.",
+      firmwareTitle: "This file was made with different firmware",
+      firmwareBody: (p: { file: string; keyboard: string }) =>
+        `File: firmware ${p.file}. Keyboard: firmware ${p.keyboard}. The format of some settings may have changed between versions.`,
+      firmwareAnyway: "Import anyway",
+      firmwareAnywayHint: "OpenWraith still compares first and shows every change before it writes anything.",
+      review: "Compare and review…",
+      compareHint: "OpenWraith reads the keyboard and shows what would change. Nothing is written until you confirm.",
+    },
+    /** Why the import can't be reviewed yet (shown under the button). */
+    reasons: {
+      noPart: "Choose at least one part to import.",
+      otherKeyboard: "This file is for another keyboard.",
+      firmwareTick: "Tick “Import anyway” to compare this file.",
+    },
+    /** The import's review (the restore review, in import words). */
+    review: {
+      title: (p: { from: number; into: number }) => `Import profile ${p.from} of the file into profile ${p.into}?`,
+      chosen: (p: { list: string }) => `Chosen parts: ${p.list}.`,
+      confirm: (p: { n: number }) => (p.n === 1 ? "Import 1 change" : `Import ${p.n} changes`),
+      safetyNote: (p: { n: number; dir: string }) =>
+        `A safety backup of profile ${p.n} will be saved to ${p.dir} first.`,
+      file: "File",
+      fileMade: "File made",
+      columnFile: "File",
+      profileSkipped: (p: { n: number }) => `${p.n} not imported`,
+      notImported: "Not imported",
+      notInFile: (p: { n: number }) => `Not in the file (${p.n})`,
+      nothing: "Nothing to write: the keyboard already matches the chosen parts of the file.",
+      nothingSkips: "These parts of the file can't be imported:",
+      keymapGroupBlocked: (p: { cause: string }) =>
+        `Key assignments, macros and advanced keys can only be imported together, and that isn't safe here: ${p.cause}`,
+      blocked: "Some of the chosen parts can't be imported as they are; “Not imported” below says why.",
+    },
+    /** The file's Fn layer replaces one of the keyboard's own shortcuts (its own tick). */
+    critical: {
+      title: "The file replaces one of the keyboard's own shortcuts",
+      profile: (p: { k: number; n: number }) =>
+        p.k === p.n
+          ? `In the file, Fn + ${p.k} does something else. On the keyboard, Fn + ${p.k} switches to profile ${p.k}, the profile you are importing into, so on this profile it switches nowhere and replacing it takes nothing away. It still needs your confirmation.`
+          : `In the file, Fn + ${p.k} does something else. On the keyboard, Fn + ${p.k} switches to profile ${p.k}; after this import you couldn't switch to profile ${p.k} from the keyboard while profile ${p.n} is active, only from OpenWraith.`,
+      reset: "In the file, Fn + Space does something else. On the keyboard, Fn + Space (held) resets it. What happens when it is replaced has not been tested.",
+      other: (p: { key: string }) => `In the file, Fn + ${p.key} replaces one of the keyboard's own shortcuts.`,
+      notImported: "The key assignments, macros and advanced keys are imported only if you allow it below.",
+      confirmProfile: (p: { k: number; n: number }) =>
+        p.k === p.n
+          ? `Import it anyway: replace Fn + ${p.k} on profile ${p.n} (it only switches to this same profile)`
+          : `Import it anyway: Fn + ${p.k} will no longer switch to profile ${p.k} while profile ${p.n} is active`,
+      confirmReset: (p: { n: number }) =>
+        `Import it anyway: Fn + Space will no longer reset the keyboard while profile ${p.n} is active`,
+      confirmOther: (p: { key: string; n: number }) =>
+        `Import it anyway: Fn + ${p.key} will no longer do its own job while profile ${p.n} is active`,
+      /** One tick for several replaced shortcuts, each explained in its own note above. */
+      confirmAll: (p: { keys: string; n: number }) =>
+        `Import it anyway: replace ${p.keys} on profile ${p.n}, with the consequences described above`,
+      /** A key in the list of {@link confirmAll}. */
+      fnKey: (p: { key: string }) => `Fn + ${p.key}`,
+    },
+    /** The import's result (the restore result, in import words). */
+    result: {
+      headline: {
+        done: (p: { n: number }) =>
+          p.n === 1
+            ? "Import complete. The change was written, verified and kept by the keyboard (checked after a profile switch)."
+            : `Import complete. All ${p.n} changes were written, verified and kept by the keyboard (checked after a profile switch).`,
+        doneUnchecked: (p: { n: number }) =>
+          p.n === 1
+            ? "Import complete. The change was written and verified."
+            : `Import complete. ${p.n} changes were written and verified.`,
+        nothingToDo: "Nothing to write: the keyboard already matched the chosen parts of the file.",
+        cancelled: (p: { written: number; rest: number }) =>
+          `Stopped. ${p.written === 1 ? "1 change was" : `${p.written} changes were`} written before stopping; ${p.rest === 1 ? "1 was" : `${p.rest} were`} not.`,
+        notWritten: "Nothing was written.",
+        failed: (p: { written: number; total: number }) =>
+          `The import stopped with an error. ${p.written} of ${p.total} changes were written and verified; the rest were not.`,
+        maybeLost: (p: { n: number }) =>
+          p.n === 1
+            ? "Written and verified, but the keyboard may not have saved 1 change. Read the keyboard again to check, or undo."
+            : `Written and verified, but the keyboard may not have saved ${p.n} changes. Read the keyboard again to check, or undo.`,
+        lost: (p: { n: number }) =>
+          p.n === 1
+            ? "The keyboard didn't keep 1 change. Run the import again, or undo it."
+            : `The keyboard didn't keep ${p.n} changes. Run the import again, or undo it.`,
+      },
+      clearedBody:
+        "Writing Macro 1 makes the keyboard clear Macros 2–10, and the import stopped before writing these again. Undo brings them back.",
+      danglingBody:
+        "The import stopped part-way, so these keys refer to an empty macro or advanced key. Undo brings them back.",
+      skipped: "Not imported",
+      runAgain: "Run the import again",
+    },
+    /** Refusals of an export or an import (`ErrorDetail` "edit"; nothing was sent). */
+    refusals: {
+      no_changes: "Choose at least one part to import.",
+      not_available: "This isn't available for this keyboard.",
+      unsupported_current_table: (p: { table: string }) =>
+        `OpenWraith can't import ${p.table} as it is in the file.`,
+      other: "OpenWraith refused it before anything was sent to the keyboard.",
+    },
+  },
 } as const;

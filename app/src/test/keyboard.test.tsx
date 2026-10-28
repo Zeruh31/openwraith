@@ -268,4 +268,29 @@ describe("KeyboardView", () => {
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "a", ctrlKey: true });
     expect(change).not.toHaveBeenCalled();
   });
+
+  it("puts the knob's popover beside the listbox; a double-click in it activates no key", () => {
+    const activate = vi.fn<(index: number) => void>();
+    render(
+      <KeyboardView
+        label="Keys"
+        keyVisual={visual}
+        selection="single"
+        selected={new Set([46])}
+        onSelectionChange={() => undefined}
+        onActivate={activate}
+        knobLabel="knob"
+        knobInfo={<p>knob entries</p>}
+        unitPx={40}
+      />,
+    );
+    const knob = screen.getAllByRole("option").find((o) => o.getAttribute("data-key-index") === String(KNOB_INDEX));
+    if (knob === undefined) throw new Error("no knob");
+    fireEvent.pointerDown(knob, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(knob, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    const popover = screen.getByRole("dialog");
+    expect(popover.closest("[role='listbox']")).toBeNull();
+    fireEvent.doubleClick(screen.getByText("knob entries"));
+    expect(activate).not.toHaveBeenCalled();
+  });
 });

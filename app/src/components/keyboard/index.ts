@@ -3,3 +3,4 @@
 export * from "./geometry";
 export * from "./KeyboardView";
 export * from "./selection";
+export * from "./revealAfterPick";

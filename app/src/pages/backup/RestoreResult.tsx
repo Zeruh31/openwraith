@@ -3,7 +3,8 @@
 // emptied by the Macro 1 write, keys referring to an empty slot), the
 // persistence and final checks, each item's result, the counts, the next
 // steps and the report footer (safety backup with Undo, the active profile,
-// foreign activity).
+// foreign activity). An import of a profile file shows the same report in
+// import words (`variant`).
 
 import { Button } from "../../components/Button";
 import { Callout } from "../../components/Feedback";
@@ -15,7 +16,7 @@ import { useFormat } from "../../i18n/format";
 import type { FinalCheckView, ItemReportView, ProfileReportView, RestoreReportView } from "../../ipc/bindings";
 import { useStatus } from "../../state/status";
 import { groupReportItems, tallyReport, worstItem, type RestoreTally } from "./model";
-import { numberList, persistenceSentences, restoreHeadline } from "./texts";
+import { numberList, persistenceSentences, restoreHeadline, type ReviewVariant } from "./texts";
 
 function ResultRow({ item }: { item: ItemReportView }) {
   const dict = useDict();
@@ -38,15 +39,16 @@ function ResultRow({ item }: { item: ItemReportView }) {
 }
 
 /** Macros a stop part-way left empty and keys left referring to an empty slot (Undo restores both). */
-function LeftBehind({ report }: { report: RestoreReportView }) {
+function LeftBehind({ report, variant }: { report: RestoreReportView; variant: ReviewVariant }) {
   const dict = useDict();
   const r = dict.backupRestore.result;
+  const words = variant === "import" ? dict.backupRestore.share.result : r;
   if (report.cleared_macros.length === 0 && report.dangling.length === 0) return null;
   return (
     <>
       {report.cleared_macros.length === 0 ? null : (
         <Callout kind="danger" title={r.clearedTitle}>
-          <p>{r.clearedBody}</p>
+          <p>{words.clearedBody}</p>
           <ul>
             {report.cleared_macros.map((c) => (
               <li key={`${c.profile}-${c.slot}`}>{r.clearedItem({ n: c.profile, slot: c.slot + 1 })}</li>
@@ -56,7 +58,7 @@ function LeftBehind({ report }: { report: RestoreReportView }) {
       )}
       {report.dangling.length === 0 ? null : (
         <Callout kind="danger" title={r.danglingTitle}>
-          <p>{r.danglingBody}</p>
+          <p>{words.danglingBody}</p>
           <ul>
             {report.dangling.map((d) => {
               const key = keyName(dict, d.key.name);
@@ -144,10 +146,12 @@ function FinalCheck({ check }: { check: FinalCheckView }) {
   );
 }
 
-function Counts({ tally, skipped }: { tally: RestoreTally; skipped: number }) {
+function Counts({ tally, skipped, variant }: { tally: RestoreTally; skipped: number; variant: ReviewVariant }) {
   const dict = useDict();
   const format = useFormat();
   const c = dict.backupRestore.result.counts;
+  const labels: Record<keyof typeof c, string> =
+    variant === "import" ? { ...c, skipped: dict.backupRestore.share.result.skipped } : c;
   const all: [keyof typeof c, number][] = [
     ["written", tally.verified],
     ["kept", tally.kept],
@@ -161,7 +165,7 @@ function Counts({ tally, skipped }: { tally: RestoreTally; skipped: number }) {
   ];
   const items: KeyValueItem[] = all
     .filter(([, value]) => value > 0)
-    .map(([key, value]) => ({ key, label: c[key], value: <span className="ow-num">{format.number(value)}</span> }));
+    .map(([key, value]) => ({ key, label: labels[key], value: <span className="ow-num">{format.number(value)}</span> }));
   if (items.length === 0) return null;
   return (
     <section className="br-section">
@@ -182,10 +186,12 @@ export interface RestoreResultProps {
   onRunAgain?: (() => void) | undefined;
   /** Reads the keyboard again (after MAY BE LOST). */
   onReadAgain: () => void;
+  /** An import of a profile file uses import words (default: a restore). */
+  variant?: ReviewVariant | undefined;
 }
 
 /** The result of a restore. */
-export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResultProps) {
+export function RestoreResult({ report, onRunAgain, onReadAgain, variant = "restore" }: RestoreResultProps) {
   const dict = useDict();
   const format = useFormat();
   const status = useStatus();
@@ -195,7 +201,7 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
   const error = report.error;
   return (
     <div className="ow-report br-result">
-      <Callout kind={HEADLINE_TONE[report.headline]} title={restoreHeadline(report, tally, dict)}>
+      <Callout kind={HEADLINE_TONE[report.headline]} title={restoreHeadline(report, tally, dict, variant)}>
         {error === null ? null : (
           <>
             <p>{dict.errors.kind[error.kind].title}</p>
@@ -204,7 +210,7 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
           </>
         )}
       </Callout>
-      <LeftBehind report={report} />
+      <LeftBehind report={report} variant={variant} />
       {report.persistence === null ? null : (
         <section className="br-section">
           <h3 className="br-section__title">{r.persistenceTitle}</h3>
@@ -215,7 +221,7 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
       {report.profiles.map((profile) => (
         <ProfileResult key={profile.profile} profile={profile} />
       ))}
-      <Counts tally={tally} skipped={report.counts.skipped} />
+      <Counts tally={tally} skipped={report.counts.skipped} variant={variant} />
       {report.headline === "lost" || report.headline === "maybe_lost" ? (
         <section className="br-section">
           <h3 className="br-section__title">{r.nextSteps}</h3>
@@ -225,7 +231,7 @@ export function RestoreResult({ report, onRunAgain, onReadAgain }: RestoreResult
                 <p>{r.runAgainHint}</p>
               ) : (
                 <Button variant="primary" icon="refresh" disabledReason={ready ? null : r.connectFirst} onClick={onRunAgain}>
-                  {r.runAgain}
+                  {variant === "import" ? dict.backupRestore.share.result.runAgain : r.runAgain}
                 </Button>
               )
             ) : (

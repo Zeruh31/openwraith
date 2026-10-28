@@ -22,13 +22,14 @@ const INITIAL: DraftState = { basis: null, draft: EMPTY_DRAFT };
 
 const draftStore = createStore<DraftState>(INITIAL);
 
-// The shell's draft registry (nav dot, the profile-switch confirmation)
-// knows about the draft as long as it exists, on this page or not.
+// The shell's draft registry (nav dot, the Effect tab's dot, the
+// profile-switch confirmation) knows about the draft as long as it exists,
+// on this page or not.
 let unregister: (() => void) | null = null;
 draftStore.subscribe(() => {
   const dirty = hasDraftFields(draftStore.get().draft);
   if (dirty && unregister === null) {
-    unregister = registerDraft("lighting", clearDraft);
+    unregister = registerDraft("lighting", clearDraft, { tab: "effect" });
   } else if (!dirty && unregister !== null) {
     unregister();
     unregister = null;

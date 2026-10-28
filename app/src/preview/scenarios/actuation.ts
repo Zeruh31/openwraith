@@ -8,6 +8,9 @@ import type { ActuationPreviewUi } from "../../pages/actuation/preview";
 import type { PreviewScenario } from "../types";
 
 const WASD = [46, 68, 69, 70];
+const DEADBAND = "#/actuation?tab=deadband";
+const SOCD = "#/actuation?tab=socd";
+const DEPTH = "#/actuation?tab=depth";
 const W = 46;
 const Q = 45;
 const E = 47;
@@ -82,4 +85,30 @@ export const scenarios: PreviewScenario[] = [
     route: "#/actuation",
     ui: ui({ keys: [W], actuation: 60, open: true }),
   },
+  // Presets (the toolbar's "Presets…" menu; the recorded plan is "fast" on WASD).
+  { id: "presets_ready", fixture: "presets_ready", route: "#/actuation", ui: ui({ keys: WASD }) },
+  { id: "presets_preview", fixture: "presets_preview", route: "#/actuation", ui: ui({ keys: WASD }) },
+  { id: "presets_save_refused", fixture: "presets_save_refused", route: "#/actuation", ui: ui({ keys: WASD }) },
+  { id: "presets_save_ok", fixture: "presets_save_ok", route: "#/actuation", ui: ui({ keys: WASD }) },
+  { id: "presets_apply_ok", fixture: "presets_apply_ok", route: "#/actuation", ui: ui({ keys: WASD }) },
+  // Dead band, SOCD and the live key depth: their tabs, clicked through.
+  ...["dead_band_ready", "dead_band_preview", "dead_band_apply_ok", "dead_band_refused_range"].map(
+    (id): PreviewScenario => ({ id, fixture: id, route: DEADBAND }),
+  ),
+  ...["socd_ready", "socd_ready_pairs", "socd_preview", "socd_apply_ok", "socd_toggled"].map(
+    (id): PreviewScenario => ({ id, fixture: id, route: SOCD }),
+  ),
+  ...[
+    "depth_live",
+    "depth_stopped_page_left",
+    "depth_stopped_window_hidden",
+    "depth_stopped_no_movement",
+    "depth_stopped_channel_closed",
+    "depth_stopped_reset",
+    "depth_stopped_other_program",
+    "depth_stopped_profile_changed",
+    "depth_stray_marker",
+  ].map((id): PreviewScenario => ({ id, fixture: id, route: DEPTH })),
+  { id: "deadband_not_connected", fixture: "searching", route: DEADBAND },
+  { id: "socd_other_program", fixture: "other_program", route: SOCD },
 ];

@@ -639,9 +639,9 @@ mod tests {
         assert_eq!(away_profile(ProfileId::new(2).expect("p")).get(), 1);
         let builtins = fn_builtins_text(&W75);
         assert!(builtins.contains("Space reset (critical)"), "{builtins}");
-        // H18 checked F1-F4; c15 and H12 Right Shift.
+        // H18 checked F1-F4; H12 and A9 Fn + 1 and Fn + 2; c15 and H12 Right Shift.
         assert!(
-            builtins.contains("checked on hardware for F1, F2, F3, F4, R-Shift"),
+            builtins.contains("checked on hardware for F1, F2, F3, F4, 1, 2, R-Shift"),
             "{builtins}"
         );
     }

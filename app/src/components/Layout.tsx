@@ -1,7 +1,7 @@
 // Layout and display primitives: page header, card, key-value list,
 // disclosure, technical details, table, profile badge, colour swatch.
 
-import { useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 
 import { useDict } from "../i18n";
 import { Icon } from "./Icon";
@@ -13,16 +13,27 @@ export interface PageHeaderProps {
   actions?: ReactNode | undefined;
 }
 
-/** The title row of a page (the page's only `h1`). */
+/**
+ * What a page host puts under every {@link PageHeader} inside it: the shell's
+ * tab bar of a page with tabs (`?tab=`), so that a tab's own header gets the
+ * tabs right below it.
+ */
+export const PageHeaderSlot = createContext<ReactNode>(null);
+
+/** The title row of a page (the page's only `h1`), followed by the page's tab bar if it has one. */
 export function PageHeader({ title, description, actions }: PageHeaderProps) {
+  const slot = useContext(PageHeaderSlot);
   return (
-    <header className="ow-page-header">
-      <div className="ow-page-header__text">
-        <h1>{title}</h1>
-        {description === undefined ? null : <p className="ow-muted">{description}</p>}
-      </div>
-      {actions === undefined ? null : <div className="ow-page-header__actions">{actions}</div>}
-    </header>
+    <>
+      <header className="ow-page-header">
+        <div className="ow-page-header__text">
+          <h1>{title}</h1>
+          {description === undefined ? null : <p className="ow-muted">{description}</p>}
+        </div>
+        {actions === undefined ? null : <div className="ow-page-header__actions">{actions}</div>}
+      </header>
+      {slot}
+    </>
   );
 }
 

@@ -43,8 +43,8 @@ export interface InspectorProps {
   canEdit: boolean;
 }
 
-/** A distance slider with its millimetre field. */
-function DistanceSlider({
+/** A distance slider with its millimetre field (also the dead band tab's). */
+export function DistanceSlider({
   label,
   value,
   min,
@@ -61,7 +61,7 @@ function DistanceSlider({
   max: number;
   onChange: (units: number) => void;
   unitUm: number;
-  texts: ValueTexts;
+  texts: Pick<ValueTexts, "mm">;
   hint?: string | undefined;
   disabled: boolean;
 }) {

@@ -21,6 +21,31 @@ import { useDeviceBlock } from "./availability";
 import { useDemoAction, type BackupDemo } from "./demo";
 import { numberList, profilesLabel } from "./texts";
 
+/** A saved file in a result dialog: its name, its path and "Show in folder". */
+export function SavedFile({ file, label }: { file: FileRef; label: string }) {
+  const dict = useDict();
+  return (
+    <div className="br-saved__file">
+      <p>
+        <span className="ow-strong">{label}</span>{" "}
+        <span className="ow-mono ow-break ow-selectable">{file.file_name}</span>
+      </p>
+      <p className="ow-muted ow-small ow-mono ow-break ow-selectable">{file.display_path}</p>
+      <div className="ow-row">
+        <Button
+          size="sm"
+          icon="folder"
+          onClick={() => {
+            api.reveal({ target: "file", file: file.token }).catch(toastError);
+          }}
+        >
+          {dict.common.actions.showInFolder}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** What a saved backup looks like in a result dialog. */
 export function BackupSavedView({ saved }: { saved: BackupSaved }) {
   const dict = useDict();
@@ -37,24 +62,7 @@ export function BackupSavedView({ saved }: { saved: BackupSaved }) {
         </p>
         <p>{t.savedAt({ date: format.dateTime(saved.created_at) })}</p>
       </Callout>
-      <div className="br-saved__file">
-        <p>
-          <span className="ow-strong">{t.file}</span>{" "}
-          <span className="ow-mono ow-break ow-selectable">{saved.file.file_name}</span>
-        </p>
-        <p className="ow-muted ow-small ow-mono ow-break ow-selectable">{saved.file.display_path}</p>
-        <div className="ow-row">
-          <Button
-            size="sm"
-            icon="folder"
-            onClick={() => {
-              api.reveal({ target: "file", file: saved.file.token }).catch(toastError);
-            }}
-          >
-            {dict.common.actions.showInFolder}
-          </Button>
-        </div>
-      </div>
+      <SavedFile file={saved.file} label={t.file} />
       {saved.undecoded > 0 ? <p className="ow-muted">{t.undecoded({ n: saved.undecoded })}</p> : null}
       {saved.foreign_activity === null ? null : <Callout kind="warning">{t.foreignActivity}</Callout>}
     </div>

@@ -4,12 +4,15 @@ use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
 use crate::dto::{
-    AllProfilesPreview, AppError, BackupSaved, DeviceId, DeviceSnapshot, EditReportView, FileToken,
-    LightEditIntent, LightEditPreview, PlanInvalidation, PlanToken, ProfileSwitchPreview,
-    ProfileSwitchReport, RestoreIntent, RestorePreview, RestoreReportView, TriggerEditIntent,
-    TriggerEditPreview,
+    AllProfilesPreview, AppError, BackupSaved, ColorEditIntent, ColorEditPreview,
+    DeadBandEditIntent, DeadBandEditPreview, DepthViewReport, DeviceId, DeviceSnapshot,
+    EditReportView, ExportIntent, ExportedProfile, FileToken, ImportIntent, ImportPreview,
+    KeymapEditIntent, KeymapEditPreview, LightEditIntent, LightEditPreview, PlanInvalidation,
+    PlanToken, PresetEditIntent, ProfileSwitchPreview, ProfileSwitchReport, RestoreIntent,
+    RestorePreview, RestoreReportView, SocdEditIntent, SocdEditPreview, TravelCloseReport,
+    TriggerEditIntent, TriggerEditPreview,
 };
-use crate::sink::ProgressSink;
+use crate::sink::{DepthSink, ProgressSink};
 
 /// Where the worker sends its answer.
 pub(crate) type Reply<T> = SyncSender<Result<T, AppError>>;
@@ -84,7 +87,69 @@ pub(crate) enum Request {
         progress: Progress,
         reply: Reply<RestorePreview>,
     },
+    PrepareKeymapEdit {
+        intent: KeymapEditIntent,
+        reply: Reply<KeymapEditPreview>,
+    },
+    ApplyKeymapEdit {
+        token: PlanToken,
+        progress: Progress,
+        reply: Reply<EditReportView>,
+    },
     ApplyRestore {
+        token: PlanToken,
+        progress: Progress,
+        reply: Reply<RestoreReportView>,
+    },
+    PrepareColorEdit {
+        intent: ColorEditIntent,
+        reply: Reply<ColorEditPreview>,
+    },
+    ApplyColorEdit {
+        token: PlanToken,
+        progress: Progress,
+        reply: Reply<EditReportView>,
+    },
+    PrepareDeadBandEdit {
+        intent: DeadBandEditIntent,
+        reply: Reply<DeadBandEditPreview>,
+    },
+    ApplyDeadBandEdit {
+        token: PlanToken,
+        progress: Progress,
+        reply: Reply<EditReportView>,
+    },
+    PrepareSocdEdit {
+        intent: SocdEditIntent,
+        reply: Reply<SocdEditPreview>,
+    },
+    ApplySocdEdit {
+        token: PlanToken,
+        progress: Progress,
+        reply: Reply<EditReportView>,
+    },
+    PreparePresetEdit {
+        intent: PresetEditIntent,
+        reply: Reply<TriggerEditPreview>,
+    },
+    StartDepthView {
+        sink: Arc<dyn DepthSink>,
+        reply: Reply<DepthViewReport>,
+    },
+    CloseStrayTravelTest {
+        reply: Reply<TravelCloseReport>,
+    },
+    ExportProfile {
+        intent: ExportIntent,
+        progress: Progress,
+        reply: Reply<ExportedProfile>,
+    },
+    PrepareImport {
+        intent: ImportIntent,
+        progress: Progress,
+        reply: Reply<ImportPreview>,
+    },
+    ApplyImport {
         token: PlanToken,
         progress: Progress,
         reply: Reply<RestoreReportView>,

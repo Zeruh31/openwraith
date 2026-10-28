@@ -4,7 +4,9 @@
 //! |---|---|---|
 //! | Safety backups | the CLI's folder (`OPENWRAITH_SAFETY_DIR`, else `%LOCALAPPDATA%\OpenWraith\safety-backups`) | `<app local data>/sim/safety-backups` (or `OPENWRAITH_SIM_DIR`) |
 //! | Operation journal | `<app local data>/state` | `<app local data>/sim/state` |
-//! | Settings | `<app config>/settings.json` | the same |
+//! | Settings (also trigger presets, hints shown) | `<app config>/settings.json` | the same |
+//! | Live key-depth marker | `<app local data>/state/travel-test-open` | `<app local data>/sim/state/travel-test-open` |
+//! | Macro library ("this PC") | `<app local data>/macro-library.json` | `<app local data>/sim/macro-library.json` |
 
 use std::path::PathBuf;
 
@@ -31,6 +33,8 @@ pub fn core_config<R: Runtime>(app: &AppHandle<R>) -> Result<CoreConfig, String>
     config.os_locale = sys_locale::get_locale();
     // LICENSE.txt and THIRD-PARTY-NOTICES.txt (`bundle.resources`).
     config.legal_dir = app.path().resource_dir().ok();
+    // The user's trigger presets and the hints shown live in it too.
+    config.settings_path = Some(settings_path(app)?);
     Ok(config)
 }
 

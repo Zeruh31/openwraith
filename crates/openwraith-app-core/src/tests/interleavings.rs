@@ -6,10 +6,16 @@
 //! * nothing is sent while observing or while another program is heard;
 //! * no profile select within 2 s of a setting write (same power cycle);
 //! * the simulator refuses no packet.
+//!
+//! Besides trigger, light, profile-switch and backup operations, the
+//! sequences contain SOCD edits, SOCD pushes from the keyboard (Fn + Right
+//! Shift), stray travel streams (a test another run left open) and live
+//! key-depth views.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use super::harness::Harness;
+use super::harness::{Harness, pos};
 use crate::dto::{PlanToken, RtIntent, SimAction};
 use crate::worker::{Conn, Request};
 
@@ -38,6 +44,21 @@ fn is_select(bytes: &[u8]) -> bool {
     bytes[..6] == [0x21, 0, 0, 0, 0, 0x12]
 }
 
+/// Whether `bytes` opens or closes the travel test (they store nothing).
+fn is_travel(bytes: &[u8]) -> bool {
+    bytes[..5] == [0x21, 0, 0, 0, 0x18] && matches!(bytes[5], 0x02 | 0x03)
+}
+
+/// A live view's frames: it stops at the first one.
+struct StopAtFirst(Arc<crate::shared::Shared>);
+
+impl crate::sink::DepthSink for StopAtFirst {
+    fn send(&self, _frame: crate::dto::DepthFrame) -> bool {
+        self.0.stop_depth(crate::dto::DepthStopReason::Requested);
+        true
+    }
+}
+
 fn run(seed: u64) {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut h = Harness::ready();
@@ -48,7 +69,7 @@ fn run(seed: u64) {
         let packets = h.packets();
         let before = h.worker.conn.clone();
         let mut apply = false;
-        let choice = rng.below(17);
+        let choice = rng.below(19);
         if std::env::var_os("TRACE_SEED").is_some_and(|v| v == seed.to_string().as_str()) {
             eprintln!("step {step}: choice {choice}, conn {:?}", h.worker.conn);
         }
@@ -113,6 +134,7 @@ fn run(seed: u64) {
                         0 => h.apply_trigger(&token, &watch).map(|_| ()),
                         1 => h.apply_light(&token, &watch).map(|_| ()),
                         2 => h.apply_switch(&token, &watch).map(|_| ()),
+                        4 => h.apply_socd(&token, &watch).map(|_| ()),
                         _ => h.apply_all(&token, &watch).map(|_| ()),
                     };
                 }
@@ -174,6 +196,45 @@ fn run(seed: u64) {
                     tokens.push((p.token, 3));
                 }
             }
+            16 => {
+                // A SOCD edit (the power toggled, the pairs kept).
+                if let Some(cache) = h.shared.editors() {
+                    if let crate::ops::editors::TableRead::Ok(state) = &cache.socd.data {
+                        let intent = crate::dto::SocdEditIntent {
+                            power: Some(state.power == 0),
+                            pairs: None,
+                            allow_not_undoable: false,
+                            check_persistence: false,
+                            based_on: cache.socd.revision,
+                        };
+                        if let Ok(p) = h.prepare_socd(intent) {
+                            if let Some(t) = p.token {
+                                tokens.push((t, 4));
+                            }
+                        }
+                    }
+                }
+            }
+            17 => match rng.below(3) {
+                0 => {
+                    let after = Duration::from_millis(rng.below(2000));
+                    h.with_sim(|s| s.press_socd_hotkey_at(after));
+                }
+                1 => {
+                    let at = Duration::from_millis(rng.below(2000) + 1);
+                    h.with_sim(|s| {
+                        s.leave_travel_open();
+                        s.travel_script(pos(46), &[(at, 30)]);
+                    });
+                }
+                _ => {
+                    // A live view (T1 and T2 are user-started packets).
+                    apply = true;
+                    h.with_sim(|s| s.travel_script(pos(68), &[(Duration::from_millis(80), 40)]));
+                    let sink = Arc::new(StopAtFirst(Arc::clone(&h.shared)));
+                    let _ = h.depth_view(sink);
+                }
+            },
             _ => h.advance(Duration::from_millis(rng.below(4000))),
         }
         // Writes only inside an apply step.
@@ -203,10 +264,10 @@ fn run(seed: u64) {
     let (packets, times) = h.with_sim(|s| (s.written().to_vec(), s.sent_times().to_vec()));
     let mut last_write: Option<Duration> = None;
     for (packet, at) in packets.iter().zip(&times) {
-        if !packet.is_write() {
+        let bytes = packet.as_bytes();
+        if !packet.is_write() || is_travel(bytes) {
             continue;
         }
-        let bytes = packet.as_bytes();
         if is_select(bytes) {
             if let Some(w) = last_write {
                 let unplugged_between = unplugs.iter().any(|u| *u >= w && *u <= *at);
@@ -220,6 +281,8 @@ fn run(seed: u64) {
             last_write = Some(*at);
         }
     }
+    // A test another run "left open" is the simulator's own setup.
+    h.with_sim(|s| s.allow_travel_left_open());
     h.assert_clean();
 }
 

@@ -27,7 +27,7 @@ fn commands_ts_declares_exactly_the_rust_commands() {
     let rust = read("app/src-tauri/src/command_names.rs");
     let commands = names(&rust, "pub const COMMANDS: &[&str] = &[", "];");
     let dev = names(&rust, "pub const DEV_COMMANDS: &[&str] = &[", "];");
-    assert_eq!(commands.len(), 32);
+    assert_eq!(commands.len(), 63);
     let ts = read("app/src/ipc/commands.ts");
     assert_eq!(
         names(&ts, "export const COMMAND_NAMES = [", "] as const"),
@@ -278,7 +278,13 @@ fn argument_names_match_the_rust_commands() {
                     assert_eq!(name, "progress", "{command}: the progress channel");
                     with_progress.insert(command.clone());
                 } else {
-                    assert_eq!((command.as_str(), name.as_str()), ("subscribe", "channel"));
+                    assert!(
+                        matches!(
+                            (command.as_str(), name.as_str()),
+                            ("subscribe", "channel") | ("start_depth_view", "channel")
+                        ),
+                        "{command}: a channel other than progress"
+                    );
                 }
                 continue;
             }

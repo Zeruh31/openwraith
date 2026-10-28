@@ -120,6 +120,43 @@ describe("LastReportDialog", () => {
     expect(screen.getByText(en.shell.lastReport.intro).textContent).not.toMatch(/reloaded|closed/);
   });
 
+  it("shows a late import report in import words, and late reports of the new editors", async () => {
+    const call = FIXTURES["import_apply_ok"]?.calls.find((c) => c.command === "apply_import");
+    if (call?.command !== "apply_import" || call.ok === null) throw new Error("no import report");
+    render(<LastReportDialog />);
+    await flush();
+    const end = beginApply();
+    act(() => {
+      statusStore.set({ ...INITIAL_STATUS, busy: { ...BUSY, kind: "import" } });
+    });
+    end();
+    last = { kind: "import", report: call.ok };
+    act(() => {
+      statusStore.set({ ...INITIAL_STATUS, busy: null });
+    });
+    await flush();
+    expect(await screen.findByText(/^Import complete/)).toBeTruthy();
+  });
+
+  it.each(["keymap_edit", "color_edit", "dead_band_edit", "socd_edit"] as const)(
+    "shows the report of a %s whose flow went away",
+    async (kind) => {
+      render(<LastReportDialog />);
+      await flush();
+      const end = beginApply();
+      act(() => {
+        statusStore.set({ ...INITIAL_STATUS, busy: { ...BUSY, kind } });
+      });
+      end();
+      last = { kind: "edit", report: { ...editReport(), safety_backup: { ...editReport().safety_backup, token: `f-${kind}` } } };
+      act(() => {
+        statusStore.set({ ...INITIAL_STATUS, busy: null });
+      });
+      await flush();
+      expect(await screen.findByText(en.shell.lastReport.title)).toBeTruthy();
+    },
+  );
+
   it("never shows a report that existed before the window started", async () => {
     last = { kind: "edit", report: editReport() };
     render(<LastReportDialog />);

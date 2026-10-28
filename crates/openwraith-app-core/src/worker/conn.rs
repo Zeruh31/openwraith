@@ -184,6 +184,8 @@ impl<B: DeviceBackend> Worker<B> {
                 self.profile_seen_at = None;
                 self.reread = false;
                 self.notify_connected = true;
+                self.socd_pushes_seen = 0;
+                self.stray_notified = false;
                 self.clear_snapshot();
                 self.invalidate(PlanInvalidation::Disconnected);
                 self.conn = Conn::Observing;
@@ -216,6 +218,8 @@ impl<B: DeviceBackend> Worker<B> {
         self.snapshot = None;
         self.active_profile = None;
         self.shared.set_snapshot(None);
+        self.shared.set_keys(None);
+        self.shared.set_editors(None);
     }
 
     /// The connection was lost: the session is dropped; the worker looks for

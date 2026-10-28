@@ -223,7 +223,7 @@ impl<B: DeviceBackend> Worker<B> {
     /// Reads the main light again and patches the snapshot. Stops before
     /// the next request once another program is heard (the snapshot stays
     /// as it was, marked stale; the state becomes `OtherProgram`).
-    fn refresh_light(&mut self) {
+    pub(crate) fn refresh_light(&mut self) {
         let Some(mut snapshot) = self.snapshot.clone() else {
             return;
         };

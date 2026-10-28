@@ -21,8 +21,9 @@ import { NoticeToaster } from "./NoticeToaster";
 /** The pages, loaded on first visit; a broken page breaks only its own route. */
 const PAGES: Record<PageId, LazyExoticComponent<ComponentType>> = {
   device: lazy(() => import("../pages/device")),
-  actuation: lazy(() => import("../pages/actuation")),
-  lighting: lazy(() => import("../pages/lighting")),
+  keys: lazy(() => import("../pages/keys")),
+  actuation: lazy(() => import("../pages/actuation/tabs")),
+  lighting: lazy(() => import("../pages/lighting/tabs")),
   backup: lazy(() => import("../pages/backup")),
   settings: lazy(() => import("../pages/settings")),
 };

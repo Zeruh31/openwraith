@@ -1,0 +1,79 @@
+/* The Keys page and its shared parts (prefix keys-). Tabs add their own
+   files (keys-assign-, keys-macros-, keys-advanced-). */
+
+.keys-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.keys-page > .ow-page-header,
+.keys-page > .ow-page-tabs {
+  margin-bottom: 0;
+}
+
+.keys-page__read-at {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+/* ---------- review ---------- */
+
+.keys-review__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.keys-review__title {
+  font-size: var(--text-md);
+}
+
+.keys-entry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.keys-review__slots,
+.keys-review__warnings,
+.keys-review__writes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.keys-review__writes {
+  gap: var(--space-2);
+}
+
+.keys-review__write {
+  padding-left: var(--space-1);
+}
+
+.keys-review__write-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.keys-review__write > .ow-small {
+  display: block;
+}
+
+.keys-review__tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}

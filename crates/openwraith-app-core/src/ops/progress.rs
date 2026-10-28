@@ -25,9 +25,14 @@ pub(crate) enum CancelPolicy {
     Never,
     /// After the current request or table (reads, backups, trigger edits).
     Boundaries,
-    /// A restore: at table boundaries; inside the keymap group, once a group
-    /// table was sent, the group's Fn keymap still goes out.
+    /// A restore or a keymap-group edit: at table boundaries; inside the
+    /// keymap group, once a group table was sent, the writes that keep it
+    /// consistent (the Fn keymap, slots a written key refers to, the macro
+    /// slots after slot 0) still go out.
     Restore,
+    /// At once, in every phase (the live key-depth view: it stores nothing,
+    /// and its guard closes the test on every way out).
+    Always,
 }
 
 /// The progress of one operation.
@@ -128,6 +133,11 @@ impl OpProgress {
         }
     }
 
+    /// The operation's id.
+    pub(crate) fn op(&self) -> &OpId {
+        &self.op
+    }
+
     /// Whether Stop was asked for.
     pub(crate) fn cancel_requested(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
@@ -146,6 +156,13 @@ impl OpProgress {
     fn cancel_state(&self, step: &ProgressStep) -> CancelState {
         if self.policy == CancelPolicy::Never {
             return CancelState::NotCancellable;
+        }
+        if self.policy == CancelPolicy::Always {
+            return if self.cancel_requested() {
+                CancelState::Requested
+            } else {
+                CancelState::Available
+            };
         }
         if self.cancel_requested() {
             if self.policy == CancelPolicy::Restore && self.group_open {

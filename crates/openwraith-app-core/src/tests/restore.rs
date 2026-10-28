@@ -1,14 +1,16 @@
 //! Restores and Undo.
 
+use std::time::Duration;
+
 use openwraith_hid::SimTable;
 use openwraith_hid::protocol::ReadRequest;
 
 use super::harness::{Harness, pos, profile};
 use super::seeds::with_device_info;
 use crate::dto::{
-    AppErrorKind, CancelState, ErrorDetail, FileToken, Headline, ItemResultView, OutcomeView,
-    PersistenceView, PlanActionView, PlanWarningView, ProgressStep, RestoreIntent, RtIntent,
-    SimAction, TableRef,
+    AppErrorKind, CancelState, ErrorDetail, FileToken, Headline, ItemResultView, Notice,
+    OutcomeView, PersistenceView, PlanActionView, PlanInvalidation, PlanWarningView, ProgressStep,
+    RestoreIntent, RtIntent, SimAction, TableRef,
 };
 use crate::worker::Conn;
 
@@ -409,5 +411,42 @@ fn a_file_overwritten_after_it_was_opened_is_read_again() {
         "{error:?}"
     );
     assert_eq!(h.writes(), writes, "nothing was sent");
+    h.assert_clean();
+}
+
+#[test]
+fn a_socd_push_invalidates_a_pending_restore_that_compared_socd() {
+    // The plan was made against the keyboard-wide SOCD power; after Fn +
+    // Right Shift it would stop half-way ("changed after it was planned")
+    // or leave the new power in place, so it must be compared again.
+    let (mut h, file) = changed_after_backup();
+    let preview = h
+        .prepare_restore(intent(&file, None, vec![2, 3, 4]), &h.watch())
+        .unwrap();
+    let writes = h.writes();
+    h.events.clear();
+    h.with_sim(|s| s.press_socd_hotkey_at(Duration::from_millis(10)));
+    h.ticks(3);
+    assert!(
+        h.notices().contains(&Notice::PlanInvalidated {
+            reason: PlanInvalidation::ValuesChanged
+        }),
+        "{:?}",
+        h.notices()
+    );
+    let error = h
+        .apply_restore(&Harness::token(&preview.token), &h.watch())
+        .unwrap_err();
+    assert_eq!(error.kind, AppErrorKind::StalePlan);
+    assert_eq!(h.writes(), writes, "nothing was sent");
+    // Compared again, the plan restores the backup's power too.
+    let preview = h
+        .prepare_restore(intent(&file, None, vec![2, 3, 4]), &h.watch())
+        .unwrap();
+    let report = h
+        .apply_restore(&Harness::token(&preview.token), &h.watch())
+        .unwrap();
+    assert_eq!(report.headline, Headline::Done, "{report:?}");
+    assert!(!h.socd().power, "the backup's power is back");
     h.assert_clean();
 }

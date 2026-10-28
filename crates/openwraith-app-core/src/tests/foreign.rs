@@ -491,3 +491,122 @@ fn a_restore_reads_nothing_more_once_another_program_was_heard() {
     assert_eq!(h.packets(), before, "only listening");
     h.assert_clean();
 }
+
+// ----- the v0.2 editors: nothing more after another program was heard -----
+
+#[test]
+fn a_keymap_edit_sends_nothing_more_once_another_program_was_heard() {
+    let mut h = Harness::ready();
+    let intent = h.keymap_intent(vec![crate::dto::KeymapChangeIntent::Assign {
+        layer: crate::dto::LayerView::Base,
+        key: W,
+        action: crate::dto::ActionValue::Key { usage: 0x05 },
+    }]);
+    let preview = h.prepare_keymap(intent).unwrap();
+    let watch = h.watch();
+    let marks = heartbeat_at_first_write(&h, &watch);
+    let report = h
+        .apply_keymap(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert!(report.foreign_activity.is_some(), "{report:#?}");
+    let marks = marks.lock().unwrap();
+    assert_no_refresh(&h, &watch, marks.first_write.unwrap(), marks.last_library);
+}
+
+#[test]
+fn a_colour_edit_sends_nothing_more_once_another_program_was_heard() {
+    let mut h = Harness::ready();
+    let preview = h
+        .prepare_colors(super::editors::colors(&h, &[(W, "#00ff00")], false))
+        .unwrap();
+    let watch = h.watch();
+    let marks = heartbeat_at_first_write(&h, &watch);
+    let report = h
+        .apply_colors(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert!(report.foreign_activity.is_some(), "{report:#?}");
+    let marks = marks.lock().unwrap();
+    assert_no_refresh(&h, &watch, marks.first_write.unwrap(), marks.last_library);
+}
+
+#[test]
+fn a_dead_band_edit_sends_nothing_more_once_another_program_was_heard() {
+    let mut h = Harness::ready();
+    let preview = h
+        .prepare_dead_band(super::editors::dead_band(&h, &[W], Some(5), None))
+        .unwrap();
+    let watch = h.watch();
+    let marks = heartbeat_at_first_write(&h, &watch);
+    let report = h
+        .apply_dead_band(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert!(report.foreign_activity.is_some(), "{report:#?}");
+    let marks = marks.lock().unwrap();
+    assert_no_refresh(&h, &watch, marks.first_write.unwrap(), marks.last_library);
+}
+
+#[test]
+fn a_socd_edit_sends_nothing_more_once_another_program_was_heard() {
+    let mut h = Harness::ready();
+    let preview = h
+        .prepare_socd(super::editors::socd(&h, Some(true), None))
+        .unwrap();
+    let watch = h.watch();
+    let marks = heartbeat_at_first_write(&h, &watch);
+    let report = h
+        .apply_socd(&Harness::token(&preview.token), &watch)
+        .unwrap();
+    assert!(report.foreign_activity.is_some(), "{report:#?}");
+    let marks = marks.lock().unwrap();
+    assert_no_refresh(&h, &watch, marks.first_write.unwrap(), marks.last_library);
+}
+
+/// The other programs' check runs before the first write of every v0.2
+/// editor (the 2 s gate re-armed between the plan and the write).
+#[test]
+fn the_v02_editors_check_for_other_programs_before_their_first_write() {
+    for editor in ["keymap", "colours", "dead band", "SOCD"] {
+        let mut h = Harness::ready();
+        let token = match editor {
+            "keymap" => {
+                let intent = h.keymap_intent(vec![crate::dto::KeymapChangeIntent::Assign {
+                    layer: crate::dto::LayerView::Base,
+                    key: W,
+                    action: crate::dto::ActionValue::Key { usage: 0x05 },
+                }]);
+                Harness::token(&h.prepare_keymap(intent).unwrap().token)
+            }
+            "colours" => {
+                let intent = super::editors::colors(&h, &[(W, "#00ff00")], false);
+                Harness::token(&h.prepare_colors(intent).unwrap().token)
+            }
+            "dead band" => {
+                let intent = super::editors::dead_band(&h, &[W], Some(5), None);
+                Harness::token(&h.prepare_dead_band(intent).unwrap().token)
+            }
+            _ => {
+                let intent = super::editors::socd(&h, Some(true), None);
+                Harness::token(&h.prepare_socd(intent).unwrap().token)
+            }
+        };
+        h.worker.session.as_mut().unwrap().rearm_gate();
+        let watch = h.watch();
+        match editor {
+            "keymap" => drop(h.apply_keymap(&token, &watch).unwrap()),
+            "colours" => drop(h.apply_colors(&token, &watch).unwrap()),
+            "dead band" => drop(h.apply_dead_band(&token, &watch).unwrap()),
+            _ => drop(h.apply_socd(&token, &watch).unwrap()),
+        }
+        let steps = watch.steps();
+        let check = steps
+            .iter()
+            .position(|s| matches!(s, ProgressStep::CheckingOtherPrograms { .. }));
+        let write = steps
+            .iter()
+            .position(|s| matches!(s, ProgressStep::Writing { .. }));
+        assert!(
+            matches!((check, write), (Some(c), Some(w)) if c < w),
+            "{editor}: {steps:?}"
+        );
+    }
+}

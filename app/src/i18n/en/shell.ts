@@ -33,11 +33,50 @@ export const shell = {
   nav: {
     label: "Pages",
     device: "Keyboard",
-    actuation: "Actuation & Rapid Trigger",
+    keys: "Keys",
+    actuation: "Actuation",
     lighting: "Lighting",
-    backup: "Backup & Restore",
+    backup: "Backup & profiles",
     settings: "Settings",
     unwritten: "Unwritten changes",
+  },
+  /** The tabs of the pages that have tabs (`?tab=`). */
+  tabs: {
+    label: (p: { page: string }) => `Sections of ${p.page}`,
+    unwritten: "Unwritten changes on this tab",
+    pages: {
+      keys: {
+        assign: "Assignments",
+        macros: "Macros",
+        advanced: "Advanced keys",
+      },
+      actuation: {
+        trigger: "Actuation & Rapid Trigger",
+        deadband: "Dead band",
+        socd: "SOCD",
+        depth: "Key depth",
+      },
+      lighting: {
+        effect: "Effect",
+        colors: "Key colours",
+      },
+    },
+  },
+  /** Sections of pages without tabs. */
+  sections: {
+    share: "Share a profile",
+  },
+  /** A tab or section that a later part of this version fills in. */
+  placeholder: {
+    title: "Not built yet",
+    body: "This part of OpenWraith is still being built. It doesn't read or write anything on the keyboard yet.",
+  },
+  /** Unwritten changes, as the shell lists them. */
+  drafts: {
+    where: (p: { page: string; tab: string }) => `${p.page} > ${p.tab}`,
+    entry: (p: { where: string; count: number }) =>
+      p.count === 1 ? `${p.where}: 1 unwritten change` : `${p.where}: ${p.count} unwritten changes`,
+    entryUncounted: (p: { where: string }) => `${p.where}: unwritten changes`,
   },
   header: {
     profileLabel: "Active profile",
@@ -48,6 +87,8 @@ export const shell = {
       blocked: "Writing is paused",
     },
     statusButton: "Keyboard connection details",
+    live: "Live",
+    liveTitle: "The key-depth view is running. Open Actuation > Key depth to stop it.",
   },
   status: {
     starting: "Starting…",
@@ -112,6 +153,10 @@ export const shell = {
       "OpenWraith saves a safety backup before every change and can't do that now, so writing is turned off. Reading still works.",
     staleTitle: "The values shown may be out of date",
     staleBody: "Something changed on the keyboard since it was read. Read it again before changing anything.",
+    strayTravelTitle: "The key-depth view may still be on in the keyboard",
+    strayTravelBody:
+      "An earlier key-depth view may not have been stopped (OpenWraith closed, or the keyboard was disconnected). Typing keeps working; stop it on the Key depth tab.",
+    strayTravelOpen: "Go to Key depth",
     untestedTitle: "Firmware not tested yet",
     untestedBody: (p: { firmware: string; tested: string }) =>
       `This keyboard runs firmware ${p.firmware}; OpenWraith was tested with ${p.tested}. Reading is safe. Check the result after every change.`,
@@ -129,7 +174,7 @@ export const shell = {
     body: "The keyboard's lighting changes to that profile's; no setting is changed.",
     saveWait: (p: { seconds: string }) =>
       `OpenWraith first waits ${p.seconds} for the keyboard to save your last change.`,
-    drafts: (p: { pages: string }) => `Unwritten changes on ${p.pages} will be discarded.`,
+    drafts: "These unwritten changes will be discarded:",
     confirm: (p: { n: number }) => `Switch to profile ${p.n}`,
     already: (p: { n: number }) => `The keyboard is already on profile ${p.n}.`,
   },
@@ -139,6 +184,8 @@ export const shell = {
     connected: "Keyboard connected",
     disconnected: "Keyboard disconnected",
     switched: (p: { n: number }) => `Profile ${p.n} is active`,
+    socdToggled: (p: { on: boolean }) =>
+      p.on ? "SOCD turned on on the keyboard (Fn + Right Shift)." : "SOCD turned off on the keyboard (Fn + Right Shift).",
     switchWarnings: "The keyboard answered unusually; see the technical details.",
   },
   devSim: {

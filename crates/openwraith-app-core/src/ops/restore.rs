@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use openwraith_hid::protocol::ProfileId;
 use openwraith_hid::{
-    Backup, ProfileSet, RestoreOptions, WriteOptions, execute_restore, prepare_restore,
+    Backup, PreparedRestore, ProfileSet, RestoreOptions, WriteOptions, execute_restore,
+    prepare_restore,
 };
 
 use super::consent;
@@ -80,6 +81,39 @@ pub(crate) fn summary_of(
     backup_summary(file, kind, backup, connected, reason)
 }
 
+/// The model and firmware of a file against the connected keyboard: nothing
+/// is sent for a file of another keyboard (the library checks again).
+pub(crate) fn check_device(
+    backup: &Backup,
+    device: Option<&crate::dto::DeviceIdentityView>,
+    allow_firmware_mismatch: bool,
+) -> Result<(), AppError> {
+    let Some(device) = device else {
+        return Ok(());
+    };
+    if backup.device.product != device.product {
+        return Err(AppError::with(
+            AppErrorKind::ModelMismatch,
+            ErrorDetail::ModelMismatch {
+                backup: backup.device.product.clone(),
+                keyboard: device.product.clone(),
+            },
+            "the backup was made on another keyboard model; nothing was sent",
+        ));
+    }
+    if backup.device.firmware != device.firmware && !allow_firmware_mismatch {
+        return Err(AppError::with(
+            AppErrorKind::FirmwareMismatch,
+            ErrorDetail::FirmwareMismatch {
+                backup: backup.device.firmware.clone(),
+                keyboard: device.firmware.clone(),
+            },
+            "the backup was made with other firmware; allow the mismatch to restore anyway",
+        ));
+    }
+    Ok(())
+}
+
 /// The restore scope: the profiles asked for (checked against the backup,
 /// before any traffic), or every profile in the backup.
 fn scope(intent: &RestoreIntent, held: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -131,28 +165,7 @@ impl<B: DeviceBackend> Worker<B> {
         // Model and firmware first: nothing is sent for a backup of another
         // keyboard (the library checks again).
         let device = self.snapshot.as_ref().map(|s| s.device.clone());
-        if let Some(device) = &device {
-            if backup.device.product != device.product {
-                return Err(AppError::with(
-                    AppErrorKind::ModelMismatch,
-                    ErrorDetail::ModelMismatch {
-                        backup: backup.device.product.clone(),
-                        keyboard: device.product.clone(),
-                    },
-                    "the backup was made on another keyboard model; nothing was sent",
-                ));
-            }
-            if backup.device.firmware != device.firmware && !intent.allow_firmware_mismatch {
-                return Err(AppError::with(
-                    AppErrorKind::FirmwareMismatch,
-                    ErrorDetail::FirmwareMismatch {
-                        backup: backup.device.firmware.clone(),
-                        keyboard: device.firmware.clone(),
-                    },
-                    "the backup was made with other firmware; allow the mismatch to restore anyway",
-                ));
-            }
-        }
+        check_device(&backup, device.as_ref(), intent.allow_firmware_mismatch)?;
         let source = summary_of(&intent.source, &backup, kind, &path, device.as_ref());
         self.invalidate(PlanInvalidation::Superseded);
         self.run_op(
@@ -242,51 +255,65 @@ impl<B: DeviceBackend> Worker<B> {
         else {
             return Err(stale(PlanInvalidation::Unknown));
         };
+        self.apply_prepared_restore(&prepared, skipped, sink, OpKind::Restore, "restore")
+    }
+
+    /// Writes a prepared restore or import (`kind`; `reason` names its
+    /// safety backup), after its safety backup was saved and verified, with
+    /// the persistence check.
+    pub(crate) fn apply_prepared_restore(
+        &mut self,
+        prepared: &PreparedRestore,
+        skipped: usize,
+        sink: Arc<dyn ProgressSink>,
+        kind: OpKind,
+        reason: &str,
+    ) -> Result<RestoreReportView, AppError> {
         self.check_writable()?;
-        self.run_op(
-            OpKind::Restore,
-            sink,
-            CancelPolicy::Restore,
-            |w, progress| {
-                w.ensure_quiet(progress)?;
-                let (saved, file) = w.save_safety(prepared.safety(), "restore", progress)?;
-                let profiles: Vec<u8> = prepared
-                    .plan()
-                    .writes()
-                    .map(|(p, _, _)| p.get())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                w.write_journal(OpKind::Restore, profiles, saved.path())?;
-                progress.items = crate::map::sat16(prepared.plan().write_count());
-                let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
-                let report =
-                    execute_restore(session, &prepared, &saved, consent::application(), |p| {
-                        progress.write(p)
-                    });
-                w.remove_journal();
-                w.active_profile = report.active_profile_now;
-                // No read of the result after a reset, a lost connection or
-                // when another program was heard (it acts on our replies).
-                let fatal = w.foreign_heard()
-                    || w.session
-                        .as_ref()
-                        .is_none_or(|s| s.keyboard_reset_seen() || s.connection_lost());
-                if !fatal {
-                    match w.full_read(ReadVia::Op(progress, ReadPurpose::Snapshot)) {
-                        Ok(backup) => {
-                            w.set_snapshot(&backup);
-                        }
-                        Err(ReadFail::Cancelled) => w.reread = true,
-                        Err(fail) => w.read_failed(&fail),
+        self.run_op(kind, sink, CancelPolicy::Restore, |w, progress| {
+            w.ensure_quiet(progress)?;
+            let (saved, file) = w.save_safety(prepared.safety(), reason, progress)?;
+            let profiles: Vec<u8> = prepared
+                .plan()
+                .writes()
+                .map(|(p, _, _)| p.get())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            w.write_journal(kind, profiles, saved.path())?;
+            progress.items = crate::map::sat16(prepared.plan().write_count());
+            let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
+            let report = execute_restore(session, prepared, &saved, consent::application(), |p| {
+                progress.write(p)
+            });
+            w.remove_journal();
+            w.active_profile = report.active_profile_now;
+            // No read of the result after a reset, a lost connection or
+            // when another program was heard (it acts on our replies).
+            let fatal = w.foreign_heard()
+                || w.session
+                    .as_ref()
+                    .is_none_or(|s| s.keyboard_reset_seen() || s.connection_lost());
+            if !fatal {
+                match w.full_read(ReadVia::Op(progress, ReadPurpose::Snapshot)) {
+                    Ok(backup) => {
+                        w.set_snapshot(&backup);
                     }
+                    Err(ReadFail::Cancelled) => w.reread = true,
+                    Err(fail) => w.read_failed(&fail),
                 }
-                let view = restore_report_view(&report, file, skipped);
-                w.shared.set_last_report(LastReport::Restore {
+            }
+            let view = restore_report_view(&report, file, skipped);
+            w.shared.set_last_report(if kind == OpKind::Import {
+                LastReport::Import {
                     report: view.clone(),
-                });
-                Ok(view)
-            },
-        )
+                }
+            } else {
+                LastReport::Restore {
+                    report: view.clone(),
+                }
+            });
+            Ok(view)
+        })
     }
 }

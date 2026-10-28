@@ -924,6 +924,10 @@
   overflow-x: auto;
 }
 
+.ow-keyboard-stage {
+  position: relative;
+}
+
 .ow-keyboard {
   position: relative;
   padding: 0;
@@ -1040,4 +1044,675 @@
 
 .ow-keyboard-wrap--disabled .ow-key {
   cursor: default;
+}
+
+/* ---------- badges (Not yet verified / Kept as read / Applies to all profiles) ---------- */
+
+.ow-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.ow-badge--sm {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.ow-badge--unverified {
+  border-color: var(--warning-fg);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.ow-badge--kept {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.ow-badge--keyboard_wide {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+
+/* ---------- confirm checkbox ---------- */
+
+.ow-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 2px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.ow-confirm--warning {
+  border-color: var(--warning-fg);
+}
+
+.ow-confirm input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  flex: none;
+  accent-color: var(--danger);
+}
+
+.ow-confirm--warning input {
+  accent-color: var(--warning-fg);
+}
+
+.ow-confirm label {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ow-confirm__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--danger);
+}
+
+.ow-confirm--warning .ow-confirm__icon {
+  color: var(--warning-fg);
+}
+
+.ow-confirm--disabled {
+  opacity: 0.7;
+}
+
+/* ---------- action picker ---------- */
+
+.ow-picker-dialog .ow-dialog__body {
+  min-height: min(460px, calc(100vh - 220px));
+}
+
+.ow-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ow-picker__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ow-picker__search-icon {
+  position: absolute;
+  left: var(--space-2);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ow-picker__input {
+  width: 100%;
+  padding-left: 30px;
+}
+
+.ow-picker__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.ow-picker__tab {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ow-picker__tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.ow-picker__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.ow-picker__list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(340px, calc(100vh - 340px));
+  min-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ow-picker__list:empty {
+  display: none;
+}
+
+.ow-picker__group-name {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.ow-picker__option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+
+.ow-picker__option-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ow-picker__option--active {
+  border-left-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.ow-picker__option[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.ow-picker__option[aria-disabled="true"] .ow-picker__option-name {
+  color: var(--text-muted);
+}
+
+.ow-picker__current {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ow-picker__empty {
+  padding: var(--space-3);
+}
+
+.ow-shortcut {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ow-shortcut__modifiers {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ow-shortcut__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.ow-shortcut__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ow-shortcut__toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  font-weight: 600;
+}
+
+.ow-shortcut__toggle[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ow-shortcut__key select {
+  display: block;
+  min-width: 220px;
+  max-width: 100%;
+}
+
+.ow-shortcut__use {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ---------- key picker ---------- */
+
+.ow-keypicker__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.ow-keypicker__combo {
+  position: relative;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.ow-keypicker__combo .ow-input {
+  width: 100%;
+}
+
+.ow-keypicker__list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.ow-keypicker__option {
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.ow-keypicker__option--active {
+  background: var(--accent-weak);
+}
+
+.ow-keypicker__option[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ow-keypicker__none {
+  padding: var(--space-2) var(--space-3);
+}
+
+/* ---------- colour picker ---------- */
+
+.ow-colorpicker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 320px;
+}
+
+.ow-colorpicker--disabled {
+  opacity: 0.6;
+}
+
+.ow-colorpicker__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ow-colorpicker__area {
+  position: relative;
+  height: 160px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background-image: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent);
+  touch-action: none;
+  cursor: crosshair;
+  forced-color-adjust: none;
+}
+
+.ow-colorpicker__area-thumb,
+.ow-colorpicker__hue-thumb {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #000;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.ow-colorpicker__hue {
+  position: relative;
+  height: 16px;
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  touch-action: none;
+  cursor: pointer;
+  forced-color-adjust: none;
+}
+
+.ow-colorpicker__hue-thumb {
+  top: 50%;
+}
+
+.ow-colorpicker__area:focus-visible,
+.ow-colorpicker__hue:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.ow-colorpicker__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ow-colorpicker__preview {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  forced-color-adjust: none;
+}
+
+.ow-colorpicker__hex {
+  width: calc(8ch + 2 * var(--space-2) + 2px);
+}
+
+.ow-colorpicker__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.ow-colorpicker__swatch {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  forced-color-adjust: none;
+}
+
+.ow-colorpicker__swatch[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .ow-colorpicker__area,
+  .ow-colorpicker__hue,
+  .ow-colorpicker__preview,
+  .ow-colorpicker__swatch,
+  .ow-key__swatch {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+
+  .ow-colorpicker__swatch[aria-pressed="true"] {
+    outline-color: Highlight;
+  }
+}
+
+/* ---------- step list ---------- */
+
+.ow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ow-steps__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ow-steps__item {
+  display: grid;
+  grid-template-columns: 2.5em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.ow-steps__item:focus-visible,
+.ow-steps__item:focus-within {
+  border-color: var(--accent);
+}
+
+.ow-steps__number {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-align: right;
+}
+
+.ow-steps__content {
+  min-width: 0;
+}
+
+.ow-steps__actions {
+  display: flex;
+  gap: 2px;
+}
+
+/* ---------- travel gauge ---------- */
+
+.ow-gauge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.ow-gauge__svg {
+  overflow: visible;
+}
+
+.ow-gauge__track {
+  fill: var(--surface-2);
+  stroke: var(--control-border);
+  stroke-width: 1;
+}
+
+.ow-gauge__dead {
+  fill: var(--text-muted);
+  opacity: 0.35;
+}
+
+.ow-gauge__depth {
+  fill: var(--accent);
+  opacity: 0.55;
+}
+
+.ow-gauge__rt {
+  fill: var(--accent-weak);
+  stroke: var(--accent);
+  stroke-dasharray: 3 2;
+}
+
+.ow-gauge__actuation {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.ow-gauge__peak {
+  stroke: var(--warning-fg);
+  stroke-width: 2;
+  stroke-dasharray: 4 2;
+}
+
+.ow-gauge__point {
+  fill: var(--surface);
+  stroke: var(--text);
+  stroke-width: 2;
+}
+
+.ow-gauge__legend {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--text-muted);
+}
+
+@media (forced-colors: active) {
+  .ow-gauge__track,
+  .ow-gauge__point {
+    stroke: CanvasText;
+  }
+
+  .ow-gauge__depth,
+  .ow-gauge__dead,
+  .ow-gauge__rt {
+    fill: Highlight;
+  }
+
+  .ow-gauge__actuation,
+  .ow-gauge__peak {
+    stroke: Highlight;
+  }
+}
+
+/* ---------- keyboard: sublegend, swatch, fill, badge, knob popover ---------- */
+
+.ow-key__sublegend {
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ow-key__swatch {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  left: 3px;
+  height: 30%;
+  min-height: 6px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
+  forced-color-adjust: none;
+}
+
+.ow-key__fill {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  pointer-events: none;
+}
+
+.ow-key__badge {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ow-key--knob-info {
+  cursor: pointer;
+}
+
+.ow-key__knob-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  color: var(--text-muted);
+}
+
+.ow-knob-popover {
+  position: absolute;
+  right: 0;
+  z-index: 30;
+  width: min(340px, 90vw);
+  max-height: 300px;
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  cursor: default;
+  user-select: text;
+}
+
+.ow-knob-popover__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.ow-knob-popover__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ow-knob-popover__close:hover {
+  background: var(--surface-2);
+}
+
+@media (forced-colors: active) {
+  .ow-key__fill {
+    background: Highlight;
+    opacity: 0.4;
+  }
 }

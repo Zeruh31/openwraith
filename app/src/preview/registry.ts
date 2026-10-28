@@ -5,6 +5,7 @@ import type { PageId } from "../routes";
 import { fixtureIds, fixtures } from "./fixtures";
 import { scenarios as actuation } from "./scenarios/actuation";
 import { scenarios as backupRestore } from "./scenarios/backupRestore";
+import { scenarios as keys } from "./scenarios/keys";
 import { scenarios as lighting } from "./scenarios/lighting";
 import { scenarios as shell } from "./scenarios/shell";
 import type { Fixture, PreviewScenario } from "./types";
@@ -17,9 +18,27 @@ export interface ScenarioGroup {
 
 /** The route a bare fixture opens on, from its id. */
 export function routeForFixture(id: string): string {
-  if (id.startsWith("trigger_")) return "#/actuation";
+  if (id.startsWith("trigger_") || id.startsWith("presets_")) return "#/actuation";
+  if (id.startsWith("dead_band_")) return "#/actuation?tab=deadband";
+  if (id.startsWith("socd_")) return "#/actuation?tab=socd";
+  if (id.startsWith("depth_")) return "#/actuation?tab=depth";
   if (id.startsWith("light_")) return "#/lighting";
-  if (id.startsWith("backup_") || id.startsWith("restore_") || id === "safety_list" || id === "undo_preview") {
+  if (id.startsWith("colors_")) return "#/lighting?tab=colors";
+  if (id.startsWith("keys_")) {
+    if (id.includes("advanced")) return "#/keys?tab=advanced";
+    if (id.includes("slot0") || id.includes("cleared") || id.includes("checked") || id.includes("library")) {
+      return "#/keys?tab=macros";
+    }
+    return "#/keys";
+  }
+  if (
+    id.startsWith("backup_") ||
+    id.startsWith("restore_") ||
+    id.startsWith("export_") ||
+    id.startsWith("import_") ||
+    id === "safety_list" ||
+    id === "undo_preview"
+  ) {
     return "#/backup";
   }
   return "#/device";
@@ -28,6 +47,7 @@ export function routeForFixture(id: string): string {
 /** The scenario groups shown in the picker. */
 export const SCENARIO_GROUPS: readonly ScenarioGroup[] = [
   { page: "device", scenarios: shell },
+  { page: "keys", scenarios: keys },
   { page: "actuation", scenarios: actuation },
   { page: "lighting", scenarios: lighting },
   { page: "backup", scenarios: backupRestore },

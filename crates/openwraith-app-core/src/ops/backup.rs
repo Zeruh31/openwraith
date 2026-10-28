@@ -23,7 +23,7 @@ use crate::worker::{PendingPlan, PlanKind, Worker, stale};
 
 impl<B: DeviceBackend> Worker<B> {
     /// The destination of a backup, by token.
-    fn destination(&self, token: &FileToken) -> Result<(PathBuf, FileRef), AppError> {
+    pub(crate) fn destination(&self, token: &FileToken) -> Result<(PathBuf, FileRef), AppError> {
         let files = self.shared.files();
         match files.get(token) {
             Some(file) if file.kind == FileKind::Destination => {

@@ -6,8 +6,46 @@ import { fixture as backup_all_cancelled } from "./backup_all_cancelled";
 import { fixture as backup_all_ok } from "./backup_all_ok";
 import { fixture as backup_all_preview } from "./backup_all_preview";
 import { fixture as close_requested } from "./close_requested";
+import { fixture as colors_apply_ok } from "./colors_apply_ok";
+import { fixture as colors_preview_not_shown } from "./colors_preview_not_shown";
+import { fixture as colors_preview_switch } from "./colors_preview_switch";
+import { fixture as colors_ready } from "./colors_ready";
+import { fixture as dead_band_apply_ok } from "./dead_band_apply_ok";
+import { fixture as dead_band_preview } from "./dead_band_preview";
+import { fixture as dead_band_ready } from "./dead_band_ready";
+import { fixture as dead_band_refused_range } from "./dead_band_refused_range";
+import { fixture as depth_live } from "./depth_live";
+import { fixture as depth_stopped_channel_closed } from "./depth_stopped_channel_closed";
+import { fixture as depth_stopped_no_movement } from "./depth_stopped_no_movement";
+import { fixture as depth_stopped_other_program } from "./depth_stopped_other_program";
+import { fixture as depth_stopped_page_left } from "./depth_stopped_page_left";
+import { fixture as depth_stopped_profile_changed } from "./depth_stopped_profile_changed";
+import { fixture as depth_stopped_reset } from "./depth_stopped_reset";
+import { fixture as depth_stopped_window_hidden } from "./depth_stopped_window_hidden";
+import { fixture as depth_stray_marker } from "./depth_stray_marker";
+import { fixture as export_done } from "./export_done";
+import { fixture as export_needs_switch } from "./export_needs_switch";
 import { fixture as fault } from "./fault";
+import { fixture as import_apply_ok } from "./import_apply_ok";
+import { fixture as import_keys_blocked_other } from "./import_keys_blocked_other";
+import { fixture as import_preview } from "./import_preview";
+import { fixture as import_refused_critical } from "./import_refused_critical";
+import { fixture as import_summary } from "./import_summary";
 import { fixture as interrupted } from "./interrupted";
+import { fixture as keys_apply_advanced } from "./keys_apply_advanced";
+import { fixture as keys_apply_cancelled_after_slot0 } from "./keys_apply_cancelled_after_slot0";
+import { fixture as keys_apply_checked } from "./keys_apply_checked";
+import { fixture as keys_apply_failed_cleared } from "./keys_apply_failed_cleared";
+import { fixture as keys_apply_ok } from "./keys_apply_ok";
+import { fixture as keys_library_invalid } from "./keys_library_invalid";
+import { fixture as keys_preview_advanced } from "./keys_preview_advanced";
+import { fixture as keys_preview_advanced_edit } from "./keys_preview_advanced_edit";
+import { fixture as keys_preview_assign } from "./keys_preview_assign";
+import { fixture as keys_preview_new_on_macro1 } from "./keys_preview_new_on_macro1";
+import { fixture as keys_preview_slot0 } from "./keys_preview_slot0";
+import { fixture as keys_ready } from "./keys_ready";
+import { fixture as keys_refused_critical } from "./keys_refused_critical";
+import { fixture as keys_refused_not_undoable } from "./keys_refused_not_undoable";
 import { fixture as light_apply_brightness_only } from "./light_apply_brightness_only";
 import { fixture as light_apply_ok } from "./light_apply_ok";
 import { fixture as light_apply_verify_failed } from "./light_apply_verify_failed";
@@ -19,6 +57,11 @@ import { fixture as lost } from "./lost";
 import { fixture as observing } from "./observing";
 import { fixture as open_failed } from "./open_failed";
 import { fixture as other_program } from "./other_program";
+import { fixture as presets_apply_ok } from "./presets_apply_ok";
+import { fixture as presets_preview } from "./presets_preview";
+import { fixture as presets_ready } from "./presets_ready";
+import { fixture as presets_save_ok } from "./presets_save_ok";
+import { fixture as presets_save_refused } from "./presets_save_refused";
 import { fixture as profile_switch } from "./profile_switch";
 import { fixture as profile_switch_refused } from "./profile_switch_refused";
 import { fixture as reading } from "./reading";
@@ -39,6 +82,11 @@ import { fixture as restore_summary_all } from "./restore_summary_all";
 import { fixture as safety_list } from "./safety_list";
 import { fixture as searching } from "./searching";
 import { fixture as several_keyboards } from "./several_keyboards";
+import { fixture as socd_apply_ok } from "./socd_apply_ok";
+import { fixture as socd_preview } from "./socd_preview";
+import { fixture as socd_ready } from "./socd_ready";
+import { fixture as socd_ready_pairs } from "./socd_ready_pairs";
+import { fixture as socd_toggled } from "./socd_toggled";
 import { fixture as trigger_apply_maybe_lost } from "./trigger_apply_maybe_lost";
 import { fixture as trigger_apply_ok } from "./trigger_apply_ok";
 import { fixture as trigger_nothing_to_do } from "./trigger_nothing_to_do";
@@ -58,8 +106,46 @@ export const fixtures: Record<string, Fixture> = {
   backup_all_ok,
   backup_all_preview,
   close_requested,
+  colors_apply_ok,
+  colors_preview_not_shown,
+  colors_preview_switch,
+  colors_ready,
+  dead_band_apply_ok,
+  dead_band_preview,
+  dead_band_ready,
+  dead_band_refused_range,
+  depth_live,
+  depth_stopped_channel_closed,
+  depth_stopped_no_movement,
+  depth_stopped_other_program,
+  depth_stopped_page_left,
+  depth_stopped_profile_changed,
+  depth_stopped_reset,
+  depth_stopped_window_hidden,
+  depth_stray_marker,
+  export_done,
+  export_needs_switch,
   fault,
+  import_apply_ok,
+  import_keys_blocked_other,
+  import_preview,
+  import_refused_critical,
+  import_summary,
   interrupted,
+  keys_apply_advanced,
+  keys_apply_cancelled_after_slot0,
+  keys_apply_checked,
+  keys_apply_failed_cleared,
+  keys_apply_ok,
+  keys_library_invalid,
+  keys_preview_advanced,
+  keys_preview_advanced_edit,
+  keys_preview_assign,
+  keys_preview_new_on_macro1,
+  keys_preview_slot0,
+  keys_ready,
+  keys_refused_critical,
+  keys_refused_not_undoable,
   light_apply_brightness_only,
   light_apply_ok,
   light_apply_verify_failed,
@@ -71,6 +157,11 @@ export const fixtures: Record<string, Fixture> = {
   observing,
   open_failed,
   other_program,
+  presets_apply_ok,
+  presets_preview,
+  presets_ready,
+  presets_save_ok,
+  presets_save_refused,
   profile_switch,
   profile_switch_refused,
   reading,
@@ -91,6 +182,11 @@ export const fixtures: Record<string, Fixture> = {
   safety_list,
   searching,
   several_keyboards,
+  socd_apply_ok,
+  socd_preview,
+  socd_ready,
+  socd_ready_pairs,
+  socd_toggled,
   trigger_apply_maybe_lost,
   trigger_apply_ok,
   trigger_nothing_to_do,

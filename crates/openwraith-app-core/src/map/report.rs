@@ -1,8 +1,8 @@
 //! Reports of operations as views.
 
 use openwraith_hid::{
-    EditReport, ItemReport, ItemResult, Outcome, Persistence, RestoreReport, SelectOutcome,
-    SlotRef, WriteWarning,
+    ClearedMacro, DanglingBinding, EditReport, ItemReport, ItemResult, Outcome, Persistence,
+    PersistenceCheck, RestoreReport, SelectOutcome, SlotRef, WriteWarning,
 };
 use openwraith_protocol::{Mismatch, MismatchKind, TableId};
 
@@ -162,11 +162,53 @@ pub(crate) fn headline(
     }
 }
 
+/// The persistence check of a report.
+fn persistence_view(check: &PersistenceCheck) -> PersistenceCheckView {
+    PersistenceCheckView {
+        profiles: check.profiles.clone(),
+        persisted: sat16(check.persisted),
+        lost: sat16(check.lost),
+        not_checked: sat16(check.not_checked),
+    }
+}
+
+/// Macro slots a stop part-way left empty.
+fn cleared_views(cleared: &[ClearedMacro]) -> Vec<ClearedMacroView> {
+    cleared
+        .iter()
+        .map(|c| ClearedMacroView {
+            profile: c.profile,
+            slot: c.slot.get(),
+        })
+        .collect()
+}
+
+/// Keys a stop part-way left referring to an empty slot.
+fn dangling_views(dangling: &[DanglingBinding]) -> Vec<DanglingBindingView> {
+    dangling
+        .iter()
+        .map(|d| DanglingBindingView {
+            profile: d.profile,
+            layer: layer_view(d.layer),
+            key: key_ref_index(d.index),
+            slot: table_ref(match d.slot {
+                SlotRef::Macro(slot) => TableId::Macro { slot },
+                SlotRef::Advanced(slot) => TableId::AdvancedKey { slot },
+            }),
+        })
+        .collect()
+}
+
 /// An edit report.
 pub(crate) fn edit_report_view(report: &EditReport, safety_backup: FileRef) -> EditReportView {
     let anything_written = report.anything_written();
     EditReportView {
-        headline: headline(report.outcome, 0, report.maybe_lost(), anything_written),
+        headline: headline(
+            report.outcome,
+            report.lost(),
+            report.maybe_lost(),
+            anything_written,
+        ),
         outcome: outcome(report.outcome),
         error: report.error.as_ref().map(AppError::from),
         profile: report.profile,
@@ -176,6 +218,10 @@ pub(crate) fn edit_report_view(report: &EditReport, safety_backup: FileRef) -> E
         safety_backup,
         foreign_activity: report.foreign_activity.map(foreign),
         anything_written,
+        persistence: report.persistence.as_ref().map(persistence_view),
+        cancel_requested: report.cancel_requested,
+        cleared_macros: cleared_views(&report.cleared_macros),
+        dangling: dangling_views(&report.dangling),
     }
 }
 
@@ -226,12 +272,7 @@ pub(crate) fn restore_report_view(
                 items: p.items.iter().map(item).collect(),
             })
             .collect(),
-        persistence: report.persistence.as_ref().map(|p| PersistenceCheckView {
-            profiles: p.profiles.clone(),
-            persisted: sat16(p.persisted),
-            lost: sat16(p.lost),
-            not_checked: sat16(p.not_checked),
-        }),
+        persistence: report.persistence.as_ref().map(persistence_view),
         final_check: report.final_check.as_ref().map(|f| FinalCheckView {
             profiles: f.profiles.clone(),
             mismatches: f
@@ -247,27 +288,8 @@ pub(crate) fn restore_report_view(
         safety_backup,
         foreign_activity: report.foreign_activity.map(foreign),
         anything_written,
-        cleared_macros: report
-            .cleared_macros
-            .iter()
-            .map(|c| ClearedMacroView {
-                profile: c.profile,
-                slot: c.slot.get(),
-            })
-            .collect(),
-        dangling: report
-            .dangling
-            .iter()
-            .map(|d| DanglingBindingView {
-                profile: d.profile,
-                layer: layer_view(d.layer),
-                key: key_ref_index(d.index),
-                slot: table_ref(match d.slot {
-                    SlotRef::Macro(slot) => TableId::Macro { slot },
-                    SlotRef::Advanced(slot) => TableId::AdvancedKey { slot },
-                }),
-            })
-            .collect(),
+        cleared_macros: cleared_views(&report.cleared_macros),
+        dangling: dangling_views(&report.dangling),
     }
 }
 

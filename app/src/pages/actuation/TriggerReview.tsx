@@ -41,10 +41,12 @@ export interface TriggerReviewProps {
   leftOut: number;
   /** The keyboard's distance unit, in micrometres. */
   unitUm: number;
+  /** The preset the plan comes from, if any. */
+  presetName?: string | null | undefined;
 }
 
 /** What the trigger edit will write. */
-export function TriggerReview({ preview, leftOut, unitUm }: TriggerReviewProps) {
+export function TriggerReview({ preview, leftOut, unitUm, presetName = null }: TriggerReviewProps) {
   const dict = useDict();
   const format = useFormat();
   const t = dict.actuation.review;
@@ -72,6 +74,7 @@ export function TriggerReview({ preview, leftOut, unitUm }: TriggerReviewProps) 
   ];
   return (
     <div className="ow-stack act-review">
+      {presetName === null ? null : <p className="ow-strong">{t.preset({ name: presetName })}</p>}
       <p>{t.intro({ profile: preview.profile })}</p>
       {changing.length === 0 ? null : (
         <Table

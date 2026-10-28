@@ -33,6 +33,9 @@ pub struct CoreConfig {
     /// Where the installer put the license files (`LICENSE.txt` and
     /// [`NOTICES_FILE`]): the app's resource directory.
     pub legal_dir: Option<PathBuf>,
+    /// The settings file (`settings.json`), which also holds the user's
+    /// trigger presets and the hints shown; `None`: presets cannot be saved.
+    pub settings_path: Option<PathBuf>,
 }
 
 /// The third-party notices shipped with the app (next to `LICENSE.txt`).
@@ -54,6 +57,7 @@ impl CoreConfig {
             fixed_time: None,
             token_seed: None,
             legal_dir: None,
+            settings_path: None,
         }
     }
 
@@ -99,6 +103,13 @@ impl CoreConfig {
     /// use [`journal_path`](Self::journal_path), never touch it).
     pub(crate) fn interrupted_path(&self) -> PathBuf {
         self.state_dir.join("interrupted-operation.json")
+    }
+
+    /// The marker of an open live key-depth view: written before the test
+    /// is opened and removed after an acknowledged close, so that a test a
+    /// crashed run left open is noticed at the next start.
+    pub(crate) fn travel_marker_path(&self) -> PathBuf {
+        self.state_dir.join("travel-test-open")
     }
 
     /// Now, or the fixed time.

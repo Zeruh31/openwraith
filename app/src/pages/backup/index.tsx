@@ -1,7 +1,8 @@
-// The Backup & Restore page: back up (all profiles or the active one),
+// The Backup & profiles page: back up (all profiles or the active one),
 // restore a backup (choose → profiles → compare → review → confirm →
-// progress → report) and the list of safety backups. `#/backup?restore=<token>`
-// (Undo, the interrupted-operation banner) opens that backup in the wizard.
+// progress → report), share a profile (export, import) and the list of
+// safety backups. `#/backup?restore=<token>` (Undo, the interrupted-operation
+// banner) opens that backup in the wizard.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -15,6 +16,7 @@ import type { BackupDemo } from "./demo";
 import { useDemoAction } from "./demo";
 import { RestoreCard } from "./RestoreCard";
 import { SafetyBackups } from "./SafetyBackups";
+import ShareProfile from "./share";
 import { useBackupSource } from "./useBackupSource";
 import "./backup.css";
 
@@ -97,6 +99,12 @@ export default function BackupRestorePage() {
           }}
         />
       </div>
+      <ShareProfile
+        demo={demo}
+        onImported={() => {
+          setSafetyKey((key) => key + 1);
+        }}
+      />
       <SafetyBackups
         reloadKey={safetyKey}
         onRestore={(entry) => {

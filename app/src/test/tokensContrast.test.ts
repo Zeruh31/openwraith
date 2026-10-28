@@ -50,6 +50,16 @@ const TEXT_PAIRS: [string, string][] = [
   ["key-text", "key-bg"],
   ["key-text", "key-selected-bg"],
   ["accent", "accent-weak"],
+  // Badges (Not yet verified, Kept as read, Applies to all profiles).
+  ["warning-fg", "warning-bg"],
+  ["text-muted", "surface-2"],
+  // Keycap sublegends, badges and markers; the picker's active option.
+  ["text-muted", "key-bg"],
+  ["text-muted", "key-selected-bg"],
+  ["warning-fg", "key-bg"],
+  ["accent", "key-bg"],
+  ["text", "accent-weak"],
+  ["text-muted", "accent-weak"],
 ];
 
 const UI_PAIRS: [string, string][] = [

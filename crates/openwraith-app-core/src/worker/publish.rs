@@ -3,7 +3,7 @@
 use super::{Conn, Worker};
 use crate::backend::DeviceBackend;
 use crate::config::TESTED_FIRMWARE;
-use crate::dto::{DeviceStatus, WriteBlockReason, WriteGate};
+use crate::dto::{DeviceStatus, TravelStateView, TravelStatusView, WriteBlockReason, WriteGate};
 
 impl<B: DeviceBackend> Worker<B> {
     /// Why settings may not be written now (empty: they may).
@@ -62,6 +62,21 @@ impl<B: DeviceBackend> Worker<B> {
             close_requested: false,
             interrupted: None,
             sim: self.sim,
+            travel: self.travel_status(),
+        }
+    }
+
+    /// Whether a key-depth test is (or may be) open on the keyboard.
+    pub(crate) fn travel_status(&self) -> TravelStatusView {
+        let session = self.session.as_ref();
+        TravelStatusView {
+            state: match session.map(openwraith_hid::Session::travel_state) {
+                Some(openwraith_hid::TravelState::Open) => TravelStateView::Open,
+                Some(openwraith_hid::TravelState::MaybeOpen) => TravelStateView::MaybeOpen,
+                Some(openwraith_hid::TravelState::Closed) | None => TravelStateView::Closed,
+            },
+            stray_reports: session.map_or(0, |s| crate::map::sat32(s.stray_travel_since_gate())),
+            marker_left: self.shared.travel_marker_left(),
         }
     }
 

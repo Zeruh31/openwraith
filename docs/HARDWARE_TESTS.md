@@ -5,7 +5,7 @@ them opens a HID device. The commands that write have therefore only been
 checked against the simulator. This checklist is run **by hand** on a real
 Wraith W75, in order: H0-H11 for the Phase 2 writes, H12-H25 for the v0.2
 editors of the CLI, H26-H27 for the fixes made after them, A1-A10 for the
-desktop app. Record the full output of every command (add `--verbose` for
+desktop app, A11-A22 for its v0.2 editors. Record the full output of every command (add `--verbose` for
 session statistics) and keep every file it writes.
 
 File names below are examples; use your own. `openwraith` is
@@ -864,6 +864,248 @@ Safety backups go to the same folder as the CLI's.
   the cable while "Waiting for the keyboard to save" is shown. Pass: the
   report says the change may not have been saved (MAY BE LOST), the app
   shows the keyboard as disconnected and reconnects when plugged in again.
+
+## Desktop app editors (A11-A22, Phase 5b-1)
+
+The v0.2 editors of the app (Keys, Actuation > Presets / Dead band / SOCD /
+Key depth, Lighting > Key colours, Backup & profiles > Share a profile) use
+the library write paths that H12-H27 checked with the CLI. These tests check
+what the app adds on top: the plan in words, the order of the writes and
+their reasons, the reports and their Undo, the stops of the live view and
+the SOCD push. So far these screens have run only against the simulator and
+recorded fixtures. The tests are ordered from the lowest risk up.
+
+Build with `pwsh tools/release-build.ps1`, then install
+`target\release\bundle\nsis\OpenWraith_0.1.0_x64-setup.exe` (it replaces
+the A1 install; the version number is still 0.1.0, the new build is the one
+with a **Keys** page) or run `target\release\openwraith-app.exe`. Same
+preconditions as above (vendor site closed, cable, one keyboard); never run
+the CLI while the app is open. To see every screen of this section first
+without the keyboard, run the preview (`npm --prefix app run dev:preview`,
+http://localhost:1421, the **Preview** button lists the scenarios).
+
+Profile 4 is the spare profile for the edits and profile 3 receives the
+import (as in H26 and H23); profiles 1 and 2 are not edited. Every write
+opens its review first: tick "Every wraith.software tab is closed", read the
+plan, wait until the write button (**Write to keyboard**, or **Restore …** /
+**Import …**) is armed (about half a second), then click it. "Check that
+the keyboard kept it" is never pre-ticked; leave it off unless a step says
+otherwise. Every report has **Undo…**: it opens the restore review of the
+safety backup saved just before that write (in the CLI's folder,
+`%LOCALAPPDATA%\OpenWraith\safety-backups`; the Safety backups section of
+Backup & profiles lists them too). If anything looks wrong, stop and use it.
+A21 puts all four profiles back at the end anyway; if the app itself
+misbehaves, close it and run `openwraith restore a11-start.owbackup.json`.
+
+- **A11. Setup and all-profile backup.** With the app closed:
+
+  ```text
+  openwraith backup --all-profiles -o before-a11.owbackup.json
+  openwraith profile select 4
+  openwraith show macros
+  openwraith set macro --slot 0 --steps "Z+, Z-"
+  openwraith profile select 1
+  ```
+
+  The `set macro --slot 0` gives Macro 1 (slot 0) of profile 4 a macro for
+  A18: the app writes Macro 1 only when it already holds one (a new macro
+  goes into Macros 2-10 first). Skip it if `show macros` already lists a
+  macro in slot 0; if slots 1-9 hold macros, its plan re-sends them (H26).
+  Optional and read-only: `openwraith monitor --duration 20s` while you
+  press Fn + 3, Fn + 4 and Fn + 1; record the profile pushes (the labels of
+  Fn + 3 and Fn + 4 are still unverified). Then start the app. Pass: no
+  "Simulator" chip in the header; the nav reads Keyboard · Keys · Actuation
+  · Lighting · Backup & profiles · Settings; Keys shows profile 1's
+  assignments ("Read at …") and its tip once. Switch to profile 4 in the
+  header (switch consent), then Backup & profiles > **Back up all four
+  profiles…**, saved as `a11-start.owbackup.json`. Pass: the lighting goes
+  through the other profiles and back to 4. This file is the rollback point
+  of A12-A20.
+- **A12. Key depth view (nothing stored).** Actuation > Key depth.
+  1. Tick the vendor box, **Start**. Press W slowly to the bottom, tap Esc,
+     hold W and A. Pass: the header shows **Live** and the profile switcher
+     is disabled; the caps fill from the top with their depth (about
+     3.40 mm at the bottom), the deepest point stays with a "max" chip, the
+     followed key gets a gauge and a 5-second strip chart; slow presses
+     update about 14 times a second. While the app has the focus, the
+     pressed keys neither scroll the page nor press buttons. The marker
+     `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\travel-test-open`
+     exists while the view runs. Switch to Notepad and type a sentence:
+     typing works (Q33). Back in the app, **Stop**. Pass: "Stopped.", the
+     pill is gone, the marker file is gone.
+  2. **Start**, then click the **Dead band** tab. Pass: the **Live** pill
+     disappears at once, the profile switcher works again, no "The key-depth
+     view may still be on" banner; back on Key depth it says "Not running."
+  3. **Start**, minimise the window (Windows + Down or the title bar),
+     wait 3 s, bring it back. Pass: "Stopped because the window was
+     hidden."
+  4. **Start**, press Fn + 2. Pass: "Stopped: the keyboard switched
+     profiles.", the header shows profile 2. Switch back to profile 4 in
+     the header.
+  5. Optional, a view left open by a crash: **Start**, then end OpenWraith
+     in Task Manager (End task) while the view runs. Type in Notepad
+     (record whether it works). Start OpenWraith again. Pass: the banner
+     "The key-depth view may still be on in the keyboard" with **Go to Key
+     depth**; on that tab tick the vendor box and click **Stop it**: "The
+     keyboard's key-depth view is stopped.", the banner is gone. If no
+     banner appears, record it, close the app and run `openwraith travel
+     --close` (a close while closed is harmless, H13 step 3).
+
+  Afterwards, with the app closed, `openwraith monitor --duration 10s`
+  while pressing keys shows no key-depth reports.
+- **A13. Key colours and Undo (profile 4).** Lighting > Key colours. Click
+  Left, Down, Up and Right (a click toggles a key), pick blue in the colour
+  panel, **Fill selection**. Pass: the four caps turn blue in the draft and
+  each key's description reads "Now …; after writing blue, #0000FF (not
+  written yet)". Press Ctrl+Z (the draft goes back, announced) and Ctrl+Y
+  (blue again). If the effect is not Custom, a callout names the current
+  effect: tick "Also switch the effect to Custom when writing" (never
+  pre-ticked). **Review and write…**. Pass: the Now / After writing mini
+  boards, one change group (4 keys to blue), "Key colours (table 1)" in
+  the technical details, the switch to Custom only if ticked; after the
+  write the four LEDs are blue (LED slot = key index, H14) and the other
+  keys keep their colours. Then **Undo…** > **Restore …**: the colours (and
+  the effect) are back as before; "Other stored colours" kept as read are
+  unchanged.
+- **A14. Dead band (profile 4).** Actuation > Dead band. Select W, set the
+  top dead zone to 0.10 mm and the bottom one to 0.20 mm; the gauge shows
+  both zones. **Review and write…**. Pass: "Change the dead band of 1 key
+  on profile 4?", no "all profiles" badge, one write. Tick "Check that the
+  keyboard kept it" here (the one test that exercises it): the report says
+  the change was kept after a switch to profile 1 and back (the lighting
+  changes briefly). After **Read again** W shows 0.10 / 0.20 mm and still
+  types normally. **Undo…** > **Restore 1 change**: W back to its old
+  values.
+- **A15. SOCD, with Fn + Right Shift while the tab is open (profile 4).**
+  Actuation > SOCD. Before editing: the switch carries "Applies to all
+  profiles", the pairs are titled "Pairs on profile 4", the mode menu marks
+  modes 2 and 3 "Not yet verified". Do not press Fn + Right Shift while a
+  write runs.
+  1. Turn SOCD on and click the quick pair **A + D** (mode 1, Last input
+     wins). **Review and write…**. Pass: "SOCD: off → on" with the note
+     that this changes it on every profile, then the pair on profile 4;
+     written, verified. In Notepad: hold A (a repeats), press D: only d
+     repeats; let go of D: a again.
+  2. With no draft and the tab open, press Fn + Right Shift. Pass: the toast
+     "SOCD turned off on the keyboard (Fn + Right Shift).", the switch shows
+     off and the note "SOCD was turned off with Fn + Right Shift. The switch
+     shows it now." Press it again: "turned on", the switch and the note
+     follow (the note never contradicts the switch).
+  3. Set pair 1 to mode 4, **Review and write…**, and while the review is
+     open (before Write) press Fn + Right Shift. Pass: the review says
+     "This plan is out of date: …" and cannot write. Close it, press Fn +
+     Right Shift again (on), review again: SOCD stays on, pair 1 mode 1 → 4.
+     Write; record what mode 4 does with A and D held (H21: as named).
+  4. Roll back: Backup & profiles > Safety backups, restore the SOCD safety
+     backup made before step 1 (the older one). Pass: SOCD off on every
+     profile, no pair on profile 4.
+- **A16. Trigger presets (profile 4).** Actuation > Actuation & Rapid
+  Trigger > **Presets…**: five built-in presets with their values. Choose
+  **Competitive**, apply to **WASD**. Pass: the review says "Preset:
+  Competitive", W, A, S, D to 0.40 mm with Rapid Trigger 0.10 mm, one
+  packet per key (H15); written; typing on them feels it. **Undo…** brings
+  the old values back. Then select W, set 1.20 mm and Rapid Trigger 0.30 mm
+  in the editor (draft only), **Presets…** > **Save as a preset**, name
+  "A16": it is listed under "Your presets (this PC)" and Settings > Trigger
+  presets counts it. Delete it and **Discard** the draft. Saving and
+  deleting send nothing to the keyboard.
+- **A17. Base-layer remap and Undo (profile 4).** Keys > Assignments, Base
+  layer. Select Caps, **Change…**, Keys tab, Left Ctrl; select F12,
+  **Change…**, Media, Mute. Pass: the caps show the new action in the
+  accent colour with the original as a small second line; the selected-key
+  panel shows Now and After writing. **Review and write…**. Pass: Layer |
+  Key | Now | New with both keys; "What OpenWraith writes, in this order":
+  the key assignments, then the Fn layer marked "Unchanged" with the reason
+  that the keyboard keeps changed assignments only when a complete Fn layer
+  follows them (20 packets in all, H17); no profile switch. After the
+  write: Caps + C copies in Notepad, F12 mutes; Fn + 1: Caps is Caps Lock
+  again on profile 1 (per profile); back to profile 4. **Undo…** >
+  **Restore …**: Caps and F12 as before. Checks without writing: the Fn key
+  can't be selected (its tooltip says why); the knob's popover lists its
+  entries "Kept as read"; on the Fn layer, selecting 2 shows the danger
+  callout "Fn + 2 … switch to profile 2 while profile 4 is active" with a
+  checkbox, and **Change…** stays disabled until it is ticked. Do not tick
+  it; **Discard**.
+- **A18. A recorded macro, then a Macro 1 write with Macros 2 and 3 in use
+  (profile 4).** Keys > Macros; Macro 1 shows A11's macro (`Z`, "No key
+  runs this macro") with the note that writing Macro 1 empties Macros
+  2-10.
+  1. **New macro…**, key Base layer PgUp, **Record**, type `ab`; the
+     recording stops 2 s after the last key (steps: press A, release A,
+     press B, release B; waits as typed). Plays once. A second **New
+     macro…** on PgDn, recording `c`. **Review and write…**. Pass: "Change
+     macros on profile 4?"; the two macros go into Macros 2 and 3 (record
+     the slots the plan names; Macro 1 is not written), then the key
+     assignments and the unchanged Fn layer. After the write, "Try it":
+     PgUp types `ab`, PgDn types `c`.
+  2. **Edit** Macro 1: record `x` in place of its steps and let it run from
+     Home (the key option in the editor). **Review and write…**. Pass: the
+     plan writes Macro 1, then Macro 2 and Macro 3 marked "Unchanged,
+     written again: writing Macro 1 makes the keyboard clear Macros 2–10.",
+     then the key assignments with the Fn layer. Write. Pass: the report
+     lists no emptied macro and no key left on an empty slot; Home types
+     `x`, PgUp still `ab`, PgDn still `c`; after **Read again** Macros 2
+     and 3 still hold their steps. A Macro 2 or 3 shown empty, or PgUp /
+     PgDn doing nothing, means the re-send did not work: record the report
+     and use **Undo…** (the restore re-sends them too).
+
+  Keep the three macros for A20.
+- **A19. An advanced key (DKS), then its deletion (profile 4).** Keys >
+  Advanced keys > **Dynamic keystroke (DKS)**. Layer Base, key E, first
+  point 1.5 mm, quick start "A light press types one key, a full press
+  another", then E and R as its keys. Pass: the sentence below the grid
+  says that a light press (1.5 mm) taps E and a full press taps R; the
+  slot number appears only under
+  Technical details. **Add to draft**, **Review and write…**. Pass:
+  "Change advanced keys on profile 4?"; the key assignments, then the Fn
+  layer marked "Unchanged" with the reason that the keyboard keeps advanced
+  keys only when a complete Fn layer comes before them, then the
+  advanced-key slot. After the write: a light press on E types `e`, a full
+  press `er` (H20). Then **Delete** on its card ("Will be deleted"),
+  **Review and write…**: E back to Default and the slot cleared in one
+  plan. Pass: E types `e` normally and the card is gone. Optional: **Tap
+  or hold** on G, hold Left Ctrl, 300 ms (tested): a tap types `g`, a hold
+  is Ctrl; delete it the same way.
+- **A20. Export a profile and import it into another.** Backup & profiles >
+  Share a profile > Export: profile 4 (active, a pure read, no consent),
+  name "A20", **Export profile 4…**, save `p4.owprofile.json`. Pass: "Profile
+  file saved"; the file has `"usb": null` and "Label: A20" in its note.
+  Import: **Open a
+  profile file…** `p4.owprofile.json`. Pass: the summary card lists A18's
+  macros as steps ("Macro 2 · 4 steps · Plays once: Press A, …"). Import
+  into profile 3, keep "Actuation and Rapid Trigger" and "Lighting and key
+  colours" and also tick "Key assignments, macros and advanced keys";
+  **Compare and review…** > switch consent > **Switch and compare**. Pass:
+  "Import profile 4 of the file into profile 3?" with what changes, no
+  critical Fn callout. **Import N changes**. Pass: "Import complete. … kept
+  by the keyboard (checked after a profile switch)", the keyboard back on
+  profile 4. Fn + 3: PgUp types `ab`, PgDn `c`, Home `x`; back to profile
+  4 in the header.
+- **A21. Final all-profile compare.** Backup & profiles > Restore: **Open
+  file…** `a11-start.owbackup.json`, all four profiles, **Compare with
+  keyboard…** (switch consent). Pass: the review lists only what is left
+  from A18-A20 (profile 4's macros and keys, profile 3's import) and
+  whatever an earlier step did not undo; profiles 1 and 2 have nothing to
+  write. **Restore N changes**. Pass: every item written, verified and kept
+  (checked after a profile switch), the keyboard back on profile 4.
+  Compare again: nothing to restore in any profile. Close the app,
+  then
+
+  ```text
+  openwraith backup --all-profiles -o after-a21.owbackup.json
+  openwraith restore a11-start.owbackup.json --dry-run --against after-a21.owbackup.json
+  openwraith restore before-a11.owbackup.json
+  ```
+
+  Pass: the dry run finds nothing to write in all four profiles; the last
+  restore removes A11's Macro 1 again (if A11 seeded it) and ends with a
+  clean final check.
+- **A22 (optional). Narrator.** With Narrator on: Keys > Assignments (the
+  board, the selected-key panel, the action picker's search and tabs), the
+  DKS editor (arrow keys move in the grid, Space changes a cell, the
+  sentence is read after a change) and Key depth with "Announce the depth"
+  (at most four times a second). Write nothing; **Discard** the drafts.
+  Record what Narrator reads and anything it skips.
 
 ## Reporting
 

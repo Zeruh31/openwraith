@@ -24,4 +24,6 @@ export const scenarios: PreviewScenario[] = [
   { id: "profile_switch_refused", fixture: "profile_switch_refused", route: "#/device" },
   { id: "close_requested", fixture: "close_requested", route: "#/device" },
   { id: "settings", fixture: "ready", route: "#/settings" },
+  // A key-depth test left open by an earlier run: the banner and its "Stop it".
+  { id: "stray_travel_test", fixture: "depth_stray_marker", route: "#/device" },
 ];

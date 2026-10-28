@@ -26,11 +26,14 @@
 compile_error!("the simulator must never be part of a release build");
 
 mod backend;
+#[cfg(test)]
+mod catalog;
 mod clock;
 mod config;
 pub mod dto;
 mod files;
 mod handle;
+mod library;
 mod map;
 mod ops;
 mod settings;
@@ -45,7 +48,7 @@ mod tests;
 pub use config::{CoreConfig, TESTED_FIRMWARE};
 pub use handle::WorkerHandle;
 pub use settings::{load_settings, save_settings};
-pub use sink::{EventSink, ExitHook, ProgressSink};
+pub use sink::{DepthSink, EventSink, ExitHook, ProgressSink};
 
 #[cfg(any(test, feature = "sim"))]
 pub use backend::sim::{Pacing, SimOptions};

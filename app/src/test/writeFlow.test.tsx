@@ -226,13 +226,21 @@ describe("WriteFlow", () => {
     expect(write).toHaveProperty("disabled", false);
   });
 
-  it("keeps the notes and the vendor tick out of the scrolling plan", async () => {
+  it("pins only the vendor tick below the plan; the notes scroll with it, after it", async () => {
     resetSession();
     setup();
     await screen.findByText("review body");
     const tick = screen.getByLabelText(en.flow.review.vendorTick);
     expect(tick.closest(".ow-dialog__footer")).not.toBeNull();
     expect(tick.closest(".ow-dialog__body")).toBeNull();
-    expect(screen.getByText("review body").closest(".ow-dialog__body")).not.toBeNull();
+    const body = screen.getByText("review body").closest(".ow-dialog__body");
+    expect(body).not.toBeNull();
+    // The safety-backup line and the save note sit in the scrolling body, after the plan
+    // (at 1024x640 the plan keeps the room).
+    const save = screen.getByText(en.flow.review.saveNote);
+    expect(save.closest(".ow-dialog__body")).toBe(body);
+    expect(save.closest(".ow-dialog__footer")).toBeNull();
+    const plan = screen.getByText("review body");
+    expect(plan.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

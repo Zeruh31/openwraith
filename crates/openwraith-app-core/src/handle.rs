@@ -16,16 +16,21 @@ use crate::backend::DeviceBackend;
 use crate::config::{CoreConfig, TESTED_FIRMWARE};
 use crate::dto::{
     AllProfilesPreview, AppError, AppErrorKind, AppInfo, BackupFileSummary, BackupKind,
-    BackupSaved, CloseChoice, DeviceId, DeviceSnapshot, DeviceStatus, EditReportView, FileRef,
-    FileToken, InterruptedOp, LastReport, LightEditIntent, LightEditPreview, OpId,
-    PlanInvalidation, PlanToken, PlatformView, ProfileSwitchPreview, ProfileSwitchReport,
-    RestoreIntent, RestorePreview, RestoreReportView, RevealTarget, SafetyBackupEntry,
-    TriggerEditIntent, TriggerEditPreview,
+    BackupSaved, CloseChoice, ColorEditIntent, ColorEditPreview, ColorsState, DeadBandEditIntent,
+    DeadBandEditPreview, DeadBandState, DepthStopReason, DepthStopRequest, DepthViewReport,
+    DeviceId, DeviceSnapshot, DeviceStatus, EditReportView, ExportIntent, ExportedProfile, FileRef,
+    FileToken, ImportIntent, ImportPreview, ImportSummaryView, InterruptedOp, KeymapEditIntent,
+    KeymapEditPreview, KeysState, LastReport, LightEditIntent, LightEditPreview, MacroLibraryView,
+    MacroProgramView, OpId, PlanInvalidation, PlanToken, PlatformView, PresetEditIntent,
+    PresetsView, ProfileSwitchPreview, ProfileSwitchReport, RestoreIntent, RestorePreview,
+    RestoreReportView, RevealTarget, SafetyBackupEntry, SocdEditIntent, SocdEditPreview,
+    SocdStateView, TravelCloseReport, TriggerEditIntent, TriggerEditPreview, TriggerLimitsView,
+    UserPresetIntent,
 };
 use crate::files::{FileKind, list_safety, safety_entry};
 use crate::ops::journal;
 use crate::shared::{Shared, lock};
-use crate::sink::{EventSink, ExitHook, ProgressSink};
+use crate::sink::{DepthSink, EventSink, ExitHook, ProgressSink};
 use crate::worker::request::Reply;
 use crate::worker::{Envelope, Request, Worker};
 
@@ -101,6 +106,9 @@ impl WorkerHandle {
     {
         let shared = Arc::new(Shared::new(app_info(&config, sim), exit, config.token_seed));
         shared.set_interrupted(interrupted(&shared, &config));
+        // A live key-depth view of an earlier run whose close was never
+        // acknowledged (or that crashed): the keyboard may still stream.
+        shared.set_travel_marker_left(crate::ops::travel::marker_left(&config));
         let (tx, rx) = mpsc::channel();
         let thread_shared = Arc::clone(&shared);
         let thread_config = config.clone();
@@ -185,6 +193,12 @@ impl WorkerHandle {
 
     /// Sends an operation request after admission and waits for the reply.
     fn call<T>(&self, make: impl FnOnce(Reply<T>) -> Request) -> Result<T, AppError> {
+        self.admit()?;
+        self.send_admitted(make, || {})
+    }
+
+    /// Takes the busy flag for an operation, or refuses at once.
+    fn admit(&self) -> Result<(), AppError> {
         if self
             .shared
             .busy
@@ -196,6 +210,16 @@ impl WorkerHandle {
                 "another operation is running",
             ));
         }
+        Ok(())
+    }
+
+    /// Sends an admitted request and waits for its reply; `unhandled` runs
+    /// when the worker is gone without answering it.
+    fn send_admitted<T>(
+        &self,
+        make: impl FnOnce(Reply<T>) -> Request,
+        unhandled: impl FnOnce(),
+    ) -> Result<T, AppError> {
         let (reply, answer) = mpsc::sync_channel(1);
         let envelope = Envelope {
             request: make(reply),
@@ -203,11 +227,13 @@ impl WorkerHandle {
         };
         if self.tx.send(envelope).is_err() {
             self.shared.busy.store(false, Ordering::SeqCst);
+            unhandled();
             return Err(AppError::internal("the device worker has stopped"));
         }
-        answer
-            .recv()
-            .unwrap_or_else(|_| Err(AppError::internal("the device worker did not answer")))
+        answer.recv().unwrap_or_else(|_| {
+            unhandled();
+            Err(AppError::internal("the device worker did not answer"))
+        })
     }
 
     /// Queues a request without admission and without waiting.
@@ -225,10 +251,12 @@ impl WorkerHandle {
         self.shared.app_info().clone()
     }
 
-    /// `subscribe`: replaces the subscriber (a reloaded window) and
-    /// invalidates the pending plan.
+    /// `subscribe`: replaces the subscriber (a reloaded window), stops a
+    /// live key-depth view (its window is gone) and invalidates the pending
+    /// plan.
     pub fn subscribe(&self, sink: Arc<dyn EventSink>) -> DeviceStatus {
         self.shared.set_subscriber(sink);
+        self.shared.stop_depth(DepthStopReason::ChannelClosed);
         self.post(Request::InvalidatePlan {
             reason: PlanInvalidation::Resubscribed,
         });
@@ -250,6 +278,156 @@ impl WorkerHandle {
         self.shared.last_report()
     }
 
+    /// `get_keys_state`: the keymap group of the last full read (no
+    /// traffic); `None` without a snapshot.
+    pub fn keys_state(&self) -> Option<KeysState> {
+        self.shared
+            .keys()
+            .map(|cache| crate::map::keys::keys_state(&cache))
+    }
+
+    /// `list_macro_library`.
+    pub fn list_macro_library(&self) -> Result<MacroLibraryView, AppError> {
+        crate::library::list(&self.config)
+    }
+
+    /// `save_library_macro`: adds a macro to the library, or renames the
+    /// entry with the same program.
+    pub fn save_library_macro(
+        &self,
+        name: &str,
+        program: &MacroProgramView,
+    ) -> Result<MacroLibraryView, AppError> {
+        crate::library::save(&self.config, name, program)
+    }
+
+    /// `rename_library_macro`.
+    pub fn rename_library_macro(
+        &self,
+        hash: &str,
+        name: &str,
+    ) -> Result<MacroLibraryView, AppError> {
+        crate::library::rename(&self.config, hash, name)
+    }
+
+    /// `delete_library_macro`.
+    pub fn delete_library_macro(&self, hash: &str) -> Result<MacroLibraryView, AppError> {
+        crate::library::delete(&self.config, hash)
+    }
+
+    /// `get_colors_state`: custom table 1 of the last full read (no
+    /// traffic); `None` without a snapshot.
+    pub fn colors_state(&self) -> Option<ColorsState> {
+        let snapshot = self.shared.snapshot();
+        self.shared
+            .editors()
+            .map(|cache| crate::map::editors::colors_state(&cache, snapshot.as_ref()))
+    }
+
+    /// `get_dead_band_state`: the dead band of the last full read (no
+    /// traffic); `None` without a snapshot.
+    pub fn dead_band_state(&self) -> Option<DeadBandState> {
+        self.shared
+            .editors()
+            .map(|cache| crate::map::editors::dead_band_state(&cache))
+    }
+
+    /// `get_socd_state`: SOCD of the last full read, with the keyboard's
+    /// pushes applied (no traffic); `None` without a snapshot.
+    pub fn socd_state(&self) -> Option<SocdStateView> {
+        self.shared
+            .editors()
+            .map(|cache| crate::map::editors::socd_state(&cache))
+    }
+
+    /// The keyboard's trigger limits (`21/04`), if read.
+    fn trigger_limits(&self) -> Option<TriggerLimitsView> {
+        self.shared.snapshot().and_then(|s| s.triggers.limits)
+    }
+
+    /// `list_presets`: the built-in presets and the user's, checked against
+    /// the keyboard's limits.
+    pub fn list_presets(&self) -> Result<PresetsView, AppError> {
+        crate::ops::presets::list(&self.config, self.trigger_limits())
+    }
+
+    /// `save_user_preset`: a new preset or a replaced one (values outside
+    /// the keyboard's limits are refused, never clamped).
+    pub fn save_user_preset(&self, preset: &UserPresetIntent) -> Result<PresetsView, AppError> {
+        crate::ops::presets::save(&self.config, preset, self.trigger_limits())
+    }
+
+    /// `delete_user_preset`.
+    pub fn delete_user_preset(&self, id: &str) -> Result<PresetsView, AppError> {
+        crate::ops::presets::delete(&self.config, id, self.trigger_limits())
+    }
+
+    /// `get_hints_shown`: the one-time hints already shown.
+    pub fn hints_shown(&self) -> Vec<String> {
+        self.config
+            .settings_path
+            .as_deref()
+            .map(crate::settings::hints_shown)
+            .unwrap_or_default()
+    }
+
+    /// `mark_hint_shown`: remembers a one-time hint (a short id).
+    pub fn mark_hint_shown(&self, hint: &str) -> Result<Vec<String>, AppError> {
+        let valid = !hint.is_empty()
+            && hint.len() <= 64
+            && hint
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if !valid {
+            return Err(AppError::new(
+                AppErrorKind::InvalidRequest,
+                "a hint id has 1 to 64 letters, digits, '_', '-' or '.'",
+            ));
+        }
+        let path =
+            self.config.settings_path.as_deref().ok_or_else(|| {
+                AppError::new(AppErrorKind::Io, "this build has no settings file")
+            })?;
+        crate::settings::mark_hint_shown(path, hint)
+    }
+
+    /// `reset_hints_shown`: forgets every hint shown ("Show tips again").
+    pub fn reset_hints_shown(&self) -> Result<Vec<String>, AppError> {
+        let path =
+            self.config.settings_path.as_deref().ok_or_else(|| {
+                AppError::new(AppErrorKind::Io, "this build has no settings file")
+            })?;
+        crate::settings::reset_hints_shown(path)
+    }
+
+    /// `stop_depth_view`: asks the live key-depth view to stop (the window
+    /// was hidden, the page left, or Stop); false when none runs.
+    pub fn stop_depth_view(&self, reason: DepthStopRequest) -> bool {
+        self.shared.stop_depth(match reason {
+            DepthStopRequest::Requested => DepthStopReason::Requested,
+            DepthStopRequest::WindowHidden => DepthStopReason::WindowHidden,
+            DepthStopRequest::PageLeft => DepthStopReason::PageLeft,
+        })
+    }
+
+    /// `open_import_file`: a profile file the user chose in the (Rust) open
+    /// dialog, summarized for an import.
+    pub fn open_import_file(&self, path: &Path) -> Result<ImportSummaryView, AppError> {
+        crate::ops::share::import_summary(&self.shared, path)
+    }
+
+    /// The default file name of a profile export.
+    pub fn default_export_name(&self, profile: u8) -> String {
+        let name = self.default_backup_name(BackupKind::Active);
+        let stem = name
+            .strip_suffix(&format!(".{}", openwraith_hid::BACKUP_EXTENSION))
+            .unwrap_or(&name);
+        format!(
+            "{stem}-profile-{profile}.{}",
+            crate::ops::share::PROFILE_EXTENSION
+        )
+    }
+
     /// `cancel_operation`: false when `op` is not running.
     pub fn cancel_operation(&self, op: &OpId) -> bool {
         self.shared.cancel(op)
@@ -262,6 +440,13 @@ impl WorkerHandle {
     pub fn close_requested(&self) -> bool {
         if !self.shared.busy.load(Ordering::SeqCst) {
             return false;
+        }
+        // A live key-depth view stops (the test is closed) and the app
+        // exits after it, without the close guard.
+        // (Also a view admitted but not started yet: it never opens the test.)
+        if self.shared.stop_depth(DepthStopReason::AppExit) {
+            self.shared.exit_after_op.store(true, Ordering::SeqCst);
+            return true;
         }
         let reading_only = self.shared.status().busy.is_some_and(|op| {
             matches!(
@@ -543,6 +728,157 @@ impl WorkerHandle {
         progress: Arc<dyn ProgressSink>,
     ) -> Result<RestoreReportView, AppError> {
         self.call(|reply| Request::ApplyRestore {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_keymap_edit`.
+    pub fn prepare_keymap_edit(
+        &self,
+        intent: KeymapEditIntent,
+    ) -> Result<KeymapEditPreview, AppError> {
+        self.call(|reply| Request::PrepareKeymapEdit { intent, reply })
+    }
+
+    /// `apply_keymap_edit`.
+    pub fn apply_keymap_edit(
+        &self,
+        token: PlanToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<EditReportView, AppError> {
+        self.call(|reply| Request::ApplyKeymapEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_color_edit`.
+    pub fn prepare_color_edit(
+        &self,
+        intent: ColorEditIntent,
+    ) -> Result<ColorEditPreview, AppError> {
+        self.call(|reply| Request::PrepareColorEdit { intent, reply })
+    }
+
+    /// `apply_color_edit`.
+    pub fn apply_color_edit(
+        &self,
+        token: PlanToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<EditReportView, AppError> {
+        self.call(|reply| Request::ApplyColorEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_dead_band_edit`.
+    pub fn prepare_dead_band_edit(
+        &self,
+        intent: DeadBandEditIntent,
+    ) -> Result<DeadBandEditPreview, AppError> {
+        self.call(|reply| Request::PrepareDeadBandEdit { intent, reply })
+    }
+
+    /// `apply_dead_band_edit`.
+    pub fn apply_dead_band_edit(
+        &self,
+        token: PlanToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<EditReportView, AppError> {
+        self.call(|reply| Request::ApplyDeadBandEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_socd_edit`.
+    pub fn prepare_socd_edit(&self, intent: SocdEditIntent) -> Result<SocdEditPreview, AppError> {
+        self.call(|reply| Request::PrepareSocdEdit { intent, reply })
+    }
+
+    /// `apply_socd_edit`.
+    pub fn apply_socd_edit(
+        &self,
+        token: PlanToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<EditReportView, AppError> {
+        self.call(|reply| Request::ApplySocdEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_preset_edit`: a preset as a trigger plan (`apply_trigger_edit`
+    /// writes it).
+    pub fn prepare_preset_edit(
+        &self,
+        intent: PresetEditIntent,
+    ) -> Result<TriggerEditPreview, AppError> {
+        self.call(|reply| Request::PreparePresetEdit { intent, reply })
+    }
+
+    /// `start_depth_view`: runs the live key-depth view until it stops;
+    /// frames go to `sink`.
+    pub fn start_depth_view(&self, sink: Arc<dyn DepthSink>) -> Result<DepthViewReport, AppError> {
+        self.admit()?;
+        // Registered at once, so that a stop sent before the worker handles
+        // the request (Stop, a page left, a hidden window, a reloaded
+        // window, app exit) is kept: the view then never opens the test.
+        // The worker forgets it when the request ends.
+        self.shared.reserve_depth();
+        self.send_admitted(
+            |reply| Request::StartDepthView { sink, reply },
+            || {
+                self.shared.end_depth();
+            },
+        )
+    }
+
+    /// `close_stray_travel_test`.
+    pub fn close_stray_travel_test(&self) -> Result<TravelCloseReport, AppError> {
+        self.call(|reply| Request::CloseStrayTravelTest { reply })
+    }
+
+    /// `export_profile`.
+    pub fn export_profile(
+        &self,
+        intent: ExportIntent,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<ExportedProfile, AppError> {
+        self.call(|reply| Request::ExportProfile {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    /// `prepare_import`.
+    pub fn prepare_import(
+        &self,
+        intent: ImportIntent,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<ImportPreview, AppError> {
+        self.call(|reply| Request::PrepareImport {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    /// `apply_import`.
+    pub fn apply_import(
+        &self,
+        token: PlanToken,
+        progress: Arc<dyn ProgressSink>,
+    ) -> Result<RestoreReportView, AppError> {
+        self.call(|reply| Request::ApplyImport {
             token,
             progress,
             reply,

@@ -7,7 +7,7 @@ export const fixture: Fixture = {
   "events": [],
   "id": "lost",
   "initial_snapshot": null,
-  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"error":{"detail":null,"kind":"disconnected","message":"reading from the keyboard failed: simulated unplug"},"state":"lost"},"device":null,"firmware_tested":null,"generation":1,"interrupted":null,"revision":4,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"write_gate":{"allowed":false,"reasons":["not_connected"]}},
+  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"error":{"detail":null,"kind":"disconnected","message":"reading from the keyboard failed: simulated unplug"},"state":"lost"},"device":null,"firmware_tested":null,"generation":1,"interrupted":null,"revision":4,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"travel":{"marker_left":false,"state":"closed","stray_reports":0},"write_gate":{"allowed":false,"reasons":["not_connected"]}},
   "safety_backups": [],
   "settings": {"language":"system","theme":"system"},
 };

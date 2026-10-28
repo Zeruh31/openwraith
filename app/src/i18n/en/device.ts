@@ -56,7 +56,7 @@ export const device = {
     title: "Before you change anything",
     step1: "Close every wraith.software tab. Switching to another tab isn't enough.",
     step2: "Back up all four profiles once, so you can always go back.",
-    step2Action: "Go to Backup & Restore",
+    step2Action: "Go to Backup & profiles",
     step3: "Every change is backed up automatically first and can be undone.",
     dismiss: "Got it",
   },

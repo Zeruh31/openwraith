@@ -27,12 +27,21 @@ import { tryLock, unlock } from "../state/operation";
 import { markReportSeen, useOperationWatch } from "../state/reports";
 import { useNotices, useStatus } from "../state/status";
 import { ErrorView, type WrittenNote } from "./ErrorView";
+import { writeBlockText } from "./labels";
 import { EMPTY_PROGRESS, reduceProgress, type ProgressModel } from "./progressModel";
 import { ProgressPanel } from "./ProgressPanel";
 import { useVendorConfirmation, VendorNote } from "./vendorTick";
 
 /** A progress listener. */
 export type OnProgress = (event: ProgressEvent) => void;
+
+/** A page's own view of a refused prepare (see {@link WriteFlowProps.prepareError}). */
+export interface PrepareErrorView {
+  /** Shown instead of the standard error. */
+  body: ReactNode;
+  /** Relabels the retry button and can hold it back (with the reason shown) until the page's condition is met. */
+  retry?: { label: string; disabledReason: string | null } | undefined;
+}
 
 /** Props of {@link WriteFlow}; `P` is the prepare result (a preview), `R` the apply result (a report). */
 export interface WriteFlowProps<P, R> {
@@ -64,6 +73,18 @@ export interface WriteFlowProps<P, R> {
   errorNote?: ((error: AppError) => ReactNode) | undefined;
   /** Milliseconds before Write can be pressed (default 500). */
   armDelayMs?: number | undefined;
+  /**
+   * A page's own view of a refused prepare, e.g. the confirmation a refusal
+   * asks for (the retry then prepares with it); `null` keeps the standard
+   * error view.
+   */
+  prepareError?: ((error: AppError) => PrepareErrorView | null) | undefined;
+  /**
+   * Review controls in the footer that are part of the plan's intent (e.g.
+   * "Check that the keyboard kept it"): `reprepare` discards the plan and
+   * prepares a new one, so Write is armed again only for the new plan.
+   */
+  reviewOptions?: ((plan: P, reprepare: () => void) => ReactNode) | undefined;
 }
 
 type Phase<P, R> =
@@ -76,7 +97,7 @@ type Phase<P, R> =
   | { s: "apply_error"; plan: P; error: AppError };
 
 /** Operations whose failures may still have switched profiles. */
-const SWITCHING_KINDS: readonly OpKind[] = ["restore_prepare", "restore", "backup_all"];
+const SWITCHING_KINDS: readonly OpKind[] = ["restore_prepare", "restore", "backup_all", "import_prepare", "import"];
 
 function ignore(): void {
   // Errors of best-effort calls (discard, cancel) are not shown.
@@ -231,6 +252,11 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
       });
   };
 
+  const reprepare = () => {
+    if (phase.s === "review") api.discardPlan(phase.token).catch(ignore);
+    runPrepare();
+  };
+
   const onStop = () => {
     if (progress.op === null) return;
     setStopRequested(true);
@@ -265,7 +291,7 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
 
   let body: ReactNode;
   let actions: ReactNode;
-  // The review's notes and confirmations stay in view below the plan.
+  // What arms Write (the vendor-site tick, the write gate) stays in view below the plan.
   let footer: ReactNode = null;
   switch (phase.s) {
     case "preparing":
@@ -283,19 +309,26 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
         </Button>
       );
       break;
-    case "prepare_error":
-      body = <ErrorView error={phase.error} written={written} />;
+    case "prepare_error": {
+      const custom = props.prepareError?.(phase.error) ?? null;
+      body = custom?.body ?? <ErrorView error={phase.error} written={written} />;
       actions = (
         <>
           <Button ref={closeRef} onClick={onCancel}>
             {dict.common.actions.close}
           </Button>
-          <Button variant="primary" icon="refresh" onClick={runPrepare}>
-            {dict.common.actions.retry}
+          <Button
+            variant="primary"
+            icon="refresh"
+            disabledReason={custom?.retry?.disabledReason ?? null}
+            onClick={runPrepare}
+          >
+            {custom?.retry?.label ?? dict.common.actions.retry}
           </Button>
         </>
       );
       break;
+    }
     case "nothing":
       body = props.nothingToDo?.(phase.plan) ?? <Callout kind="info" title={dict.flow.headline.nothingToDo} />;
       actions = (
@@ -308,6 +341,26 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
       body = (
         <>
           <div className="ow-flow__review">{props.review(phase.plan)}</div>
+          {/* The plan's options and notes scroll with it; only what arms Write stays pinned below. */}
+          <div className="ow-flow__notes">
+            {props.reviewOptions === undefined ? null : (
+              <ReviewOptions plan={phase.plan} reprepare={reprepare} render={props.reviewOptions} />
+            )}
+            {props.writesSettings ? (
+              <p>
+                {props.safetyNote?.(phase.plan) ??
+                  (status.active_profile === null
+                    ? dict.flow.review.safetyNoteGeneric({ dir })
+                    : dict.flow.review.safetyNote({ n: status.active_profile, dir }))}
+              </p>
+            ) : null}
+            {status.firmware_tested === false ? (
+              <p className="ow-muted">
+                {dict.flow.review.firmwareNote({ firmware: status.device?.firmware ?? dict.common.unknown })}
+              </p>
+            ) : null}
+            {props.writesSettings ? <p className="ow-muted">{dict.flow.review.saveNote}</p> : null}
+          </div>
           {phase.invalidated === null ? null : (
             <Callout
               kind="warning"
@@ -326,26 +379,12 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
       );
       footer = (
         <>
-          {props.writesSettings ? (
-            <p>
-              {props.safetyNote?.(phase.plan) ??
-                (status.active_profile === null
-                  ? dict.flow.review.safetyNoteGeneric({ dir })
-                  : dict.flow.review.safetyNote({ n: status.active_profile, dir }))}
-            </p>
-          ) : null}
           <VendorNote confirmation={vendor} />
-          {status.firmware_tested === false ? (
-            <p className="ow-muted">
-              {dict.flow.review.firmwareNote({ firmware: status.device?.firmware ?? dict.common.unknown })}
-            </p>
-          ) : null}
-          {props.writesSettings ? <p className="ow-muted">{dict.flow.review.saveNote}</p> : null}
           {gate.allowed ? null : (
             <Callout kind="warning" title={dict.flow.review.blocked}>
               <ul>
                 {gate.reasons.map((reason) => (
-                  <li key={reason}>{dict.errors.writeBlocked[reason]}</li>
+                  <li key={reason}>{writeBlockText(reason, status, dict)}</li>
                 ))}
               </ul>
             </Callout>
@@ -417,6 +456,19 @@ export function WriteFlow<P, R>(props: WriteFlowProps<P, R>) {
       {body}
     </Dialog>
   );
+}
+
+/** Renders a flow's review options (see {@link WriteFlowProps.reviewOptions}). */
+function ReviewOptions<P>({
+  plan,
+  reprepare,
+  render,
+}: {
+  plan: P;
+  reprepare: () => void;
+  render: (plan: P, reprepare: () => void) => ReactNode;
+}) {
+  return <>{render(plan, reprepare)}</>;
 }
 
 /** Props of {@link OperationRunner}. */
@@ -519,7 +571,7 @@ export function OperationRunner<R>(props: OperationRunnerProps<R>) {
         props.result(phase.result)
       ) : (
         <>
-          <ErrorView error={phase.error} written={props.kind === "backup_all" ? "switches" : "nothing"} />
+          <ErrorView error={phase.error} written={props.kind === "backup_all" || props.kind === "export" ? "switches" : "nothing"} />
           {props.errorNote === undefined ? null : <p>{props.errorNote(phase.error)}</p>}
         </>
       )}

@@ -35,6 +35,7 @@ impl<B: DeviceBackend> Worker<B> {
     pub(crate) fn tick(&mut self) {
         // What the session saw (also outside a listen) decides first.
         self.after_op_state();
+        self.check_socd_pushes();
         self.expire_plan();
         match &self.conn {
             Conn::Starting
@@ -107,6 +108,7 @@ impl<B: DeviceBackend> Worker<B> {
                 } else {
                     self.profile_seen_at = None;
                 }
+                self.check_travel_signals();
             }
             Phase::OtherProgram => {
                 let evidence = foreign(activity);

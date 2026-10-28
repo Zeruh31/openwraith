@@ -1,0 +1,158 @@
+/* Keys > Assignments (prefix keys-assign-). The board and the selected key
+   sit side by side when the content is at least 1180 px wide and stack
+   below that (the board keeps the full width then). */
+
+.keys-assign {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.keys-assign > p {
+  margin: 0;
+}
+
+.keys-assign__panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@container (min-width: 1180px) {
+  .keys-assign__panes {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  }
+}
+
+/* The selected key's panel: brought into view after a click on the board
+   (stacked below it in narrow windows), clear of the sticky apply bar. */
+.keys-assign__summary-anchor {
+  min-width: 0;
+  scroll-margin-bottom: var(--space-4);
+}
+
+/* ---------- the board ---------- */
+
+/* A changed key: what it does now in the accent colour (its own legend is
+   the muted second line). */
+.keys-assign-board .ow-key[data-flag] .ow-key__legend {
+  color: var(--accent);
+}
+
+.keys-assign-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+}
+
+.keys-assign-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.keys-assign-legend__mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--key-border);
+  border-radius: 3px;
+  background: var(--key-bg);
+}
+
+.keys-assign-legend__mark--remapped {
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+.keys-assign-legend__mark--builtin {
+  box-shadow: inset 0 -3px 0 var(--text-muted);
+}
+
+.keys-assign-legend__symbol {
+  font-size: 10px;
+}
+
+.keys-assign-legend__symbol--pending,
+.keys-assign-legend__symbol--warning {
+  color: var(--warning-fg);
+}
+
+/* ---------- the knob's popover ---------- */
+
+.keys-assign-knob {
+  gap: var(--space-2);
+}
+
+.keys-assign-knob p {
+  margin: 0;
+}
+
+.keys-assign-knob__list {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+/* ---------- the selected key ---------- */
+
+.keys-assign-summary__key {
+  overflow-wrap: anywhere;
+}
+
+.keys-assign-summary__slot {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.keys-assign-summary__after {
+  color: var(--accent);
+}
+
+.keys-assign-summary__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+/* ---------- keys that refer to an empty slot ---------- */
+
+.keys-assign-broken__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.keys-assign-broken__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+@media (forced-colors: active) {
+  .keys-assign-board .ow-key[data-flag] .ow-key__legend {
+    color: LinkText;
+  }
+
+  .keys-assign-legend__mark--remapped,
+  .keys-assign-legend__mark--builtin {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+}

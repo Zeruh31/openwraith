@@ -24,6 +24,15 @@ export const flow = {
     restore_prepare: "Comparing with a backup",
     restore: "Restoring a backup",
     recheck: "Checking again",
+    keymap_edit: "Changing key assignments",
+    color_edit: "Changing key colours",
+    dead_band_edit: "Changing the dead band",
+    socd_edit: "Changing SOCD",
+    depth_view: "Showing key depth",
+    travel_close: "Stopping the key-depth view",
+    export: "Exporting a profile",
+    import_prepare: "Comparing with the profile file",
+    import: "Importing a profile",
   } satisfies Record<OpKind, string>,
   /** Dialog titles while a write runs and on its result (the review asks a question instead). */
   titles: {
@@ -37,6 +46,15 @@ export const flow = {
     restore_prepare: "Restore",
     restore: "Restore",
     recheck: "Checking again",
+    keymap_edit: "Key assignment change",
+    color_edit: "Key colour change",
+    dead_band_edit: "Dead band change",
+    socd_edit: "SOCD change",
+    depth_view: "Key depth",
+    travel_close: "Key-depth view",
+    export: "Profile export",
+    import_prepare: "Profile import",
+    import: "Profile import",
   } satisfies Record<OpKind, string>,
   preparing: "Reading what the keyboard has now…",
   steps: {
@@ -147,7 +165,7 @@ export const flow = {
     main_light: "Main light",
     side_light: "Side light",
     active_custom_table: "Active per-key colour table",
-    custom_colors: (p: { n: number }) => `Per-key colours ${p.n}`,
+    custom_colors: (p: { n: number }) => `Key colours (table ${p.n})`,
     keymap: { base: "Key assignments", fn: "Fn layer key assignments" },
     macro: (p: { n: number }) => `Macro ${p.n}`,
     advanced_key: (p: { n: number }) => `Advanced key ${p.n}`,
@@ -200,6 +218,39 @@ export const flow = {
     editedProfile: (p: { n: number }) => `This change was for profile ${p.n}.`,
     foreignActivity:
       "Another program talked to the keyboard during this operation. Close every wraith.software tab.",
+  },
+  /** What an edit report adds after the headline (key-assignment edits and every other edit). */
+  report: {
+    cancelRequested:
+      "You pressed Stop, but every remaining write was needed so that no key or macro was left half-changed, so everything planned was written.",
+    clearedTitle: "Macros left empty",
+    clearedBody:
+      "Writing Macro 1 makes the keyboard empty Macros 2–10, and the edit stopped before writing them again. Undo brings them back.",
+    clearedItem: (p: { n: number }) => `Macro ${p.n}`,
+    danglingTitle: "Keys that now do nothing",
+    danglingBody: "These keys refer to an empty macro or advanced-key slot. Undo brings the slot back.",
+    danglingItem: (p: { key: string; target: string }) => `${p.key} → ${p.target}`,
+    persistenceTitle: "Check that the keyboard kept it",
+    persistenceOk: (p: { n: number }) =>
+      p.n === 1
+        ? "Saved: checked by switching to another profile and back. The change was still there."
+        : `Saved: checked by switching to another profile and back. All ${p.n} changes were still there.`,
+    persistenceLost: (p: { lost: number }) =>
+      p.lost === 1 ? "1 change was gone after switching back: LOST." : `${p.lost} changes were gone after switching back: LOST.`,
+    persistenceNotChecked: (p: { n: number }) =>
+      p.n === 1 ? "1 change couldn't be checked separately." : `${p.n} changes couldn't be checked separately.`,
+  },
+  /** Why a write of a key-assignment edit is in the plan (from the plan's own fields). */
+  writeReasons: {
+    baseKeymapUnchanged:
+      "Sent unchanged right after the key assignments: the keyboard keeps changed key assignments only when a complete Fn layer follows them.",
+    baseKeymapChanged: "Written right after the key assignments, so the keyboard keeps them.",
+    advancedKeysUnchanged:
+      "Sent unchanged before the advanced keys: the keyboard keeps advanced keys only when a complete Fn layer comes before them.",
+    advancedKeysChanged: "Written before the advanced keys, so the keyboard keeps them.",
+    completesBinding: "Written even if you press Stop: a key written before refers to it.",
+    followsMacroSlot0: "Written after Macro 1, which makes the keyboard empty Macros 2–10.",
+    clears: "Empties this slot.",
   },
   items: {
     title: "Details",

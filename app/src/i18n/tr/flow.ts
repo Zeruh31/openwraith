@@ -16,6 +16,15 @@ export const flow: Messages<typeof en> = {
     restore_prepare: "Yedekle karşılaştırılıyor",
     restore: "Yedek geri yükleniyor",
     recheck: "Yeniden denetleniyor",
+    keymap_edit: "Tuş atamaları değiştiriliyor",
+    color_edit: "Tuş renkleri değiştiriliyor",
+    dead_band_edit: "Ölü bölge değiştiriliyor",
+    socd_edit: "SOCD değiştiriliyor",
+    depth_view: "Tuş derinliği gösteriliyor",
+    travel_close: "Tuş derinliği görünümü durduruluyor",
+    export: "Profil dışa aktarılıyor",
+    import_prepare: "Profil dosyasıyla karşılaştırılıyor",
+    import: "Profil içe aktarılıyor",
   },
   titles: {
     refresh: "Klavye okunuyor",
@@ -28,6 +37,15 @@ export const flow: Messages<typeof en> = {
     restore_prepare: "Geri yükleme",
     restore: "Geri yükleme",
     recheck: "Yeniden denetleniyor",
+    keymap_edit: "Tuş ataması değişikliği",
+    color_edit: "Tuş rengi değişikliği",
+    dead_band_edit: "Ölü bölge değişikliği",
+    socd_edit: "SOCD değişikliği",
+    depth_view: "Tuş derinliği",
+    travel_close: "Tuş derinliği görünümü",
+    export: "Profil dışa aktarma",
+    import_prepare: "Profil içe aktarma",
+    import: "Profil içe aktarma",
   },
   preparing: "Klavyedeki güncel ayarlar okunuyor…",
   steps: {
@@ -132,7 +150,7 @@ export const flow: Messages<typeof en> = {
     main_light: "Ana ışık",
     side_light: "Yan ışık",
     active_custom_table: "Etkin tuş rengi tablosu",
-    custom_colors: (p) => `Tuş renkleri ${p.n}`,
+    custom_colors: (p) => `Tuş renkleri (tablo ${p.n})`,
     keymap: { base: "Tuş atamaları", fn: "Fn katmanı tuş atamaları" },
     macro: (p) => `Makro ${p.n}`,
     advanced_key: (p) => `Gelişmiş tuş ${p.n}`,
@@ -180,6 +198,35 @@ export const flow: Messages<typeof en> = {
     editedProfile: (p) => `Bu değişiklik profil ${p.n} içindi.`,
     foreignActivity:
       "Bu işlem sırasında klavyeyle başka bir program konuştu. Bütün wraith.software sekmelerini kapatın.",
+  },
+  report: {
+    cancelRequested:
+      "Durdur'a bastınız, ancak hiçbir tuş ya da makro yarım kalmasın diye kalan her yazma gerekliydi; bu yüzden planlanan her şey yazıldı.",
+    clearedTitle: "Boş kalan makrolar",
+    clearedBody:
+      "Makro 1'i yazmak klavyenin Makro 2–10'u boşaltmasına yol açar ve düzenleme bunları yeniden yazmadan önce durdu. Geri al onları geri getirir.",
+    clearedItem: (p) => `Makro ${p.n}`,
+    danglingTitle: "Artık hiçbir şey yapmayan tuşlar",
+    danglingBody: "Bu tuşlar boş bir makro ya da gelişmiş tuş yuvasına bağlı. Geri al yuvayı geri getirir.",
+    danglingItem: (p) => `${p.key} → ${p.target}`,
+    persistenceTitle: "Klavyenin sakladığının denetimi",
+    persistenceOk: (p) =>
+      p.n === 1
+        ? "Kaydedildi: başka bir profile geçip geri dönülerek denetlendi. Değişiklik hâlâ yerindeydi."
+        : `Kaydedildi: başka bir profile geçip geri dönülerek denetlendi. ${p.n} değişikliğin tümü hâlâ yerindeydi.`,
+    persistenceLost: (p) => `Geri dönüldüğünde ${p.lost} değişiklik yoktu: KAYBOLDU.`,
+    persistenceNotChecked: (p) => `${p.n} değişiklik ayrıca denetlenemedi.`,
+  },
+  writeReasons: {
+    baseKeymapUnchanged:
+      "Tuş atamalarının hemen ardından değiştirilmeden gönderilir: klavye değişen tuş atamalarını ancak ardından eksiksiz bir Fn katmanı gelirse saklar.",
+    baseKeymapChanged: "Tuş atamalarının hemen ardından yazılır; böylece klavye onları saklar.",
+    advancedKeysUnchanged:
+      "Gelişmiş tuşlardan önce değiştirilmeden gönderilir: klavye gelişmiş tuşları ancak önlerinde eksiksiz bir Fn katmanı varsa saklar.",
+    advancedKeysChanged: "Gelişmiş tuşlardan önce yazılır; böylece klavye onları saklar.",
+    completesBinding: "Durdur'a bassanız da yazılır: daha önce yazılan bir tuş ona bağlı.",
+    followsMacroSlot0: "Makro 1'den sonra yazılır; Makro 1'i yazmak klavyenin Makro 2–10'u boşaltmasına yol açar.",
+    clears: "Bu yuvayı boşaltır.",
   },
   items: {
     title: "Ayrıntılar",

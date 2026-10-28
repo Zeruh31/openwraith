@@ -1,5 +1,5 @@
 // The page navigation (an icon rail on narrow windows). A dot marks pages
-// with unwritten changes.
+// with unwritten changes on any of their tabs.
 
 import { Icon, type IconName } from "../components/Icon";
 import { useDict } from "../i18n";
@@ -8,6 +8,7 @@ import { useDraftPages } from "../state/drafts";
 
 const ITEMS: readonly { page: PageId; icon: IconName }[] = [
   { page: "device", icon: "keyboard" },
+  { page: "keys", icon: "keys" },
   { page: "actuation", icon: "device" },
   { page: "lighting", icon: "light" },
   { page: "backup", icon: "backup" },

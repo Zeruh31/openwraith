@@ -8,11 +8,10 @@ analytics are involved.
 This repository contains a Rust library, the `openwraith` command line tool
 and the **OpenWraith desktop app** (Tauri 2, Windows first). They show the
 keyboard's settings, make lossless backups of one or all four onboard
-profiles, restore them, and change the actuation point, Rapid Trigger and
-the main light. The command line tool also edits key assignments (base and
-Fn layer), macros, advanced keys (DKS, Mod-Tap, Toggle), per-key colours,
-the dead band and SOCD, shares one profile as a file, and shows live key
-depths.
+profiles, restore them, and change the actuation point, Rapid Trigger, the
+main light, key assignments (base and Fn layer), macros, advanced keys (DKS,
+Mod-Tap, Toggle), per-key colours, the dead band and SOCD. They also share
+one profile as a file and show live key depths.
 
 > **Disclaimer.** OpenWraith is an independent project. It is **not affiliated
 > with, endorsed by, or supported by Wraith** or the keyboard's manufacturer.
@@ -22,11 +21,12 @@ depths.
 > configurator; no vendor code is included (see
 > [docs/PROTOCOL.md](docs/PROTOCOL.md)). Use at your own risk.
 
-## Status: Phase 3 (desktop app v0.1)
+## Status: Phase 5b (desktop app v0.2, first part)
 
 | Works now | Planned |
 |---|---|
-| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | v0.2 of the app: editors for keys, macros, advanced keys, colours, dead band, SOCD; live key depth; tray agent; profile per game |
+| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | Phase 5b-2 of the app: notification-area (tray) icon, start with Windows, notifications, automatic backups, reset detection and recovery, profile per game, profile names |
+| **Desktop app v0.2, first part (in development; simulator-tested):** Keys page (assignments, macros, advanced keys), trigger presets, dead band, SOCD, live key depth, key colours, profile export and import | A hardware run of the app's v0.2 editors (A11 onwards) |
 | `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros, advanced keys, SOCD (read-only) | Linux and macOS builds of the app |
 | `openwraith backup`: lossless backup of the active profile (read-only) | Switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
 | `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | Other models of the family (W60, W65, W100) |
@@ -44,8 +44,10 @@ The desktop app's hardware checks (A1-A10 in the same file) were run on
 the keyboard on 2026-10-27 (H12-H24).** That session found two things the
 keyboard does that OpenWraith had not modelled (writing macro slot 0 empties
 the other macros; SOCD on/off is one setting for all profiles); both are
-handled now and simulator-tested, and their short re-check on the keyboard
-(H26, H27) is still to be done, as is the optional H25. The packets use the
+handled now, and their re-check on the keyboard (H26, H27) passed on
+2026-10-28. The optional H25 was not run. The desktop app's v0.2 editors
+drive the same library paths; they were tested on the simulator and with
+recorded fixtures only, not yet on the keyboard. The packets use the
 command forms the vendor site sent and the keyboard accepted in the
 captures, built the way the site's code builds them; the cases captured in
 sessions 2-3 match byte for byte (tests compare them), and values whose
@@ -55,20 +57,24 @@ to `2e3c:c367` are accepted as the spec allows, but unverified.
 
 ## Desktop app
 
-The app does what the CLI does for backups, restores, triggers and the main
-light, with a visual keyboard and a confirmation for every write. It uses
-the same library, so every rule under [Safety](#safety) applies to it too.
+The app does what the CLI does, with a visual keyboard and a confirmation
+for every write. It uses the same library, so every rule under
+[Safety](#safety) applies to it too.
 
 | Page | What you can do |
 |---|---|
 | **Keyboard** | Connection, model, firmware, active profile; read again; release the keyboard. The header switches the active profile (1-4). |
-| **Actuation & Rapid Trigger** | Select keys on the W75 (click, Shift + click, drag, Ctrl + A, WASD, arrows, a row, keys with the same setting), set the actuation point (0.02 mm steps) and Rapid Trigger: off, on with one sensitivity, or separate press and release. |
-| **Lighting** | The main light's effect (the keyboard's list plus Custom), colour, brightness and speed. |
-| **Backup & Restore** | Back up all four profiles or the active one; restore a backup (all or some profiles) after a plan preview; list and restore the safety backups. |
-| **Settings** | Language (Windows' language, English, Türkçe), theme (Windows' theme, light, dark), the safety-backups folder, About. |
+| **Keys** (v0.2) | **Assignments:** what each key does on the base and Fn layers; change it (a key, a media key, a mouse button, a shortcut with one or two modifiers, a macro, an advanced key), reset it or swap two keys; keys that refer to an empty slot are listed with a one-click reset. **Macros:** the keyboard's 10 macro slots and a macro library on this PC; steps typed or recorded from the keyboard, four play modes, a check that every key is released. **Advanced keys:** Dynamic keystroke (DKS), Tap or hold (Mod-Tap) and Toggle. |
+| **Actuation** | **Actuation & Rapid Trigger:** select keys on the W75 (click, Shift + click, drag, Ctrl + A, WASD, arrows, a row, keys with the same setting), set the actuation point (0.02 mm steps) and Rapid Trigger; trigger presets (five built in, your own saved on this PC). **Dead band** (per profile), **SOCD** (the switch and up to 20 key pairs) and **Key depth** (a live view of how far each key is pressed). |
+| **Lighting** | **Effect:** the main light's effect (the keyboard's list plus Custom), colour, brightness and speed. **Key colours:** a colour per key, with select, brush, eyedropper, fill, gradient and undo. |
+| **Backup & profiles** | Back up all four profiles or the active one; restore a backup (all or some profiles) after a plan preview; **share a profile** (export one profile to a `.owprofile.json` file; import a profile file into any profile, choosing the parts); list and restore the safety backups. |
+| **Settings** | Language (Windows' language, English, Türkçe), theme (Windows' theme, light, dark), where your trigger presets are managed, one-time tips, the safety-backups folder, About. |
 
-Not in v0.1: key assignments, macros, per-key colours, side light, dead band,
-SOCD, polling rate and Win-Lock.
+Not in this version yet: the notification-area (tray) icon, starting with
+Windows, notifications, automatic backups, reset detection and recovery,
+profiles that follow the game in front, profile names; the side light,
+polling rate, switch types and calibration, Win-Lock, and mouse or media
+steps in macros (there is no confirmed write command for them yet).
 
 ### Install (Windows 10 and 11, x64)
 
@@ -92,7 +98,7 @@ SOCD, polling rate and Win-Lock.
 2. The header shows "Checking that no other program is using the keyboard"
    for 2 seconds (OpenWraith only listens), then reads the keyboard and shows
    "Wraith W75 · FW 3.22.07".
-3. **Back up all four profiles once** (Backup & Restore), so you can always
+3. **Back up all four profiles once** (Backup & profiles), so you can always
    go back.
 4. Change something, press **Review and write…**, read the plan and press
    the write button. The first write after each start asks you to confirm
@@ -139,9 +145,61 @@ SOCD, polling rate and Win-Lock.
   (a strict content security policy and only the app's own commands are
   allowed to the window).
 
-Where the app keeps its files: safety backups as above; its settings in
-`%APPDATA%\io.github.zeruh31.openwraith\settings.json`; the operation journal
-(an interrupted write) in `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`.
+What the v0.2 editors add to that:
+
+- **Changes are drafts until you write them,** per tab; the profile switch
+  lists unwritten changes before it discards them. One write is one planned
+  operation, with its safety backup and Undo, like every other write.
+- **The plan says why each table is written.** The keyboard keeps key
+  assignments only when a complete Fn layer is written after them, and an
+  advanced key only after a complete Fn layer; the plan shows these extra
+  writes with their own reason, never a fixed sentence.
+- **Macro 1** (slot 0 on the wire): writing it makes the keyboard empty
+  macros 2-10. OpenWraith writes the macros that must keep their content
+  again right after it (also after Stop) and puts new macros into 2-10
+  first. The plan shows these rows as re-sent; if a write fails part-way,
+  the report lists the emptied macros and the keys left on them, and Undo
+  brings them back.
+- **The keyboard's own Fn shortcuts:** replacing an Fn built-in shows a
+  warning; Fn + 1-4 (profile switch) and Fn + Space (held: reset) need an
+  extra confirmation tick, and replacing Fn + Space has not been tested.
+- **"Not yet verified" badges** mark values the Wraith website sends but
+  OpenWraith hasn't yet tested on a W75. They come from the library, never
+  from a list in the app: for example SOCD modes 2 and 3, a DKS tap at the
+  last stage, Mod-Tap hold times other than 300 ms, advanced keys on the Fn
+  layer, shortcuts with right-hand modifiers.
+- **SOCD:** the on/off switch is one setting of the whole keyboard (it
+  applies to every profile); the pairs belong to the profile. Fn + Right
+  Shift toggles it on the keyboard; the app notices, updates the view and
+  asks you to review a pending SOCD change again.
+- **Dead band** is per profile; values above 1.00 mm are refused, never
+  clamped. Presets you save are checked against the keyboard's limits and
+  refused when out of range.
+- **"Check that the keyboard kept it"** (switches to another profile and
+  back) is optional and not ticked: every table these editors write was
+  seen to persist on the keyboard.
+- **Live key depth** keeps the keyboard busy: nothing else is written while
+  it runs, and the header shows **Live**. It stops when you press Stop,
+  leave the tab, hide or close the window, after 5 minutes without movement
+  and in the other cases the library stops it. If a view may still be on in
+  the keyboard (OpenWraith closed or the cable came out while it ran), a
+  banner leads to the Key depth tab, where "Stop it" turns it off; typing
+  keeps working meanwhile, but OpenWraith may refuse to write settings until
+  it is stopped.
+- **Sharing a profile:** an exported file never contains the keyboard's USB
+  serial number, but macros travel as the keys they press, so anyone you
+  give the file to can read them. Importing is a restore of the parts you
+  choose (actuation and lighting by default) into the profile you choose,
+  with the usual plan, safety backup and Undo; a file that replaces
+  Fn + 1-4 or Fn + Space needs its own tick.
+
+Where the app keeps its files: safety backups as above; its settings, your
+trigger presets and the tips you dismissed in
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json`; the macro library in
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json`; the
+operation journal (an interrupted write) and the key-depth marker
+(`travel-test-open`: a view that may still be on) in
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`.
 
 ## Safety
 
@@ -666,9 +724,11 @@ Without `freeze=1`, the "Preview" button in the header picks another
 scenario.
 
 **Generated files.** The TypeScript bindings (`app/src/ipc/bindings/`), the
-W75 key list (`app/src/generated/w75Keys.ts`) and the preview fixtures
-(`app/src/preview/fixtures/`) are generated from the Rust code and checked
-by `cargo test`. After changing an IPC type or a recorded scenario, run
+W75 key list (`app/src/generated/w75Keys.ts`), the action catalogue and the
+`KeyboardEvent.code` table of the macro recorder
+(`app/src/generated/actionCatalog.ts`, `hidCodes.ts`) and the preview
+fixtures (`app/src/preview/fixtures/`) are generated from the Rust code and
+checked by `cargo test`. After changing an IPC type or a recorded scenario, run
 `UPDATE_BINDINGS=1 cargo test -p openwraith-app-core bindings` or
 `UPDATE_FIXTURES=1 cargo test -p openwraith-app-core fixtures`.
 
@@ -692,12 +752,12 @@ Klavyeyle doğrudan USB HID üzerinden konuşur; tarayıcı, hesap veya üçünc
 taraf analitik betiği gerekmez. Bu depoda bir Rust kütüphanesi, `openwraith`
 komut satırı aracı ve **OpenWraith masaüstü uygulaması** (Tauri 2, önce
 Windows) var. Bunlar klavyenin ayarlarını gösterir, tek profilin ya da dört
-onboard profilin hepsinin kayıpsız yedeğini alır, yedeği geri yükler,
-aktivasyon noktasını, Rapid Trigger ayarını ve ana ışığı değiştirir. Komut
-satırı aracı ayrıca tuş atamalarını (ana ve Fn katmanı), makroları,
-gelişmiş tuşları (DKS, Mod-Tap, Toggle), tuş başına renkleri, ölü bölgeyi
-(dead band) ve SOCD'yi düzenler, bir profili dosya olarak paylaşır ve
-tuşların ne kadar basıldığını canlı gösterir.
+onboard profilin hepsinin kayıpsız yedeğini alır, yedeği geri yükler;
+aktivasyon noktasını, Rapid Trigger ayarını, ana ışığı, tuş atamalarını
+(ana ve Fn katmanı), makroları, gelişmiş tuşları (DKS, Mod-Tap, Toggle),
+tuş başına renkleri, ölü bölgeyi (dead band) ve SOCD'yi değiştirir. Ayrıca
+bir profili dosya olarak paylaşır ve tuşların ne kadar basıldığını canlı
+gösterirler.
 
 > **Uyarı.** OpenWraith bağımsız bir projedir; Wraith veya üretici ile **hiçbir
 > bağlantısı yoktur, onlar tarafından onaylanmamış veya desteklenmemektedir.**
@@ -706,9 +766,17 @@ tuşların ne kadar basıldığını canlı gösterir.
 > belgelenmiştir; sitenin kodu projede yer almaz. Kullanım sorumluluğu size
 > aittir.
 
-**Durum: Faz 3 (masaüstü uygulaması v0.1).** Masaüstü uygulaması (Windows)
-yedekleme ve geri yükleme, aktivasyon ve Rapid Trigger, ana ışık ayarlarını
-kapsar; arayüz Türkçe ve İngilizcedir. Komut satırı aracının salt okunur
+**Durum: Faz 5b (masaüstü uygulaması v0.2, ilk bölüm).** Masaüstü
+uygulamasının v0.1 sürümü (Windows) yedekleme ve geri yükleme, aktivasyon ve
+Rapid Trigger, ana ışık ayarlarını kapsar; arayüz Türkçe ve İngilizcedir.
+Geliştirilmekte olan v0.2'nin ilk bölümü bunlara Tuşlar sayfasını
+(atamalar, makrolar, gelişmiş tuşlar), tetikleme hazır ayarlarını, ölü
+bölgeyi, SOCD'yi, canlı tuş derinliğini, tuş renklerini ve profil dışa/içe
+aktarmayı ekler; bu düzenleyiciler simülatörde ve kaydedilmiş senaryolarla
+sınandı, uygulama üzerinden klavyede henüz denenmedi. Faz 5b-2'ye
+kalanlar: bildirim alanı (tepsi) simgesi, Windows ile başlatma,
+bildirimler, otomatik yedekler, sıfırlama algılama ve kurtarma, oyuna göre
+profil ve profil adları. Komut satırı aracının salt okunur
 komutları: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
 `backup` (aktif profil), `show` (tablo veya `--json`), `monitor` ve
 `restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
@@ -726,29 +794,32 @@ verified on a W75" diye işaretlenir. **Bu komutlar 2026-10-27'de gerçek
 klavyede denendi (aynı dosyada H12-H24).** Bu denemede OpenWraith'in
 hesaba katmadığı iki klavye davranışı çıktı: 0 numaralı makro yuvasına
 yazmak diğer makroları siler, SOCD'nin açık/kapalı ayarı ise tüm profiller
-için tektir. İkisi de artık ele alınıyor ve simülatörde sınanıyor; bunların
-klavyedeki kısa yeniden denemesi (H26, H27) ve isteğe bağlı H25 henüz
-yapılmadı. Masaüstü uygulamasının
+için tektir. İkisi de artık ele alınıyor; klavyedeki yeniden denemeleri
+(H26, H27) 2026-10-28'de geçti. İsteğe bağlı H25 yapılmadı. Masaüstü
+uygulamasının
 donanım denetimleri (A1-A10) 2026-10-27'de yapıldı. Switch tipi, yan ışık,
 polling rate ve Win-Lock yazmaları için doğrulanmış bir komut henüz yok.
 
 ### Masaüstü uygulaması
 
-Uygulama, yedekleme, geri yükleme, tetikleme ayarları ve ana ışık için komut
-satırı aracının yaptığını görsel bir klavye ve her yazma için bir onay
-penceresiyle yapar. Aynı kütüphaneyi kullandığı için aşağıdaki güvenlik
-kurallarının hepsi uygulama için de geçerlidir.
+Uygulama, komut satırı aracının yaptığını görsel bir klavye ve her yazma
+için bir onay penceresiyle yapar. Aynı kütüphaneyi kullandığı için
+aşağıdaki güvenlik kurallarının hepsi uygulama için de geçerlidir.
 
 | Sayfa | Neler yapılabilir |
 |---|---|
 | **Klavye** | Bağlantı, model, firmware, etkin profil; yeniden okuma; klavyeyi bırakma. Üst çubuktaki 1-4 düğmeleri etkin profili değiştirir. |
-| **Aktivasyon ve Rapid Trigger** | W75 üzerinde tuş seçme (tıklama, Shift + tıklama, sürükleme, Ctrl + A, WASD, oklar, bir sıra, aynı ayardaki tuşlar), aktivasyon noktasını 0,02 mm adımlarla ayarlama ve Rapid Trigger: kapalı, tek hassasiyetle açık ya da basma ve bırakma ayrı. |
-| **Işık** | Ana ışığın efekti (klavyenin listesi ve Özel), rengi, parlaklığı ve hızı. |
-| **Yedekle ve geri yükle** | Dört profilin hepsini ya da yalnızca etkin profili yedekleme; planı gördükten sonra bir yedeği (tüm ya da bazı profilleriyle) geri yükleme; güvenlik yedeklerini listeleme ve geri yükleme. |
-| **Ayarlar** | Dil (Windows'un dili, English, Türkçe), tema (Windows'un teması, açık, koyu), güvenlik yedeği klasörü, hakkında. |
+| **Tuşlar** (v0.2) | **Atamalar:** her tuşun temel ve Fn katmanında ne yaptığı; değiştirme (bir tuş, medya tuşu, fare düğmesi, bir ya da iki değiştirici tuşlu kısayol, makro, gelişmiş tuş), varsayılana döndürme ya da iki tuşu takas etme; boş bir yuvaya bağlı tuşlar tek tıkla sıfırlanabilir. **Makrolar:** klavyedeki 10 makro yuvası ve bu bilgisayardaki makro kitaplığı; elle yazılan ya da klavyeden kaydedilen adımlar, dört çalma biçimi, her tuşun bırakıldığı denetimi. **Gelişmiş tuşlar:** dinamik tuş vuruşu (DKS), dokun ya da basılı tut (Mod-Tap) ve Toggle. |
+| **Aktivasyon** | **Aktivasyon ve Rapid Trigger:** W75 üzerinde tuş seçme (tıklama, Shift + tıklama, sürükleme, Ctrl + A, WASD, oklar, bir sıra, aynı ayardaki tuşlar), aktivasyon noktasını 0,02 mm adımlarla ve Rapid Trigger'ı ayarlama; tetikleme hazır ayarları (beş yerleşik, kendi kaydettikleriniz bu bilgisayarda). **Ölü bölge** (profil başına), **SOCD** (anahtar ve en çok 20 tuş çifti) ve **Tuş derinliği** (her tuşun ne kadar basıldığının canlı görünümü). |
+| **Işık** | **Efekt:** ana ışığın efekti (klavyenin listesi ve Özel), rengi, parlaklığı ve hızı. **Tuş renkleri:** her tuşa bir renk; seçme, fırça, damlalık, boyama, renk geçişi ve geri alma. |
+| **Yedek ve profiller** | Dört profilin hepsini ya da yalnızca etkin profili yedekleme; planı gördükten sonra bir yedeği (tüm ya da bazı profilleriyle) geri yükleme; **profil paylaşma** (bir profili `.owprofile.json` dosyasına dışa aktarma; bir profil dosyasını seçtiğiniz bölümlerle istediğiniz profile içe aktarma); güvenlik yedeklerini listeleme ve geri yükleme. |
+| **Ayarlar** | Dil (Windows'un dili, English, Türkçe), tema (Windows'un teması, açık, koyu), tetikleme hazır ayarlarınızın nerede yönetildiği, bir kez gösterilen ipuçları, güvenlik yedeği klasörü, hakkında. |
 
-v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, yan
-ışık, dead band, SOCD, polling rate ve Win-Lock.
+Bu sürümde henüz olmayanlar: bildirim alanı (tepsi) simgesi, Windows ile
+başlatma, bildirimler, otomatik yedekler, sıfırlama algılama ve kurtarma,
+öndeki oyuna göre profil, profil adları; yan ışık, polling rate, switch
+türleri ve kalibrasyon, Win-Lock ve makrolarda fare ya da medya adımları
+(bunlar için henüz doğrulanmış bir yazma komutu yok).
 
 **Kurulum (Windows 10 ve 11, x64):**
 
@@ -775,7 +846,7 @@ v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, 
    denetleniyor…" yazar (OpenWraith yalnızca dinler); ardından klavye okunur
    ve "Wraith W75 · FW 3.22.07" görünür.
 3. Her zaman geri dönebilmek için **dört profilin hepsini bir kez yedekleyin**
-   (Yedekle ve geri yükle sayfası).
+   (Yedek ve profiller sayfası).
 4. Bir ayarı değiştirin, **İncele ve yaz…** düğmesine basın, planı okuyun ve
    yazma düğmesine basın. Her açılıştaki ilk yazmada wraith.software
    sekmelerinin kapalı olduğunu onaylamanız istenir.
@@ -825,10 +896,66 @@ v0.1 sürümünde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, 
   (sıkı bir içerik güvenliği politikası; pencere yalnızca uygulamanın kendi
   komutlarını çağırabilir).
 
-Uygulamanın dosyaları: güvenlik yedekleri yukarıdaki klasörde; ayarlar
-`%APPDATA%\io.github.zeruh31.openwraith\settings.json` dosyasında; işlem
-günlüğü (yarıda kalan bir yazma için) `%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\`
-klasöründe.
+v0.2 düzenleyicilerinin bunlara eklediği:
+
+- **Değişiklikler siz yazana kadar taslaktır,** her sekmede ayrı; profil
+  değiştirme, yazılmamış değişiklikleri silmeden önce listeler. Bir yazma,
+  diğer bütün yazmalar gibi güvenlik yedeği ve Geri al seçeneği olan tek bir
+  planlı işlemdir.
+- **Plan her tablonun neden yazıldığını söyler.** Klavye tuş atamalarını
+  ancak ardından eksiksiz bir Fn katmanı yazılırsa, gelişmiş bir tuşu da
+  ancak önünde eksiksiz bir Fn katmanı varsa saklar; plan bu ek yazmaları
+  sabit bir cümleyle değil, her birinin kendi nedeniyle gösterir.
+- **Makro 1** (iletişimde 0 numaralı yuva): ona yazmak klavyenin 2-10
+  numaralı makroları boşaltmasına yol açar. OpenWraith içeriğini koruması
+  gereken makroları hemen ardından (Durdur'a basılsa da) yeniden yazar ve
+  yeni makroları önce 2-10 arasına koyar. Plan bu satırları yeniden
+  gönderilen olarak gösterir; bir yazma yarıda kalırsa rapor boşalan
+  makroları ve onlara bağlı kalan tuşları listeler, Geri al bunları geri
+  getirir.
+- **Klavyenin kendi Fn kısayolları:** bir Fn yerleşik işlevinin yerine başka
+  bir şey atamak bir uyarı gösterir; Fn + 1-4 (profil değiştirme) ve
+  Fn + Boşluk (basılı tutulunca sıfırlama) ek bir onay kutusu ister ve
+  Fn + Boşluk'un yerine başka bir şey atamak test edilmedi.
+- **"Henüz doğrulanmadı" işaretleri,** Wraith web sitesinin gönderdiği ama
+  OpenWraith'in bir W75'te henüz denemediği değerleri gösterir. Bu bilgi
+  uygulamadaki bir listeden değil, kütüphaneden gelir: örneğin SOCD
+  modları 2 ve 3, DKS'nin son aşamasında dokunma, 300 ms dışındaki Mod-Tap
+  süreleri, Fn katmanında gelişmiş tuşlar, sağdaki değiştirici tuşlarla
+  kısayollar.
+- **SOCD:** açma/kapama anahtarı klavyenin tamamına ait tek bir ayardır
+  (her profile uygulanır); tuş çiftleri profile aittir. Fn + Sağ Shift onu
+  klavyeden açıp kapatır; uygulama bunu fark eder, görünümü günceller ve
+  bekleyen bir SOCD değişikliğini yeniden incelemenizi ister.
+- **Ölü bölge** profil başınadır; 1,00 mm'nin üstündeki değerler
+  kırpılmaz, reddedilir. Kaydettiğiniz hazır ayarlar klavyenin sınırlarına
+  göre denetlenir, sınır dışındaysa reddedilir.
+- **"Klavyenin sakladığını denetle"** (başka bir profile geçip geri döner)
+  isteğe bağlıdır ve işaretli gelmez: bu düzenleyicilerin yazdığı her
+  tablonun klavyede saklandığı görüldü.
+- **Canlı tuş derinliği** klavyeyi meşgul tutar: açıkken başka hiçbir şey
+  yazılmaz ve üst çubukta **Canlı** yazar. Durdur'a basınca, sekmeden
+  ayrılınca, pencere gizlenince ya da kapanınca, 5 dakika hiç hareket
+  olmayınca ve kütüphanenin durdurduğu öteki durumlarda kapanır. Bir
+  görünüm klavyede hâlâ açık olabilirse (OpenWraith kapandıysa ya da kablo
+  çıktıysa) bir uyarı Tuş derinliği sekmesine götürür; orada "Durdur" onu
+  kapatır. Bu arada klavyeyle yazı yazmaya devam edebilirsiniz; ancak test
+  durdurulana kadar OpenWraith ayar yazmayı reddedebilir.
+- **Profil paylaşma:** dışa aktarılan dosya klavyenin USB seri numarasını
+  hiçbir zaman içermez, ama makrolar bastıkları tuşlarla birlikte gider;
+  dosyayı verdiğiniz herkes onları okuyabilir. İçe aktarma, seçtiğiniz
+  bölümlerin (varsayılan olarak aktivasyon ve ışık) seçtiğiniz profile
+  olağan plan, güvenlik yedeği ve Geri al ile geri yüklenmesidir;
+  Fn + 1-4 ya da Fn + Boşluk'un yerine başka bir şey atayan bir dosya ayrı
+  bir onay ister.
+
+Uygulamanın dosyaları: güvenlik yedekleri yukarıdaki klasörde; ayarlar,
+tetikleme hazır ayarlarınız ve kapattığınız ipuçları
+`%APPDATA%\io.github.zeruh31.openwraith\settings.json` dosyasında; makro
+kitaplığı `%LOCALAPPDATA%\io.github.zeruh31.openwraith\macro-library.json`
+dosyasında; işlem günlüğü (yarıda kalan bir yazma için) ve tuş derinliği
+işareti (`travel-test-open`: hâlâ açık olabilecek bir görünüm)
+`%LOCALAPPDATA%\io.github.zeruh31.openwraith\state\` klasöründe.
 
 ### Güvenlik
 

@@ -145,7 +145,7 @@ const fn builtin(index: u8, function: &'static str, critical: bool) -> FnBuiltin
 }
 
 /// Shorthand for the [`W75_FN_BUILTINS`] table: a label a hardware test
-/// confirmed (none of these is critical).
+/// confirmed.
 const fn confirmed(index: u8, function: &'static str) -> FnBuiltin {
     FnBuiltin {
         index,
@@ -155,12 +155,26 @@ const fn confirmed(index: u8, function: &'static str) -> FnBuiltin {
     }
 }
 
+/// Shorthand for the [`W75_FN_BUILTINS`] table: a critical built-in whose
+/// label a hardware test confirmed.
+const fn confirmed_critical(index: u8, function: &'static str) -> FnBuiltin {
+    FnBuiltin {
+        index,
+        function,
+        critical: true,
+        confirmed: true,
+    }
+}
+
 /// The W75's built-in Fn functions (spec section 4.8.4). Labels GUESS,
 /// except F1-F4 (media player, volume -, volume +, mute: CONFIRMED by
 /// hardware test H18, 2026-10-27, which also showed that an Fn-layer entry
-/// hides them and `default` brings them back) and R-Shift (SOCD on/off,
-/// CONFIRMED by c15 and H12). Fn + 1..4 (profiles) and Fn + Space (reset)
-/// are critical.
+/// hides them and `default` brings them back), 1 and 2 (profile 1 and 2:
+/// CONFIRMED by H12, `openwraith monitor` saw Fn + 2 / Fn + 1 push the
+/// profile reports `.. 11 02 00` / `.. 11 01 00`, and by desktop-app test
+/// A9) and R-Shift (SOCD on/off, CONFIRMED by c15 and H12). Fn + 1..4
+/// (profiles) and Fn + Space (reset) are critical; Fn + 3 and Fn + 4 were
+/// not observed yet.
 pub static W75_FN_BUILTINS: [FnBuiltin; 31] = [
     confirmed(2, "media player"),
     confirmed(3, "volume -"),
@@ -175,8 +189,8 @@ pub static W75_FN_BUILTINS: [FnBuiltin; 31] = [
     builtin(12, "calculator", false),
     builtin(13, "browser search", false),
     builtin(14, "insert", false),
-    builtin(23, "profile 1", true),
-    builtin(24, "profile 2", true),
+    confirmed_critical(23, "profile 1"),
+    confirmed_critical(24, "profile 2"),
     builtin(25, "profile 3", true),
     builtin(26, "profile 4", true),
     builtin(33, "speed -", false),
@@ -340,14 +354,14 @@ mod tests {
             .map(|b| W75.key(b.index).map_or("?", |k| k.name))
             .collect();
         assert_eq!(critical, ["1", "2", "3", "4", "Space"]);
-        // H18 (F1-F4) and c15/H12 (R-Shift).
+        // H18 (F1-F4), H12/A9 (Fn + 1, Fn + 2) and c15/H12 (R-Shift).
         let confirmed: Vec<&str> = W75
             .fn_builtins
             .iter()
             .filter(|b| b.confirmed)
             .map(|b| W75.key(b.index).map_or("?", |k| k.name))
             .collect();
-        assert_eq!(confirmed, ["F1", "F2", "F3", "F4", "R-Shift"]);
+        assert_eq!(confirmed, ["F1", "F2", "F3", "F4", "1", "2", "R-Shift"]);
         assert_eq!(W75.fn_builtin(101).map(|b| b.function), Some("SOCD on/off"));
         assert_eq!(W75.fn_builtin(46), None);
     }

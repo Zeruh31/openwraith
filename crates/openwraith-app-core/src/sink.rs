@@ -1,7 +1,7 @@
 //! Where events and progress go: the app crate implements these over Tauri
 //! channels, the tests record them.
 
-use crate::dto::{AppEvent, ProgressEvent};
+use crate::dto::{AppEvent, DepthFrame, ProgressEvent};
 
 /// Receives status changes and notices (the `subscribe` channel). Send
 /// errors are ignored by the implementation (a reloaded window).
@@ -14,6 +14,13 @@ pub trait EventSink: Send + Sync {
 pub trait ProgressSink: Send + Sync {
     /// Delivers one event.
     fn send(&self, event: ProgressEvent);
+}
+
+/// Receives the frames of the live key-depth view.
+pub trait DepthSink: Send + Sync {
+    /// Delivers one frame; `false` when nobody can receive frames any more
+    /// (the view then stops and the test is closed).
+    fn send(&self, frame: DepthFrame) -> bool;
 }
 
 /// Exits the app (after an operation finished, when the user chose "stop
@@ -38,8 +45,8 @@ pub(crate) mod recorder {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{EventSink, ExitHook, ProgressSink};
-    use crate::dto::{AppEvent, ProgressEvent};
+    use super::{DepthSink, EventSink, ExitHook, ProgressSink};
+    use crate::dto::{AppEvent, DepthFrame, ProgressEvent};
 
     /// Records events.
     #[derive(Debug)]
@@ -82,6 +89,15 @@ pub(crate) mod recorder {
             if let Ok(mut v) = self.items.lock() {
                 v.push(event);
             }
+        }
+    }
+
+    impl DepthSink for Recorder<DepthFrame> {
+        fn send(&self, frame: DepthFrame) -> bool {
+            if let Ok(mut v) = self.items.lock() {
+                v.push(frame);
+            }
+            true
         }
     }
 

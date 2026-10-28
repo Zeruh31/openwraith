@@ -1,4 +1,7 @@
-// The Settings page: language, theme, the safety folder and About.
+// The Settings page: language, theme, your trigger presets (managed on the
+// Actuation tab), the one-time tips, the safety folder and About.
+
+import { useEffect, useState } from "react";
 
 import { Button } from "../../components/Button";
 import { RadioGroup } from "../../components/Controls";
@@ -6,10 +9,98 @@ import { Callout } from "../../components/Feedback";
 import { Card, KeyValueList, PageHeader, TechnicalDetails } from "../../components/Layout";
 import { useDict } from "../../i18n";
 import type { LanguageSetting, ThemeSetting } from "../../ipc/bindings";
+import { api } from "../../ipc/commands";
+import { toAppError } from "../../ipc/errors";
+import { navigate, tabTarget } from "../../routes";
 import { revealLegalNotices, revealSafetyDir } from "../../shell/actions";
 import { useAppInfo } from "../../state/appInfo";
+import { resetHints, useHints } from "../../state/hints";
 import { setSettings, useSettings } from "../../state/settings";
+import { toast } from "../../state/toasts";
 import "./settings.css";
+
+/** How many presets of their own the user saved (`null` while unknown). */
+function useUserPresetCount(): number | null {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .listPresets()
+      .then((presets) => {
+        if (alive) setCount(presets.user.length);
+      })
+      .catch(() => {
+        // The card still says where presets are managed.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return count;
+}
+
+/** Trigger presets (B11 `presets`): where they are kept and managed. */
+function PresetsCard() {
+  const dict = useDict();
+  const t = dict.settings.presets;
+  const count = useUserPresetCount();
+  return (
+    <Card title={t.title}>
+      <div className="ow-stack">
+        <p className="ow-muted">{t.body}</p>
+        {count === null ? null : <p>{t.count({ n: count })}</p>}
+        <div className="ow-row">
+          <Button
+            size="sm"
+            onClick={() => {
+              navigate(tabTarget("actuation", "trigger"));
+            }}
+          >
+            {t.open}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** One-time tips (B11 `hints_shown`): how many were dismissed; show them again. */
+function TipsCard() {
+  const dict = useDict();
+  const t = dict.settings.tips;
+  const hints = useHints();
+  const [busy, setBusy] = useState(false);
+  const count = hints.shown.length;
+  return (
+    <Card title={t.title}>
+      <div className="ow-stack">
+        <p className="ow-muted">{t.body}</p>
+        {hints.loaded ? <p>{t.count({ n: count })}</p> : null}
+        <div className="ow-row">
+          <Button
+            size="sm"
+            disabled={busy || !hints.loaded || count === 0}
+            onClick={() => {
+              setBusy(true);
+              resetHints()
+                .then(() => {
+                  toast({ kind: "success", title: t.done });
+                })
+                .catch((error: unknown) => {
+                  toast({ kind: "danger", title: dict.settings.saveFailed, details: toAppError(error).message });
+                })
+                .finally(() => {
+                  setBusy(false);
+                });
+            }}
+          >
+            {t.reset}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 /** The Settings page. */
 export default function SettingsPage() {
@@ -51,6 +142,8 @@ export default function SettingsPage() {
             }}
           />
         </Card>
+        <PresetsCard />
+        <TipsCard />
         <Card title={t.safety.title} className="st-wide">
           <p className="ow-muted">{t.safety.body}</p>
           {info.safety_dir.state === "ok" ? (

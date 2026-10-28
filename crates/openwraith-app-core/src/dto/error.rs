@@ -5,6 +5,8 @@ use std::fmt;
 use serde::Serialize;
 
 use super::common::{ForeignActivityView, KeyRef, TableRef};
+use super::editors::EditProblemView;
+use super::keys::KeymapProblemView;
 use super::snapshot::NotEditable;
 use super::status::{PlanInvalidation, WriteBlockReason};
 
@@ -169,6 +171,15 @@ pub enum ErrorDetail {
     UnsupportedSchema {
         found: u32,
         supported: u32,
+    },
+    /// A keymap-group edit (keys, macros, advanced keys) was refused.
+    Keymap {
+        problem: KeymapProblemView,
+    },
+    /// An edit of colours, dead band or SOCD, a preset, an export or an
+    /// import was refused.
+    Edit {
+        problem: EditProblemView,
     },
 }
 

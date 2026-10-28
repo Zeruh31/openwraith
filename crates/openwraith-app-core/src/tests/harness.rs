@@ -14,9 +14,10 @@ use crate::backend::sim::{SimControl, SimDeviceBackend, SimOptions, make_devices
 use crate::config::CoreConfig;
 use crate::dto::{
     AllProfilesPreview, AppError, AppEvent, BackupSaved, DeviceSnapshot, DeviceStatus,
-    EditReportView, FileRef, FileToken, LightEditIntent, LightEditPreview, Notice, PlanToken,
-    ProfileSwitchPreview, ProfileSwitchReport, ProgressEvent, ProgressStep, RestoreIntent,
-    RestorePreview, RestoreReportView, RtIntent, TriggerEditIntent, TriggerEditPreview,
+    EditReportView, FileRef, FileToken, KeymapChangeIntent, KeymapEditIntent, KeymapEditPreview,
+    KeysState, LightEditIntent, LightEditPreview, Notice, PlanToken, ProfileSwitchPreview,
+    ProfileSwitchReport, ProgressEvent, ProgressStep, RestoreIntent, RestorePreview,
+    RestoreReportView, RtIntent, TriggerEditIntent, TriggerEditPreview,
 };
 use crate::files::FileKind;
 use crate::handle::app_info;
@@ -42,6 +43,7 @@ pub(crate) fn test_config(dir: &std::path::Path) -> CoreConfig {
         fixed_time: Some(fixed_time()),
         token_seed: Some(42),
         legal_dir: Some(dir.join("legal")),
+        settings_path: Some(dir.join("config").join("settings.json")),
     }
 }
 
@@ -491,6 +493,189 @@ impl Harness {
         let token = token.clone();
         let progress: Arc<dyn ProgressSink> = watch.clone();
         self.op(|reply| Request::ApplyRestore {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// The Keys page's view of the keymap group (`get_keys_state`).
+    pub(crate) fn keys(&self) -> KeysState {
+        self.shared
+            .keys()
+            .map(|cache| crate::map::keys::keys_state(&cache))
+            .expect("a keys state")
+    }
+
+    /// A keymap intent against the current keys state (no persistence
+    /// check, nothing acknowledged).
+    pub(crate) fn keymap_intent(&self, changes: Vec<KeymapChangeIntent>) -> KeymapEditIntent {
+        KeymapEditIntent {
+            changes,
+            builtin_acks: Vec::new(),
+            keep_orphans: false,
+            allow_not_undoable: false,
+            check_persistence: false,
+            based_on: self.keys().revision,
+        }
+    }
+
+    pub(crate) fn prepare_keymap(
+        &mut self,
+        intent: KeymapEditIntent,
+    ) -> Result<KeymapEditPreview, AppError> {
+        self.op(|reply| Request::PrepareKeymapEdit { intent, reply })
+    }
+
+    pub(crate) fn apply_keymap(
+        &mut self,
+        token: &PlanToken,
+        watch: &Arc<Watch>,
+    ) -> Result<EditReportView, AppError> {
+        let token = token.clone();
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ApplyKeymapEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    /// `get_colors_state`.
+    pub(crate) fn colors(&self) -> crate::dto::ColorsState {
+        let snapshot = self.shared.snapshot();
+        crate::map::editors::colors_state(
+            &self.shared.editors().expect("editors"),
+            snapshot.as_ref(),
+        )
+    }
+
+    /// `get_dead_band_state`.
+    pub(crate) fn dead_band(&self) -> crate::dto::DeadBandState {
+        crate::map::editors::dead_band_state(&self.shared.editors().expect("editors"))
+    }
+
+    /// `get_socd_state`.
+    pub(crate) fn socd(&self) -> crate::dto::SocdStateView {
+        crate::map::editors::socd_state(&self.shared.editors().expect("editors"))
+    }
+
+    pub(crate) fn prepare_colors(
+        &mut self,
+        intent: crate::dto::ColorEditIntent,
+    ) -> Result<crate::dto::ColorEditPreview, AppError> {
+        self.op(|reply| Request::PrepareColorEdit { intent, reply })
+    }
+
+    pub(crate) fn apply_colors(
+        &mut self,
+        token: &PlanToken,
+        watch: &Arc<Watch>,
+    ) -> Result<EditReportView, AppError> {
+        let token = token.clone();
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ApplyColorEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    pub(crate) fn prepare_dead_band(
+        &mut self,
+        intent: crate::dto::DeadBandEditIntent,
+    ) -> Result<crate::dto::DeadBandEditPreview, AppError> {
+        self.op(|reply| Request::PrepareDeadBandEdit { intent, reply })
+    }
+
+    pub(crate) fn apply_dead_band(
+        &mut self,
+        token: &PlanToken,
+        watch: &Arc<Watch>,
+    ) -> Result<EditReportView, AppError> {
+        let token = token.clone();
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ApplyDeadBandEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    pub(crate) fn prepare_socd(
+        &mut self,
+        intent: crate::dto::SocdEditIntent,
+    ) -> Result<crate::dto::SocdEditPreview, AppError> {
+        self.op(|reply| Request::PrepareSocdEdit { intent, reply })
+    }
+
+    pub(crate) fn apply_socd(
+        &mut self,
+        token: &PlanToken,
+        watch: &Arc<Watch>,
+    ) -> Result<EditReportView, AppError> {
+        let token = token.clone();
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ApplySocdEdit {
+            token,
+            progress,
+            reply,
+        })
+    }
+
+    pub(crate) fn prepare_preset(
+        &mut self,
+        intent: crate::dto::PresetEditIntent,
+    ) -> Result<TriggerEditPreview, AppError> {
+        self.op(|reply| Request::PreparePresetEdit { intent, reply })
+    }
+
+    /// `start_depth_view` (returns when the view stopped).
+    pub(crate) fn depth_view(
+        &mut self,
+        sink: Arc<dyn crate::sink::DepthSink>,
+    ) -> Result<crate::dto::DepthViewReport, AppError> {
+        self.op(|reply| Request::StartDepthView { sink, reply })
+    }
+
+    pub(crate) fn close_stray(&mut self) -> Result<crate::dto::TravelCloseReport, AppError> {
+        self.op(|reply| Request::CloseStrayTravelTest { reply })
+    }
+
+    pub(crate) fn export(
+        &mut self,
+        intent: crate::dto::ExportIntent,
+        watch: &Arc<Watch>,
+    ) -> Result<crate::dto::ExportedProfile, AppError> {
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ExportProfile {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    pub(crate) fn prepare_import(
+        &mut self,
+        intent: crate::dto::ImportIntent,
+        watch: &Arc<Watch>,
+    ) -> Result<crate::dto::ImportPreview, AppError> {
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::PrepareImport {
+            intent,
+            progress,
+            reply,
+        })
+    }
+
+    pub(crate) fn apply_import(
+        &mut self,
+        token: &PlanToken,
+        watch: &Arc<Watch>,
+    ) -> Result<RestoreReportView, AppError> {
+        let token = token.clone();
+        let progress: Arc<dyn ProgressSink> = watch.clone();
+        self.op(|reply| Request::ApplyImport {
             token,
             progress,
             reply,

@@ -115,11 +115,28 @@ fn no_raw_or_unguarded_write_api_is_used() {
 }
 
 #[test]
-fn only_the_profile_switch_creates_a_writer() {
+fn only_the_profile_switch_and_the_stray_close_create_a_writer() {
     for (path, code) in sources() {
-        if code.contains(".writer(") {
-            assert!(path.ends_with("ops/profile.rs"), "{path} creates a writer");
+        if !code.contains(".writer(") {
+            continue;
         }
+        if path.ends_with("ops/travel.rs") {
+            // One writer, for the close of a test left open and nothing
+            // else (the library has no session-level form of it).
+            let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+            assert_eq!(compact.matches(".writer(").count(), 1, "{path}");
+            assert_eq!(
+                compact.matches("writer.").count(),
+                1,
+                "{path}: the writer does nothing else"
+            );
+            assert!(
+                compact.contains("writer.close_stray_travel_test()"),
+                "{path}: the writer is used only for the stray close"
+            );
+            continue;
+        }
+        assert!(path.ends_with("ops/profile.rs"), "{path} creates a writer");
     }
 }
 
@@ -131,6 +148,23 @@ fn consent_is_built_in_one_place_and_used_only_by_apply_steps() {
         "ops/light.rs",
         "ops/backup.rs",
         "ops/restore.rs",
+        "ops/keymap.rs",
+        "ops/colors.rs",
+        "ops/dead_band.rs",
+        "ops/socd.rs",
+        "ops/travel.rs",
+        "ops/share.rs",
+    ];
+    // Steps the user started explicitly: the apply steps, the comparisons
+    // that switch profiles after the user agreed (restore, import), an
+    // export of another profile (switch agreed), the live key-depth view
+    // and the close of a test left open (user clicks).
+    let allowed_fns = [
+        "prepare_restore",
+        "prepare_import",
+        "export_profile",
+        "start_depth_view",
+        "close_stray_travel_test",
     ];
     let mut uses = 0;
     for (path, code) in sources() {
@@ -161,15 +195,158 @@ fn consent_is_built_in_one_place_and_used_only_by_apply_steps() {
                 })
                 .unwrap_or_default();
             assert!(
-                name.starts_with("apply") || name == "prepare_restore",
+                name.starts_with("apply") || allowed_fns.contains(&name.as_str()),
                 "{path}: consent used in fn {name}"
             );
         }
     }
     assert_eq!(
-        uses, 6,
-        "profile, trigger, light, all-profile backup, restore prepare and apply"
+        uses, 14,
+        "profile, trigger, light, all-profile backup, restore prepare and apply, keymap edit, \
+         colours, dead band, SOCD, depth view, stray close, export, import prepare \
+         (restore and import apply share one call)"
     );
+}
+
+#[test]
+fn table_contents_are_built_only_by_the_library() {
+    // The editors hand the library typed intents (`KeyAssignment`,
+    // `MacroProgram`, `AdvancedKeyDef`, ...); the app never builds or
+    // patches a table, a slot or a raw entry, never decodes raw entries
+    // past the library's views, and never leaves out the Fn keymap that
+    // makes the keyboard keep a group (a hardware-test mode).
+    let forbidden = [
+        "set_entry",
+        "KeymapData",
+        "MacroData",
+        "CanonicalMacro",
+        "AdvancedSlotData",
+        "SocdWrite",
+        "SocdPairsData",
+        "TravelTestRequest",
+        "ColorTableData",
+        "DeadBandData",
+        "DeadBandWrite",
+        "from_read_slot",
+        "KeyAction::decode",
+        "KeyAction::decode_unswapped",
+        "MacroProgram::decode",
+        "OmitForSlotsOnly",
+    ];
+    for (path, code) in sources() {
+        for token in forbidden {
+            assert!(!has_word(&code, token), "{path} uses {token}");
+        }
+    }
+}
+
+#[test]
+fn keymap_intents_carry_no_raw_bytes() {
+    // Every type the frontend sends for the Keys page is typed: no entry,
+    // slot or packet bytes (the views may show bytes as hex).
+    let text =
+        std::fs::read_to_string(repo_root().join("crates/openwraith-app-core/src/dto/keys.rs"))
+            .unwrap();
+    let mut deserialized = 0;
+    for item in text.split("#[derive(").skip(1) {
+        let derive = &item[..item.find(')').unwrap()];
+        if !derive.contains("Deserialize") {
+            continue;
+        }
+        deserialized += 1;
+        let body = &item[..item.find("\n}\n").unwrap_or(item.len())];
+        // (Numbers are HID usages, indices and slots, never entry bytes.)
+        for raw in ["hex:", "bytes:", "entry:", "data:", "[u8;"] {
+            assert!(!body.contains(raw), "an intent type carries {raw}: {body}");
+        }
+    }
+    assert!(deserialized >= 10, "{deserialized} intent types");
+}
+
+#[test]
+fn travel_and_standing_rule_calls_stay_in_their_operations() {
+    for (path, code) in sources() {
+        if code.contains(".profile_switcher(") {
+            assert!(
+                path.ends_with("ops/auto_profile.rs"),
+                "{path} uses the profile switcher"
+            );
+        }
+        // The library's calls; the app's own operation, command and handle
+        // method of the same name (`fn ...`, `self.`, `worker.`,
+        // `commands::`) only forward to ops/travel.rs.
+        let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        for call in ["live_travel(", "close_stray_travel_test("] {
+            for (at, _) in compact.match_indices(call) {
+                let before = &compact[..at];
+                let forwarding = ["fn", "self.", "worker.", "commands::"]
+                    .iter()
+                    .any(|p| before.ends_with(p));
+                if !forwarding {
+                    assert!(path.ends_with("ops/travel.rs"), "{path} calls {call}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn editor_intents_carry_no_raw_bytes() {
+    // The colour, dead-band, SOCD, preset, export and import intents are
+    // typed: keys by index, colours as "#rrggbb", values in trigger units.
+    for file in ["dto/editors.rs", "dto/share.rs", "dto/travel.rs"] {
+        let text = std::fs::read_to_string(
+            repo_root()
+                .join("crates/openwraith-app-core/src")
+                .join(file),
+        )
+        .unwrap();
+        let mut deserialized = 0;
+        for item in text.split("#[derive(").skip(1) {
+            let derive = &item[..item.find(')').unwrap()];
+            if !derive.contains("Deserialize") {
+                continue;
+            }
+            deserialized += 1;
+            let body = &item[..item.find("\n}\n").unwrap_or(item.len())];
+            for raw in [
+                "hex:", "bytes:", "entry:", "data:", "[u8;", "path:", "PathBuf",
+            ] {
+                assert!(
+                    !body.contains(raw),
+                    "{file}: an intent type carries {raw}: {body}"
+                );
+            }
+        }
+        assert!(deserialized >= 1, "{file}: {deserialized} intent types");
+    }
+}
+
+#[test]
+fn the_new_editors_use_only_the_library_entry_points() {
+    // Each editor's apply step calls exactly its library entry point; the
+    // preset path ends in the trigger edit's plan (no write of its own).
+    for (file, call) in [
+        ("ops/colors.rs", "apply_color_edit("),
+        ("ops/dead_band.rs", "apply_dead_band_edit("),
+        ("ops/socd.rs", "apply_socd_edit("),
+        ("ops/share.rs", "prepare_restore("),
+    ] {
+        let code = sources()
+            .into_iter()
+            .find(|(p, _)| p.ends_with(file))
+            .map(|(_, c)| c)
+            .unwrap_or_else(|| panic!("{file} not found"));
+        assert!(code.contains(call), "{file} calls {call}");
+    }
+    let presets = sources()
+        .into_iter()
+        .find(|(p, _)| p.ends_with("ops/presets.rs"))
+        .map(|(_, c)| c)
+        .unwrap();
+    assert!(!presets.contains("consent::application()"));
+    assert!(presets.contains("prepare_trigger_plan("));
+    assert!(!presets.contains("apply_trigger_edit("));
 }
 
 #[test]

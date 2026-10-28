@@ -7,7 +7,7 @@ export const fixture: Fixture = {
   "events": [],
   "id": "reset_seen",
   "initial_snapshot": null,
-  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"state":"reset_seen"},"device":null,"firmware_tested":null,"generation":1,"interrupted":null,"revision":4,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"write_gate":{"allowed":false,"reasons":["reset_seen"]}},
+  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"state":"reset_seen"},"device":null,"firmware_tested":null,"generation":1,"interrupted":null,"revision":4,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"travel":{"marker_left":false,"state":"closed","stray_reports":0},"write_gate":{"allowed":false,"reasons":["reset_seen"]}},
   "safety_backups": [],
   "settings": {"language":"system","theme":"system"},
 };

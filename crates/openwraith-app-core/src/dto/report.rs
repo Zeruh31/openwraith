@@ -36,7 +36,7 @@ pub enum Headline {
     Lost,
 }
 
-/// What a trigger or light edit did.
+/// What an edit did (triggers, the light, the keymap group).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct EditReportView {
@@ -60,6 +60,21 @@ pub struct EditReportView {
     pub foreign_activity: Option<ForeignActivityView>,
     /// Whether anything was written.
     pub anything_written: bool,
+    /// The persistence check, if one was made (keymap-group edits with
+    /// "check that the keyboard kept it").
+    pub persistence: Option<PersistenceCheckView>,
+    /// Stop was asked for, but every write made after it was needed to keep
+    /// the keymap group consistent (the Fn keymap after a base keymap, a
+    /// slot a written key refers to, the macro slots after slot 0): with
+    /// `completed` everything planned was written.
+    pub cancel_requested: bool,
+    /// Macro slots left empty: the edit wrote macro slot 0 (which makes the
+    /// keyboard empty slots 1-9) and stopped before writing them again
+    /// (Undo restores them).
+    pub cleared_macros: Vec<ClearedMacroView>,
+    /// Keys left referring to an empty macro or advanced-key slot because
+    /// the edit stopped part-way (Undo restores them).
+    pub dangling: Vec<DanglingBindingView>,
 }
 
 /// What a restore did.
@@ -374,13 +389,18 @@ pub struct BackupSaved {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LastReport {
-    /// A trigger or light edit.
+    /// An edit (triggers, the light, the keymap group).
     Edit {
         /// The report.
         report: EditReportView,
     },
     /// A restore.
     Restore {
+        /// The report.
+        report: RestoreReportView,
+    },
+    /// A profile import (a restore with import options).
+    Import {
         /// The report.
         report: RestoreReportView,
     },

@@ -7,7 +7,7 @@ export const fixture: Fixture = {
   "events": [],
   "id": "several_keyboards",
   "initial_snapshot": null,
-  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"devices":[{"id":"d-ade7a0bf7422ed37","interface":2,"product":"Wraith W75 (simulated)","product_id":50024,"serial":"SIM-1","vendor_id":11836},{"id":"d-f4c8e5846c1998f1","interface":2,"product":"Wraith W75 (simulated)","product_id":50024,"serial":"SIM-2","vendor_id":11836}],"state":"several_keyboards"},"device":null,"firmware_tested":null,"generation":0,"interrupted":null,"revision":1,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"write_gate":{"allowed":false,"reasons":["not_connected"]}},
+  "initial_status": {"active_profile":null,"busy":null,"close_requested":false,"connection":{"devices":[{"id":"d-ade7a0bf7422ed37","interface":2,"product":"Wraith W75 (simulated)","product_id":50024,"serial":"SIM-1","vendor_id":11836},{"id":"d-f4c8e5846c1998f1","interface":2,"product":"Wraith W75 (simulated)","product_id":50024,"serial":"SIM-2","vendor_id":11836}],"state":"several_keyboards"},"device":null,"firmware_tested":null,"generation":0,"interrupted":null,"revision":1,"sim":true,"snapshot_revision":null,"snapshot_stale":false,"travel":{"marker_left":false,"state":"closed","stray_reports":0},"write_gate":{"allowed":false,"reasons":["not_connected"]}},
   "safety_backups": [],
   "settings": {"language":"system","theme":"system"},
 };

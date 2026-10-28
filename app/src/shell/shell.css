@@ -159,6 +159,56 @@
   gap: var(--space-2);
 }
 
+/* "Live" while the key-depth view runs (a link to the tab that stops it). */
+.ow-live-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--danger);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ow-live-pill:hover {
+  text-decoration: underline;
+}
+
+.ow-live-pill__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ow-live-pill__dot {
+    animation: ow-live-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes ow-live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (forced-colors: active) {
+  .ow-live-pill {
+    border-color: CanvasText;
+  }
+
+  .ow-live-pill__dot {
+    background: CanvasText;
+  }
+}
+
 .ow-busy {
   display: flex;
   align-items: center;
@@ -363,4 +413,70 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* ---------- page tabs (?tab=) ---------- */
+
+.ow-page-tabs {
+  margin: calc(var(--space-2) * -1) 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.ow-page-tabs__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ow-page-tabs__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ow-page-tabs__tab:hover {
+  color: var(--text);
+}
+
+.ow-page-tabs__tab--current {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.ow-page-tabs__dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--warning-fg);
+}
+
+@media (forced-colors: active) {
+  .ow-page-tabs__tab--current {
+    border-bottom-color: Highlight;
+  }
+
+  .ow-page-tabs__dot {
+    background: CanvasText;
+  }
+}
+
+/* ---------- "Read at" (every page that shows values read from the keyboard) ---------- */
+
+.ow-read-at {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
 }

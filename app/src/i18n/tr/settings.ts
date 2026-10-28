@@ -5,7 +5,7 @@ import type { Messages } from "../types";
 
 export const settings: Messages<typeof en> = {
   title: "Ayarlar",
-  description: "Dil, görünüm ve OpenWraith hakkında bilgiler.",
+  description: "Dil, görünüm, hazır ayarlarınız ve ipuçları, ayrıca OpenWraith hakkında bilgiler.",
   language: {
     title: "Dil",
     system: "Windows ile aynı",
@@ -17,6 +17,20 @@ export const settings: Messages<typeof en> = {
     system: "Windows ile aynı",
     light: "Açık",
     dark: "Koyu",
+  },
+  presets: {
+    title: "Tetikleme hazır ayarları",
+    body: "Kendi hazır ayarlarınız bu bilgisayarda, OpenWraith'in ayarlarında saklanır. Bunları Aktivasyon ve Rapid Trigger sekmesindeki Hazır ayarlar… ile kaydedin, uygulayın ya da silin.",
+    count: (p) =>
+      p.n === 0 ? "Henüz bir hazır ayar kaydetmediniz." : `Kaydettiğiniz hazır ayar sayısı: ${p.n}.`,
+    open: "Aktivasyon ve Rapid Trigger'ı aç",
+  },
+  tips: {
+    title: "İpuçları",
+    body: "OpenWraith bazı ipuçlarını (örneğin Tuşlar sayfasında) Anladım'ı seçene kadar bir kez gösterir.",
+    count: (p) => (p.n === 0 ? "Kapatılmış ipucu yok." : `Kapatılan ipucu sayısı: ${p.n}.`),
+    reset: "İpuçlarını yeniden göster",
+    done: "İpuçları yeniden gösterilecek.",
   },
   safety: {
     title: "Güvenlik yedekleri klasörü",
@@ -38,7 +52,8 @@ export const settings: Messages<typeof en> = {
     privacy: "Hesap yok, telemetri yok, ağ bağlantısı yok: OpenWraith yalnızca klavyeyle konuşur.",
     cliUndo: "Bir değişikliği komut satırı aracıyla da geri alabilirsiniz:",
     cliUndoCommand: "openwraith restore <güvenlik yedeği dosyası>",
-    notIncluded: "Bu sürümde olmayanlar: tuş atamaları, makrolar, tuş başına renkler, yan ışık, SOCD ve yoklama hızı.",
+    notIncluded:
+      "Bu sürümde olmayanlar: yan ışık, yoklama hızı, switch türleri ve kalibrasyon, makrolarda fare ve medya adımları, bildirim alanı simgesi, Windows ile başlatma, otomatik yedekler, sıfırlama uyarıları ve oyuna göre profiller.",
     simulator: "Bu, geliştirme için hazırlanmış bir simülatör sürümü.",
   },
   saveFailed: "Ayar kaydedilemedi.",

@@ -138,6 +138,14 @@
   margin-top: var(--space-1);
 }
 
+/* A link to the other tab of the page ("Change key colours"). */
+.li-link {
+  display: inline-block;
+  margin-top: var(--space-1);
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 /* ---------- preview ---------- */
 
 .li-previews {

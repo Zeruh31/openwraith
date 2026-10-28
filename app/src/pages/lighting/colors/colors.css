@@ -1,0 +1,232 @@
+/* Lighting > Key colours (prefix li-colors). The page shell (li-page,
+   li-summary) comes from lighting.css. */
+
+.li-colors {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+/* Board and colour panel side by side from 1180 px of content width; stacked below. */
+.li-colors__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@container (min-width: 1180px) {
+  .li-colors__layout {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+  }
+}
+
+/* The colour panel: brought into view after the first keys are picked. */
+.li-colors__tools-anchor {
+  min-width: 0;
+  scroll-margin-bottom: var(--space-4);
+}
+
+.li-colors__board .ow-card__body,
+.li-colors__tools .ow-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* Stacked: the colour picker and the fill/gradient controls side by side. */
+@container (max-width: 1179px) {
+  .li-colors__tools .ow-card__body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    align-items: start;
+  }
+}
+
+.li-colors__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.li-colors__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.li-colors__history {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* Redo is Undo's arrow mirrored. */
+.li-colors__redo .ow-icon {
+  transform: scaleX(-1);
+}
+
+.li-colors__selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* The keys show their colour as a larger strip than the default swatch. */
+.li-colors .ow-key__swatch {
+  height: 38%;
+}
+
+.li-colors__controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.li-colors__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.li-colors__gradient {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.li-colors__gradient-title,
+.li-colors__kept-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+.li-colors__kept {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.li-colors__kept-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.li-colors__cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ---------- review ---------- */
+
+.li-colors-review__boards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.li-colors-review__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.li-colors-review__title {
+  font-size: var(--text-md);
+}
+
+.li-colors-review__notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.li-colors-review__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---------- mini boards ---------- */
+
+.li-mini {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.li-mini__caption {
+  margin-bottom: var(--space-1);
+}
+
+/* A dark keyboard in both themes, so the colours read as light. */
+.li-mini__board {
+  position: relative;
+  box-sizing: content-box;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #15181e;
+}
+
+.li-mini__key {
+  position: absolute;
+  margin: 4px;
+  border-radius: 3px;
+  background: #2a2f38;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.35);
+}
+
+.li-mini__key--knob {
+  border-radius: 50%;
+  background: #3a404b;
+}
+
+.li-mini__key--changed {
+  outline: 2px solid #ffffff;
+  outline-offset: 0;
+}
+
+/* Windows high contrast: the colours are the content, so they keep their values; borders show the keys. */
+@media (forced-colors: active) {
+  .li-colors .ow-key__swatch,
+  .li-mini__board,
+  .li-mini__key {
+    forced-color-adjust: none;
+  }
+
+  .li-mini__key {
+    border: 1px solid CanvasText;
+  }
+
+  .li-mini__key--changed {
+    outline-color: Highlight;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .li-colors * {
+    transition: none;
+  }
+}

@@ -847,7 +847,7 @@ Keymap writes were captured in session 2 (c09: W -> A and back; c13: a macro bou
 #### 4.8.4 Fn layer
 
 - `18 82`/`18 02` hold overrides active while Fn is held; same entry format (CONFIRMED, c17: the same 4-byte encoding as the base layer, see 4.8.2). Zero entries leave the firmware's built-in Fn functions in place. The site cannot read the built-ins; it only labels them from `fnKeys.json`.
-- W75 built-in Fn functions (labels from `fnKeys.json`; GUESS that the firmware does exactly this, except F1-F4, CONFIRMED by hardware test H18, and R-Shift, the SOCD switch, CONFIRMED by c15 and H12; F5 showed nothing visible in H18, as expected with no media playing):
+- W75 built-in Fn functions (labels from `fnKeys.json`; GUESS that the firmware does exactly this, except F1-F4, CONFIRMED by hardware test H18, 1 and 2 (profile 1 and 2), CONFIRMED by H12 (the profile reports Fn + 1 / Fn + 2 pushed) and A9, and R-Shift, the SOCD switch, CONFIRMED by c15 and H12; F5 showed nothing visible in H18, as expected with no media playing):
 
 | Fn + key | Function | Fn + key | Function |
 |---|---|---|---|

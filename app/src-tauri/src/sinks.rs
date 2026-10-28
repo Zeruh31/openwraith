@@ -1,7 +1,7 @@
 //! The core's sinks over Tauri channels and the app handle.
 
-use openwraith_app_core::dto::{AppEvent, ProgressEvent};
-use openwraith_app_core::{EventSink, ExitHook, ProgressSink};
+use openwraith_app_core::dto::{AppEvent, DepthFrame, ProgressEvent};
+use openwraith_app_core::{DepthSink, EventSink, ExitHook, ProgressSink};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Runtime};
 
@@ -21,6 +21,16 @@ pub struct ChannelProgress(pub Channel<ProgressEvent>);
 impl ProgressSink for ChannelProgress {
     fn send(&self, event: ProgressEvent) {
         let _ = self.0.send(event);
+    }
+}
+
+/// The frames of the live key-depth view. A send that fails (the window is
+/// gone) stops the view; the test is closed.
+pub struct ChannelDepth(pub Channel<DepthFrame>);
+
+impl DepthSink for ChannelDepth {
+    fn send(&self, frame: DepthFrame) -> bool {
+        self.0.send(frame).is_ok()
     }
 }
 

@@ -3,6 +3,7 @@
 // dictionary and the formatters, so they work in and outside React (tested).
 
 import { hexByte, tableName } from "../../flow/labels";
+import { W75_KEYS } from "../../generated/w75Keys";
 import { keyName, type Dict } from "../../i18n";
 import type { Format } from "../../i18n/format";
 import type {
@@ -19,6 +20,9 @@ import type {
   TriggerValue,
 } from "../../ipc/bindings";
 import { compressRanges, isAllProfiles, sortedUnique, type RestoreTally, type TableGroup } from "./model";
+
+/** Which flow a restore review or report belongs to: a restore, or an import of a profile file. */
+export type ReviewVariant = "restore" | "import";
 
 /** "1, 2 and 4" (localized list of numbers). */
 export function numberList(values: readonly number[], format: Format): string {
@@ -132,8 +136,13 @@ export function blockCauseTechnical(cause: BlockCauseView): string | null {
   }
 }
 
-/** Why a differing table isn't restored. */
-export function skipReasonText(reason: SkipReasonView, dict: Dict, format: Format): string {
+/** Why a differing table isn't restored (or imported). */
+export function skipReasonText(
+  reason: SkipReasonView,
+  dict: Dict,
+  format: Format,
+  variant: ReviewVariant = "restore",
+): string {
   const s = dict.backupRestore.skipReasons;
   switch (reason.code) {
     case "unconfirmed_command":
@@ -149,7 +158,9 @@ export function skipReasonText(reason: SkipReasonView, dict: Dict, format: Forma
         keyboard: unitText(reason.keyboard_um, dict, format),
       });
     case "keymap_group_blocked":
-      return s.keymap_group_blocked({ cause: blockCauseText(reason.cause, dict) });
+      return variant === "import"
+        ? dict.backupRestore.share.review.keymapGroupBlocked({ cause: blockCauseText(reason.cause, dict) })
+        : s.keymap_group_blocked({ cause: blockCauseText(reason.cause, dict) });
     case "no_known_command":
     case "invalid_light_record":
     case "knob":
@@ -171,13 +182,19 @@ export function skipReasonText(reason: SkipReasonView, dict: Dict, format: Forma
 /** A plan warning: its text, how it looks and technical details. */
 export interface WarningView {
   text: string;
-  tone: "warning" | "info";
+  tone: "danger" | "warning" | "info";
   technical: string | null;
+}
+
+/** The library's name of the key at `index` ("2", "Space"), or "#index" outside the layout. */
+function libraryKeyName(index: number): string {
+  return W75_KEYS.find((key) => key.index === index)?.name ?? `#${index}`;
 }
 
 /**
  * A plan warning in words. Amber when the result differs from what the file suggests (the SOCD
- * setting of another profile, a replaced Fn shortcut); the others are informational.
+ * setting of another profile, a replaced Fn shortcut), red for a replaced critical shortcut
+ * (a profile switch, the reset); the others are informational.
  */
 export function planWarningView(warning: PlanWarningView, dict: Dict, format: Format): WarningView {
   const w = dict.backupRestore.planWarnings;
@@ -209,8 +226,15 @@ export function planWarningView(warning: PlanWarningView, dict: Dict, format: Fo
         tone: "info",
         technical: null,
       };
-    case "fn_builtin_overridden":
-      return { text: w.fn_builtin_overridden({ index: warning.index }), tone: "warning", technical: null };
+    case "fn_builtin_overridden": {
+      const name = libraryKeyName(warning.index);
+      const kind = !warning.critical ? "other" : name === "Space" ? "reset" : "profile";
+      return {
+        text: w.fn_builtin_overridden({ key: keyName(dict, name), kind }),
+        tone: warning.critical ? "danger" : "warning",
+        technical: null,
+      };
+    }
     case "import_kept_as_read":
       return {
         text: w.import_kept_as_read({
@@ -252,9 +276,14 @@ export function keyNamesText(names: readonly string[], dict: Dict, limit = 6): s
   return rest > 0 ? `${shown.join(", ")} ${dict.common.andMore({ n: rest })}` : shown.join(", ");
 }
 
-/** The headline of a restore report. */
-export function restoreHeadline(report: RestoreReportView, tally: RestoreTally, dict: Dict): string {
-  const h = dict.backupRestore.result.headline;
+/** The headline of a restore (or import) report. */
+export function restoreHeadline(
+  report: RestoreReportView,
+  tally: RestoreTally,
+  dict: Dict,
+  variant: ReviewVariant = "restore",
+): string {
+  const h = variant === "import" ? dict.backupRestore.share.result.headline : dict.backupRestore.result.headline;
   switch (report.headline) {
     case "done":
       return tally.kept >= tally.total && tally.total > 0 ? h.done({ n: tally.total }) : h.doneUnchecked({ n: tally.verified });

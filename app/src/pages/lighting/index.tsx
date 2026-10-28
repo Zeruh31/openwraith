@@ -5,7 +5,8 @@
 // the edit (read-only), the user reviews the plan's current → new values and
 // presses Write, the backend saves a safety backup, writes, verifies, waits
 // for the keyboard to save and reads the light again; the report offers Undo.
-// Side light and per-key colours are not edited in this version.
+// This is the Effect tab; per-key colours are on the Key colours tab
+// (`./colors`). The side light is not edited in this version.
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
@@ -21,10 +22,10 @@ import { useFormat } from "../../i18n/format";
 import type { EditReportView as EditReport, LightEditIntent, LightEditPreview, PlanToken } from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { previewUi } from "../../preview/ui";
-import { navigate } from "../../routes";
-import { readAgain } from "../../shell/actions";
+import { href, navigate, tabTarget } from "../../routes";
+import { ReadAt } from "../../shell/ReadAt";
 import { connectionSummary } from "../../shell/statusText";
-import { isLocked, useOperationLock } from "../../state/operation";
+import { isLocked } from "../../state/operation";
 import { useSnapshot } from "../../state/snapshot";
 import { useStatus } from "../../state/status";
 import { basisOf, clearDraft, seedDraft, setDraft, setFlowOpen, useDraftState } from "./draftStore";
@@ -63,7 +64,6 @@ export default function LightingPage() {
   const format = useFormat();
   const status = useStatus();
   const { snapshot, stale, loading } = useSnapshot();
-  const lock = useOperationLock();
   const stored = useDraftState();
   const hintId = useId();
   const [flow, setFlow] = useState<FlowState | null>(null);
@@ -231,14 +231,7 @@ export default function LightingPage() {
         <PageHeader
           title={t.title}
           description={t.description}
-          actions={
-            <div className="ow-row">
-              <span className="ow-muted ow-small ow-num">{t.readAt({ time: format.time(snapshot.read_at) })}</span>
-              <Button size="sm" icon="refresh" disabled={lock.busy || !ready} onClick={readAgain}>
-                {dict.common.actions.readAgain}
-              </Button>
-            </div>
-          }
+          actions={<ReadAt time={snapshot.read_at} />}
         />
 
         <Callout kind="info" title={t.perProfile.title}>
@@ -324,6 +317,9 @@ export default function LightingPage() {
                   <div className="li-off">
                     <span className="ow-field__label">{t.color.label}</span>
                     <p className="ow-muted ow-small">{t.color.customNote}</p>
+                    <a className="li-link ow-small" href={href(tabTarget("lighting", "colors"))}>
+                      {t.color.editKeyColors}
+                    </a>
                   </div>
                 )}
 

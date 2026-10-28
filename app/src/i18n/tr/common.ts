@@ -10,6 +10,9 @@ export const common: Messages<typeof en> = {
   none: "Yok",
   yes: "Evet",
   no: "Hayır",
+  tip: {
+    dismiss: "Anladım",
+  },
   actions: {
     ok: "Tamam",
     cancel: "İptal",
@@ -37,6 +40,74 @@ export const common: Messages<typeof en> = {
   profile: (p) => `Profil ${p.n}`,
   profileUnknown: "Profil ?",
   profiles: (p) => `Profiller: ${p.list}`,
+  badge: {
+    unverified: "Henüz doğrulanmadı",
+    unverifiedTip:
+      "Wraith web sitesi de aynı baytları gönderir, ancak OpenWraith bunun etiketteki işi yaptığını bir W75'te henüz test etmedi.",
+    notes: {
+      "DKS tap at stage 4": "dinamik tuş vuruşunun 4. aşamasında dokunma",
+      'DKS "hold again" step': "dinamik tuş vuruşunda “bırakıp yeniden bas” adımı",
+      "Mod-Tap hold time other than 300 ms": "300 ms dışında bir Mod-Tap basılı tutma süresi",
+      "SOCD modes 2 and 3": "SOCD'nin 2. ve 3. modları",
+      "multimedia function named by the vendor site": "bu medya işlevi (adını Wraith web sitesi verir)",
+      "key combination with a right-side modifier": "sağ taraftaki bir değiştirici tuşla tuş kombinasyonu",
+      "advanced-key binding on the Fn layer": "Fn katmanında gelişmiş tuş",
+    },
+    noteOther: "bu ayar",
+    unverifiedNotes: (p) => `Henüz test edilmedi: ${p.list}.`,
+    kept: "Okunduğu gibi korunur",
+    keptTip:
+      "OpenWraith bunu klavyenin sakladığı biçimde gösterir ve değiştirmeden bırakır; düzenleyemez.",
+    keyboardWide: "Tüm profillere uygulanır",
+    keyboardWideTip: "Bu, klavyenin tamamına ait tek bir ayardır: değiştirince her profilde değişir.",
+  },
+  pickers: {
+    keyPicker: {
+      noMatch: "Eşleşen tuş yok",
+      pickOnBoard: "Klavyeden seçin…",
+      boardTitle: "Bir tuş seçin",
+      boardHint: "Bir tuşa tıklayın ya da ok tuşlarıyla gidip Enter'a basın.",
+      boardLabel: "Klavye: bir tuş seçin",
+      clear: "Temizle",
+      options: (p) => `${p.label}: öneriler`,
+    },
+    color: {
+      area: "Doygunluk ve parlaklık",
+      areaValue: (p) => `Doygunluk %${p.s}, parlaklık %${p.v}`,
+      hue: "Renk tonu",
+      hueValue: (p) => `${p.deg} derece`,
+      hex: "Renk kodu",
+      recent: "Son kullanılan renkler",
+      current: (p) => `Seçilen renk ${p.hex}`,
+    },
+    steps: {
+      moveUp: "Yukarı taşı",
+      moveDown: "Aşağı taşı",
+      remove: "Kaldır",
+      moved: (p) => `${p.from}. sıradan ${p.to}. sıraya taşındı.`,
+      removed: (p) => `${p.n}. adım kaldırıldı.`,
+      hint: "Alt + Yukarı ya da Alt + Aşağı odaktaki adımı taşır.",
+      position: (p) => `${p.n} / ${p.total}`,
+      empty: "Henüz adım yok.",
+    },
+    gauge: {
+      label: "Tuş yolu",
+      top: "Üst: basılı değil",
+      bottom: (p) => `Dip: tam basılı (${p.value})`,
+      actuation: (p) => `Aktivasyon noktası ${p.value}`,
+      rtPress: (p) => `Rapid Trigger: ${p.value} aşağı inince yeniden basar`,
+      rtRelease: (p) => `Rapid Trigger: ${p.value} yukarı çıkınca bırakır`,
+      deadTop: (p) => `Üst ölü bölge: ilk ${p.value}`,
+      deadBottom: (p) => `Alt ölü bölge: son ${p.value}`,
+      point: (p) => `${p.label}: ${p.value}`,
+      depth: (p) => `Şu an ${p.value} basılı`,
+      peak: (p) => `Şimdiye kadarki en derin ${p.value}`,
+    },
+    keyboard: {
+      knobTitle: "Döner düğme",
+      knobInfo: "Döner düğmenin sakladıklarını göster",
+    },
+  },
   unverified: {
     label: "Doğrulanmadı",
     tooltip:
@@ -82,7 +153,7 @@ export const common: Messages<typeof en> = {
     clampedMin: (p) => `En düşük değere ayarlandı: ${p.value}.`,
     clampedMax: (p) => `En yüksek değere ayarlandı: ${p.value}.`,
     colorPicker: (p) => `${p.label}: renk seçici`,
-    hexValue: (p) => `${p.label}: onaltılık değer`,
+    hexValue: (p) => `${p.label}: renk kodu`,
     invalidHex: "Bir renk girin, örneğin #ff8800.",
     swatches: "Hazır renkler",
   },
@@ -91,4 +162,12 @@ export const common: Messages<typeof en> = {
     body: "Sayfa gösterilirken bir sorun oluştu. Klavyeye hiçbir şey yazılmadı. Diğer sayfalar çalışmaya devam ediyor.",
   },
   disclaimer: "OpenWraith bağımsız bir projedir; Wraith ile bir bağlantısı yoktur.",
+  readAt: {
+    time: (p) => `Okunma saati: ${p.time}`,
+    again: "Klavyeyi yeniden oku",
+  },
+  notRead: {
+    reading: "Klavye okunuyor…",
+    goToKeyboard: "Klavye sayfasına git",
+  },
 };

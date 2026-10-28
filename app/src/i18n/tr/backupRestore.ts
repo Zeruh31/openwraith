@@ -1,13 +1,13 @@
-// Yedekle ve geri yükle sayfası (yedekleme sayfası ajanına ait): yedekleme,
-// geri yükleme sihirbazı, planın incelenmesi, geri yükleme raporu ve
-// güvenlik yedeklerinin listesi.
+// Yedek ve profiller sayfası (yedekleme sayfası ajanına ait): yedekleme,
+// geri yükleme sihirbazı, planın incelenmesi, geri yükleme raporu, profil
+// paylaşma (dışa ve içe aktarma) ve güvenlik yedeklerinin listesi.
 
 import type { backupRestore as en } from "../en/backupRestore";
 import type { Messages } from "../types";
 
 export const backupRestore: Messages<typeof en> = {
-  title: "Yedekle ve geri yükle",
-  description: "Klavyenin ayarlarını bir dosyaya kaydedin ve daha sonra geri getirin.",
+  title: "Yedek ve profiller",
+  description: "Klavyenin ayarlarını bir dosyaya kaydedin, daha sonra geri getirin ve bir profili paylaşın.",
   reasons: {
     notConnected: "Klavyeyi bağlayın ve okunmasını bekleyin.",
     busy: "Süren işlemin bitmesini bekleyin.",
@@ -244,7 +244,7 @@ export const backupRestore: Messages<typeof en> = {
     },
     nextSteps: "Sonraki adımlar",
     runAgain: "Geri yüklemeyi yeniden çalıştır",
-    runAgainHint: "Yeniden çalıştırmak için Yedekle ve geri yükle sayfasında yedeği seçip klavyeyle karşılaştırın.",
+    runAgainHint: "Yeniden çalıştırmak için Yedek ve profiller sayfasında yedeği seçip klavyeyle karşılaştırın.",
     connectFirst: "Önce klavyeyi bağlayın.",
   },
   safety: {
@@ -315,7 +315,11 @@ export const backupRestore: Messages<typeof en> = {
     imported: (p) => `Dosyadaki profil ${p.from}, klavyedeki profil ${p.into} üzerine yazılır.`,
     imported_macros: (p) => `Dosyadaki makrolar yazılır: ${p.slots}.`,
     fn_builtin_overridden: (p) =>
-      `Fn katmanı klavyenin kendi Fn kısayollarından birinin yerini alıyor (${p.index} numaralı tuş).`,
+      p.kind === "reset"
+        ? `Fn katmanı, basılı tutulunca klavyeyi sıfırlayan Fn + ${p.key} kısayolunun yerini alıyor. Yerine başka bir şey atanınca ne olacağı test edilmedi.`
+        : p.kind === "profile"
+          ? `Fn katmanı, klavyenin ${p.key} numaralı profile geçme kısayolu olan Fn + ${p.key} kısayolunun yerini alıyor.`
+          : `Fn katmanı klavyenin kendi Fn kısayollarından birinin yerini alıyor: Fn + ${p.key}.`,
     import_kept_as_read: (p) =>
       `Dosyadaki ${p.layer}, hiçbir zaman içe aktarılmayan konumlarda farklı (döner düğme, Fn tuşu, klavyenin kilitlediği tuşlar): ${p.keys}. Klavyedeki kayıtlar korunur.`,
     unverified: (p) =>
@@ -325,6 +329,182 @@ export const backupRestore: Messages<typeof en> = {
     set_trigger: "Aktivasyon değişikliğinden önce",
     set_light: "Işık değişikliğinden önce",
     restore: "Geri yüklemeden önce",
+    set_keys: "Tuş değişikliğinden önce",
+    set_colors: "Tuş rengi değişikliğinden önce",
+    set_deadband: "Ölü bölge değişikliğinden önce",
+    set_socd: "SOCD değişikliğinden önce",
+    import: "İçe aktarmadan önce",
     other: "Güvenlik yedeği",
+  },
+  share: {
+    title: "Profil paylaş",
+    intro:
+      "Bir profili paylaşmak ya da saklamak için dosyaya kaydedin; bir profil dosyasını da klavyenin istediğiniz profiline içe aktarın.",
+    noSerial: "Profil dosyası klavyenin USB seri numarasını hiçbir zaman içermez.",
+    dialog: {
+      save: "Profil dosyasını kaydet",
+      saveFilter: "OpenWraith profil dosyaları",
+      open: "İçe aktarılacak profil dosyasını seçin",
+      openFilter: "OpenWraith profil dosyaları ve yedekleri",
+    },
+    profileOption: (p) => (p.active ? `Profil ${p.n} (etkin)` : `Profil ${p.n}`),
+    parts: {
+      triggers: "Aktivasyon ve Rapid Trigger",
+      lighting: "Işık ve tuş renkleri",
+      keys: "Tuş atamaları, makrolar ve gelişmiş tuşlar",
+      dead_band: "Ölü bölge",
+      socd: "SOCD tuş çiftleri",
+    },
+    export: {
+      title: "Profili dışa aktar",
+      intro: "OpenWraith profili şimdi klavyeden okur ve bir profil dosyası (.owprofile.json) olarak kaydeder.",
+      profile: "Profil",
+      name: "Ad (isteğe bağlı)",
+      nameHint: "Dosyaya kaydedilir, örneğin “Turnuva”. Dosya adını bir sonraki adımda seçersiniz.",
+      holds:
+        "Dosya profilin tamamını içerir: aktivasyon ve Rapid Trigger, ışık ve tuş renkleri, makrolar ve gelişmiş tuşlarla birlikte tuş atamaları, ölü bölge ve SOCD tuş çiftleri. Hangi bölümlerin kullanılacağını içe aktaran kişi seçer; varsayılan olarak yalnızca aktivasyon ve ışık seçilidir.",
+      macrosNote: "Makrolar bastıkları tuşlar olarak kaydedilir; dosyayı verdiğiniz herkes bunları okuyabilir.",
+      switchNote: (p) =>
+        `${p.n} numaralı profili okumak için klavye bu profile geçip geri döner (ışık kısa süre değişir). Hiçbir ayar değiştirilmez.`,
+      button: (p) => `${p.n} numaralı profili dışa aktar…`,
+      consentTitle: "Okumak için profil değiştirilsin mi?",
+      consentBody: (p) =>
+        `${p.n} numaralı profili okumak için klavye bu profile geçer ve ${p.active} numaralı profile geri döner (ışık kısa süre değişir). Hiçbir ayar değiştirilmez.`,
+      consentBodyUnknown: (p) =>
+        `${p.n} numaralı profili okumak için klavye bu profile geçip geri döner (ışık kısa süre değişir). Hiçbir ayar değiştirilmez.`,
+      consentConfirm: "Profil değiştir ve dışa aktar",
+      saved: "Profil dosyası kaydedildi",
+      savedSummary: (p) => `Profil ${p.n} · firmware ${p.firmware}`,
+      switched: (p) => `Okumak için klavye ${p.n} numaralı profile geçip geri döndü.`,
+      file: "Dosya:",
+      noFileSaved: "Profil dosyası kaydedilmedi.",
+    },
+    contents: {
+      title: "Dosyanın içeriği",
+      titleOf: (p) => `Dosyadaki ${p.n} numaralı profilin içeriği`,
+      otherProfile: (p) => `İnceleme, dosyadaki ${p.n} numaralı profilin içeriğini gösterir.`,
+      none: "OpenWraith'in okuyabildiği bir ayar yok.",
+      missing: (p) => `Dosyada olmayanlar: ${p.list}.`,
+      advanced: (p) => `${p.n} gelişmiş tuş kullanımda.`,
+      macrosTitle: "Makrolar, bastıkları tuşlarla",
+      macro: (p) => `Makro ${p.n} · ${p.steps} adım · ${p.play}`,
+      macroUnknown: (p) =>
+        `Makro ${p.n} adım adım gösterilemiyor; bu yüzden bu dosyadan tuş atamaları, makrolar ve gelişmiş tuşlar içe aktarılamaz.`,
+      press: (p) => `${p.key} tuşuna basılır`,
+      release: (p) => `${p.key} tuşu bırakılır`,
+      wait: (p) => `${p.step}, ardından ${p.ms} ms beklenir`,
+    },
+    import: {
+      title: "Profili içe aktar",
+      intro:
+        "Bir profil dosyasının ayarlarını klavyenin profillerinden birine yazın. OpenWraith önce karşılaştırır ve neyin değişeceğini gösterir; siz onaylamadan hiçbir şey yazılmaz.",
+      open: "Profil dosyası aç…",
+      openOther: "Başka bir profil dosyası aç…",
+      backupsToo: "Bir yedek dosyası da seçebilirsiniz: önce yedeğin etkin profili önerilir.",
+      facts: {
+        made: "Oluşturulma",
+        keyboard: "Klavye",
+        firmware: "Firmware",
+        profiles: "Dosyadaki profiller",
+        tool: "Oluşturan program",
+      },
+      simulator: "Geliştirici simülatörüyle oluşturulmuş: gerçek bir klavyenin ayarlarını içermez.",
+      otherKeyboardTitle: "Bu dosya başka bir klavyeye ait",
+      otherKeyboardBody: (p) =>
+        `Şu modelde oluşturulmuş: ${p.model}. OpenWraith bir profili yalnızca aynı modele içe aktarır.`,
+      notChecked: "Bağlı bir klavye yok; bu yüzden OpenWraith bu dosyanın klavyeye uyup uymadığını henüz denetlemedi.",
+      from: "Dosyadaki profil",
+      into: "İçe aktarılacak profil",
+      intoHint: (p) =>
+        `Karşılaştırma için ${p.n} numaralı profil okunur: klavye bu profile geçip geri döner (ışık kısa süre değişir).`,
+      parts: "Neler içe aktarılsın",
+      partsHint:
+        "Varsayılan olarak aktivasyon ve ışık seçilidir. Diğer bölümleri yalnızca dosyadakiyle tıpatıp aynı olmalarını istiyorsanız seçin.",
+      notInFile: "Bu dosyada yok.",
+      keysHint: "Profilin tuş atamalarının, makrolarının ve gelişmiş tuşlarının tamamının yerini alır.",
+      socdHint: "SOCD'nin açık olup olmadığı tüm klavyeye ait tek bir ayardır: olduğu gibi kalır.",
+      firmwareTitle: "Bu dosya farklı bir firmware sürümüyle oluşturulmuş",
+      firmwareBody: (p) =>
+        `Dosya: firmware ${p.file}. Klavye: firmware ${p.keyboard}. Bazı ayarların biçimi sürümler arasında değişmiş olabilir.`,
+      firmwareAnyway: "Yine de içe aktar",
+      firmwareAnywayHint: "OpenWraith yine önce karşılaştırır ve bir şey yazmadan önce her değişikliği gösterir.",
+      review: "Karşılaştır ve incele…",
+      compareHint: "OpenWraith klavyeyi okur ve neyin değişeceğini gösterir. Siz onaylamadan hiçbir şey yazılmaz.",
+    },
+    reasons: {
+      noPart: "İçe aktarılacak en az bir bölüm seçin.",
+      otherKeyboard: "Bu dosya başka bir klavyeye ait.",
+      firmwareTick: "Bu dosyayı karşılaştırmak için “Yine de içe aktar” kutusunu işaretleyin.",
+    },
+    review: {
+      title: (p) => `Dosyadaki ${p.from} numaralı profil, klavyedeki ${p.into} numaralı profile içe aktarılsın mı?`,
+      chosen: (p) => `Seçilen bölümler: ${p.list}.`,
+      confirm: (p) => `${p.n} değişikliği içe aktar`,
+      safetyNote: (p) => `Önce profil ${p.n} için bir güvenlik yedeği şu klasöre kaydedilecek: ${p.dir}`,
+      file: "Dosya",
+      fileMade: "Dosyanın tarihi",
+      columnFile: "Dosyada",
+      profileSkipped: (p) => `${p.n} ayar içe aktarılmayacak`,
+      notImported: "İçe aktarılmayacak",
+      notInFile: (p) => `Dosyada yok (${p.n})`,
+      nothing: "Yazılacak bir şey yok: klavye, dosyanın seçilen bölümleriyle zaten aynı.",
+      nothingSkips: "Dosyanın şu bölümleri içe aktarılamaz:",
+      keymapGroupBlocked: (p) =>
+        `Tuş atamaları, makrolar ve gelişmiş tuşlar ancak birlikte içe aktarılabilir ve burada bu güvenli değil: ${p.cause}`,
+      blocked:
+        "Seçilen bölümlerin bazıları olduğu gibi içe aktarılamıyor; nedenini aşağıdaki “İçe aktarılmayacak” bölümü açıklıyor.",
+    },
+    critical: {
+      title: "Dosya klavyenin kendi kısayollarından birinin yerini alıyor",
+      profile: (p) =>
+        p.k === p.n
+          ? `Dosyada Fn + ${p.k} başka bir iş yapıyor. Klavyede Fn + ${p.k}, içe aktardığınız profil olan ${p.k} numaralı profile geçer; bu yüzden bu profilde hiçbir yere geçmez ve yerine başka bir şey atamak bir şey kaybettirmez. Yine de onayınız gerekir.`
+          : `Dosyada Fn + ${p.k} başka bir iş yapıyor. Klavyede Fn + ${p.k}, ${p.k} numaralı profile geçer; bu içe aktarmadan sonra ${p.n} numaralı profil etkinken ${p.k} numaralı profile klavyeden geçemezsiniz, yalnızca OpenWraith'ten geçebilirsiniz.`,
+      reset:
+        "Dosyada Fn + Boşluk başka bir iş yapıyor. Klavyede Fn + Boşluk (basılı tutulunca) klavyeyi sıfırlar. Yerine başka bir şey atanınca ne olacağı test edilmedi.",
+      other: (p) => `Dosyada Fn + ${p.key}, klavyenin kendi kısayollarından birinin yerini alıyor.`,
+      notImported: "Tuş atamaları, makrolar ve gelişmiş tuşlar yalnızca aşağıda izin verirseniz içe aktarılır.",
+      confirmProfile: (p) =>
+        p.k === p.n
+          ? `Yine de içe aktar: ${p.n} numaralı profilde Fn + ${p.k} değiştirilsin (yalnızca bu profile geçer)`
+          : `Yine de içe aktar: ${p.n} numaralı profil etkinken Fn + ${p.k} artık ${p.k} numaralı profile geçmeyecek`,
+      confirmReset: (p) => `Yine de içe aktar: ${p.n} numaralı profil etkinken Fn + Boşluk artık klavyeyi sıfırlamayacak`,
+      confirmOther: (p) => `Yine de içe aktar: ${p.n} numaralı profil etkinken Fn + ${p.key} artık kendi işini yapmayacak`,
+      confirmAll: (p) =>
+        `Yine de içe aktar: ${p.n} numaralı profilde ${p.keys} değiştirilsin; sonuçları yukarıda açıklandı`,
+      fnKey: (p) => `Fn + ${p.key}`,
+    },
+    result: {
+      headline: {
+        done: (p) =>
+          p.n === 1
+            ? "İçe aktarma tamamlandı. Değişiklik yazıldı, doğrulandı ve klavye onu sakladı (profil değişiminden sonra denetlendi)."
+            : `İçe aktarma tamamlandı. ${p.n} değişikliğin hepsi yazıldı, doğrulandı ve klavye bunları sakladı (profil değişiminden sonra denetlendi).`,
+        doneUnchecked: (p) =>
+          p.n === 1
+            ? "İçe aktarma tamamlandı. Değişiklik yazıldı ve doğrulandı."
+            : `İçe aktarma tamamlandı. ${p.n} değişiklik yazıldı ve doğrulandı.`,
+        nothingToDo: "Yazılacak bir şey yoktu: klavye, dosyanın seçilen bölümleriyle zaten aynıydı.",
+        cancelled: (p) => `Durduruldu. Durdurmadan önce ${p.written} değişiklik yazıldı; ${p.rest} değişiklik yazılmadı.`,
+        notWritten: "Hiçbir şey yazılmadı.",
+        failed: (p) =>
+          `İçe aktarma bir hatayla durdu. ${p.total} değişiklikten ${p.written} tanesi yazıldı ve doğrulandı; geri kalanı yazılmadı.`,
+        maybeLost: (p) =>
+          `Yazıldı ve doğrulandı, ama klavye ${p.n} değişikliği kaydetmemiş olabilir. Denetlemek için klavyeyi yeniden okuyun ya da geri alın.`,
+        lost: (p) => `Klavye ${p.n} değişikliği saklamadı. İçe aktarmayı yeniden çalıştırın ya da geri alın.`,
+      },
+      clearedBody:
+        "Makro 1 yazılınca klavye Makro 2–10'u siler; içe aktarma bunları yeniden yazamadan durdu. Geri al, bunları geri getirir.",
+      danglingBody:
+        "İçe aktarma yarıda kaldığı için bu tuşlar boş bir makroya ya da gelişmiş tuşa bağlı. Geri al, bunları geri getirir.",
+      skipped: "İçe aktarılmadı",
+      runAgain: "İçe aktarmayı yeniden çalıştır",
+    },
+    refusals: {
+      no_changes: "İçe aktarılacak en az bir bölüm seçin.",
+      not_available: "Bu, bu klavyede kullanılamıyor.",
+      unsupported_current_table: (p) => `OpenWraith, dosyadaki şu ayarı olduğu gibi içe aktaramıyor: ${p.table}.`,
+      other: "OpenWraith bunu, klavyeye hiçbir şey gönderilmeden önce reddetti.",
+    },
   },
 };

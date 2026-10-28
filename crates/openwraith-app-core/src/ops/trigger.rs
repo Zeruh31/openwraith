@@ -16,7 +16,7 @@ use crate::backend::DeviceBackend;
 use crate::dto::{
     AppError, EditReportView, ErrorDetail, IntentField, KeyEditView, LastReport, OpKind,
     PlanInvalidation, PlanToken, RangeField, ReadPurpose, RtIntent, TriggerDisabled,
-    TriggerEditIntent, TriggerEditPreview,
+    TriggerEditIntent, TriggerEditPreview, TriggerLimitsView,
 };
 use crate::map::{edit_report_view, key_ref, key_trigger_view, sat16, trigger_value_of_setting};
 use crate::sink::ProgressSink;
@@ -48,7 +48,8 @@ pub(crate) fn plan<T: Transport>(
     plan_trigger_edit(session, edit).map_err(|e| AppError::from(&e))
 }
 
-fn range(field: RangeField, value: u16, min: u16, max: u16) -> Result<(), AppError> {
+/// Refuses a value outside `min..=max` (never clamped).
+pub(crate) fn range(field: RangeField, value: u16, min: u16, max: u16) -> Result<(), AppError> {
     if value < min || value > max {
         return Err(invalid(
             ErrorDetail::ValueOutOfRange {
@@ -72,10 +73,15 @@ fn key_bytes(backup: &Backup, pos: KeyPos) -> Option<Vec<u8>> {
 }
 
 impl<B: DeviceBackend> Worker<B> {
-    /// Validates an intent against the snapshot the user saw.
-    fn trigger_edit(&self, intent: &TriggerEditIntent) -> Result<TriggerEdit, AppError> {
+    /// Checks keys against the snapshot the user saw (`based_on`): 1 to 81
+    /// distinct keys that can be changed, and the keyboard's limits.
+    pub(crate) fn trigger_keys(
+        &self,
+        indices: &[u8],
+        based_on: u32,
+    ) -> Result<(Vec<KeyPos>, TriggerLimitsView), AppError> {
         let snapshot = self.snapshot.as_ref().ok_or_else(Self::not_connected)?;
-        if intent.based_on != snapshot.revision {
+        if based_on != snapshot.revision {
             return Err(stale(PlanInvalidation::SnapshotChanged));
         }
         let triggers = &snapshot.triggers;
@@ -102,7 +108,7 @@ impl<B: DeviceBackend> Worker<B> {
                 "the trigger limits are unknown",
             )
         })?;
-        if intent.keys.is_empty() || intent.keys.len() > MAX_KEYS {
+        if indices.is_empty() || indices.len() > MAX_KEYS {
             return Err(invalid(
                 ErrorDetail::InvalidIntent {
                     field: IntentField::Keys,
@@ -111,8 +117,8 @@ impl<B: DeviceBackend> Worker<B> {
             ));
         }
         let mut seen = HashSet::new();
-        let mut keys = Vec::with_capacity(intent.keys.len());
-        for &index in &intent.keys {
+        let mut keys = Vec::with_capacity(indices.len());
+        for &index in indices {
             if !seen.insert(index) {
                 return Err(invalid(
                     ErrorDetail::InvalidIntent {
@@ -156,6 +162,12 @@ impl<B: DeviceBackend> Worker<B> {
             })?;
             keys.push(pos);
         }
+        Ok((keys, limits))
+    }
+
+    /// Validates an intent against the snapshot the user saw.
+    fn trigger_edit(&self, intent: &TriggerEditIntent) -> Result<TriggerEdit, AppError> {
+        let (keys, limits) = self.trigger_keys(&intent.keys, intent.based_on)?;
         if intent.actuation.is_none() && intent.rapid_trigger.is_none() {
             return Err(invalid(
                 ErrorDetail::InvalidIntent {
@@ -206,6 +218,15 @@ impl<B: DeviceBackend> Worker<B> {
     ) -> Result<TriggerEditPreview, AppError> {
         self.check_writable()?;
         let edit = self.trigger_edit(intent)?;
+        self.prepare_trigger_plan(&edit)
+    }
+
+    /// Plans a checked trigger edit (read-only) and stores the plan; a
+    /// trigger intent and a preset both end here.
+    pub(crate) fn prepare_trigger_plan(
+        &mut self,
+        edit: &TriggerEdit,
+    ) -> Result<TriggerEditPreview, AppError> {
         let shown = self.snapshot.as_ref().map(|s| s.profile);
         self.run_op(
             OpKind::TriggerEdit,
@@ -213,7 +234,7 @@ impl<B: DeviceBackend> Worker<B> {
             CancelPolicy::Never,
             |w, _| {
                 let session = w.session.as_mut().ok_or_else(Self::not_connected)?;
-                let plan = plan(session, &edit)?;
+                let plan = plan(session, edit)?;
                 if Some(plan.profile().get()) != shown {
                     w.reread = true;
                     w.invalidate(PlanInvalidation::ProfileChanged);

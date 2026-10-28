@@ -22,6 +22,7 @@ export const INITIAL_STATUS: DeviceStatus = {
   close_requested: false,
   interrupted: null,
   sim: false,
+  travel: { state: "closed", stray_reports: 0, marker_left: false },
 };
 
 /** The latest device status. */

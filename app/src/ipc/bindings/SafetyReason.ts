@@ -3,4 +3,4 @@
 /**
  * Why a safety backup was made.
  */
-export type SafetyReason = "set_trigger" | "set_light" | "restore" | "other";
+export type SafetyReason = "set_trigger" | "set_light" | "restore" | "set_keys" | "set_colors" | "set_deadband" | "set_socd" | "import" | "other";

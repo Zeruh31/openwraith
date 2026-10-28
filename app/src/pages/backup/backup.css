@@ -324,10 +324,132 @@
   margin-top: var(--space-2);
 }
 
+/* ---------- share a profile ---------- */
+
+/* Export and Import side by side from 1180 px of content (B12: two panes stack below). */
+.br-share__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  margin-top: var(--space-3);
+}
+
+@container (min-width: 1180px) {
+  .br-share__grid {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  }
+}
+
+.br-share__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.br-share__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+.br-share__icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.br-share__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+}
+
+.br-share__field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.br-share__field--wide {
+  flex: 1 1 240px;
+}
+
+.br-share__select {
+  min-width: 180px;
+}
+
+.br-share__name {
+  width: 100%;
+}
+
+.br-share__choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.br-share__checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.br-share__contents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.br-share__parts,
+.br-share__macros {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-share__parts > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.br-share__check {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.br-share__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding-left: var(--space-5);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (forced-colors: active) {
   .br-step__num,
   .br-chip,
   .br-acc {
     border: 1px solid CanvasText;
+  }
+
+  .br-share__check,
+  .br-share__icon {
+    color: CanvasText;
   }
 }

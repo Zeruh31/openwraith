@@ -118,6 +118,34 @@ const PATHS = {
       <path d="M12 4v4" />
     </>
   ),
+  keys: (
+    <>
+      <rect x="2.5" y="4.5" width="8.5" height="8.5" rx="1.8" />
+      <rect x="13" y="11" width="8.5" height="8.5" rx="1.8" />
+      <path d="M6.75 15.5v2a1.5 1.5 0 0 0 1.5 1.5H10M17.25 8.5v-2A1.5 1.5 0 0 0 15.75 5H14" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="M15 15l5.5 5.5" />
+    </>
+  ),
+  plus: <path d="M12 5v14M5 12h14" />,
+  trash: (
+    <>
+      <path d="M4.5 7h15M9.5 7V4.5h5V7" />
+      <path d="M6.5 7l1 13h9l1-13" />
+    </>
+  ),
+  "arrow-up": <path d="M12 19V5M6 11l6-6 6 6" />,
+  "arrow-down": <path d="M12 5v14M6 13l6 6 6-6" />,
+  pointer: (
+    <>
+      <path d="M6 3.5l12 7.5-5.2 1.2L10.5 18z" />
+      <path d="M12.8 12.2l4.2 5.3" />
+    </>
+  ),
 } satisfies Record<string, ReactElement>;
 
 /** The names of the icons. */
@@ -143,6 +171,7 @@ export function Icon({ name, size = 18, title, className }: IconProps) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
+      data-icon={name}
       strokeWidth={1.8}
       strokeLinecap="round"
       strokeLinejoin="round"

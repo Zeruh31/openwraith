@@ -89,6 +89,16 @@ pub enum SafetyReason {
     SetLight,
     /// Before a restore.
     Restore,
+    /// Before a key, macro or advanced-key change.
+    SetKeys,
+    /// Before a key-colour change.
+    SetColors,
+    /// Before a dead-band change.
+    SetDeadband,
+    /// Before a SOCD change.
+    SetSocd,
+    /// Before a profile import.
+    Import,
     /// Anything else.
     Other,
 }

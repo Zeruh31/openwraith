@@ -9,6 +9,10 @@ import { common as enCommon } from "./en/common";
 import { device as enDevice } from "./en/device";
 import { errors as enErrors } from "./en/errors";
 import { flow as enFlow } from "./en/flow";
+import { keys as enKeys } from "./en/keys";
+import { keysAdvanced as enKeysAdvanced } from "./en/keysAdvanced";
+import { keysAssign as enKeysAssign } from "./en/keysAssign";
+import { keysMacros as enKeysMacros } from "./en/keysMacros";
 import { lighting as enLighting } from "./en/lighting";
 import { settings as enSettings } from "./en/settings";
 import { shell as enShell } from "./en/shell";
@@ -18,12 +22,16 @@ import { common as trCommon } from "./tr/common";
 import { device as trDevice } from "./tr/device";
 import { errors as trErrors } from "./tr/errors";
 import { flow as trFlow } from "./tr/flow";
+import { keys as trKeys } from "./tr/keys";
+import { keysAdvanced as trKeysAdvanced } from "./tr/keysAdvanced";
+import { keysAssign as trKeysAssign } from "./tr/keysAssign";
+import { keysMacros as trKeysMacros } from "./tr/keysMacros";
 import { lighting as trLighting } from "./tr/lighting";
 import { settings as trSettings } from "./tr/settings";
 import { shell as trShell } from "./tr/shell";
-import type { Lang, Messages } from "./types";
+import type { Lang, Messages, Namespace } from "./types";
 
-export type { Lang, Messages } from "./types";
+export type { Lang, Messages, Namespace } from "./types";
 
 const en = {
   common: enCommon,
@@ -35,7 +43,11 @@ const en = {
   backupRestore: enBackupRestore,
   actuation: enActuation,
   lighting: enLighting,
-};
+  keys: enKeys,
+  keysAssign: enKeysAssign,
+  keysMacros: enKeysMacros,
+  keysAdvanced: enKeysAdvanced,
+} satisfies Record<Namespace, unknown>;
 
 /** A full dictionary (all areas). */
 export type Dict = Messages<typeof en>;
@@ -50,6 +62,10 @@ const tr: Dict = {
   backupRestore: trBackupRestore,
   actuation: trActuation,
   lighting: trLighting,
+  keys: trKeys,
+  keysAssign: trKeysAssign,
+  keysMacros: trKeysMacros,
+  keysAdvanced: trKeysAdvanced,
 };
 
 /** The dictionaries by language. */

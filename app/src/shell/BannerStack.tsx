@@ -1,6 +1,6 @@
 // App-wide banners above every page, in priority order: simulator, fault,
-// interrupted operation, keyboard reset, another program, safety folder,
-// stale values, untested firmware.
+// interrupted operation, keyboard reset, another program, a key-depth test
+// that may still be open, safety folder, stale values, untested firmware.
 
 import type { ReactNode } from "react";
 
@@ -10,7 +10,7 @@ import { Disclosure, TechnicalDetails } from "../components/Layout";
 import { useDict } from "../i18n";
 import { useFormat } from "../i18n/format";
 import { api } from "../ipc/commands";
-import { navigate } from "../routes";
+import { navigate, tabOf, tabTarget, useRoute } from "../routes";
 import { useAppInfo } from "../state/appInfo";
 import { useOperationLock } from "../state/operation";
 import { useStatus } from "../state/status";
@@ -23,6 +23,7 @@ export function BannerStack() {
   const status = useStatus();
   const info = useAppInfo();
   const lock = useOperationLock();
+  const route = useRoute();
   const b = dict.shell.banners;
   const banners: ReactNode[] = [];
   const connection = status.connection;
@@ -144,6 +145,36 @@ export function BannerStack() {
             })}
           </p>
         </Disclosure>
+      </Callout>,
+    );
+  }
+
+  // A key-depth test an earlier run (or a lost connection) may have left
+  // open. Stopping it sends a packet, so it is done on the Key depth tab
+  // (the vendor-site tick, a user click); that tab shows its own prompt.
+  const travel = status.travel;
+  const stray = travel.state === "maybe_open" || travel.stray_reports > 0 || travel.marker_left;
+  const onDepthTab = route.page === "actuation" && tabOf(route, "actuation") === "depth";
+  if (stray && status.busy?.kind !== "depth_view" && !onDepthTab) {
+    banners.push(
+      <Callout
+        key="travel"
+        kind="warning"
+        title={b.strayTravelTitle}
+        className="ow-banner"
+        actions={
+          <Button
+            size="sm"
+            icon="chevron"
+            onClick={() => {
+              navigate(tabTarget("actuation", "depth"));
+            }}
+          >
+            {b.strayTravelOpen}
+          </Button>
+        }
+      >
+        <p>{b.strayTravelBody}</p>
       </Callout>,
     );
   }

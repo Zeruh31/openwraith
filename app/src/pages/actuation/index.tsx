@@ -1,16 +1,17 @@
-// The Actuation & Rapid Trigger page: the W75 with each key's actuation
-// point or Rapid Trigger sensitivity, selection tools, an inspector that
-// edits a local draft, and the sticky apply bar. Writing goes only through
-// the shared WriteFlow: `prepare_trigger_edit` (read-only plan from a fresh
-// read) → review → explicit Write → `apply_trigger_edit` (one packet per
-// key, the keyboard's save wait) → report with the safety backup and Undo.
-// Nothing is sent while a slider is dragged or a value typed.
+// Actuation > Actuation & Rapid Trigger: the W75 with each key's actuation
+// point or Rapid Trigger sensitivity, selection tools, the presets menu, an
+// inspector that edits a local draft, and the sticky apply bar. Writing goes
+// only through the shared WriteFlow: `prepare_trigger_edit` (or
+// `prepare_preset_edit` for a draft filled from a preset; read-only plan from
+// a fresh read) → review → explicit Write → `apply_trigger_edit` (one packet
+// per key, the keyboard's save wait) → report with the safety backup and
+// Undo. Nothing is sent while a slider is dragged or a value typed.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApplyBar } from "../../components/ApplyBar";
-import { Button, IconButton } from "../../components/Button";
-import { Callout, EmptyState, Spinner } from "../../components/Feedback";
+import { Button } from "../../components/Button";
+import { Callout } from "../../components/Feedback";
 import { Card, PageHeader } from "../../components/Layout";
 import type { KeyVisual } from "../../components/keyboard";
 import { notEditableText } from "../../flow/labels";
@@ -18,15 +19,24 @@ import { EditReportView } from "../../flow/Report";
 import { WriteFlow, type OnProgress } from "../../flow/WriteFlow";
 import { keyName, useDict } from "../../i18n";
 import { useFormat } from "../../i18n/format";
-import type { AppError, EditReportView as EditReport, PlanToken, TriggerEditPreview } from "../../ipc/bindings";
+import type {
+  AppError,
+  EditReportView as EditReport,
+  PlanToken,
+  PresetRef,
+  TriggerEditPreview,
+} from "../../ipc/bindings";
 import { api } from "../../ipc/commands";
 import { previewUi } from "../../preview/ui";
 import { readAgain } from "../../shell/actions";
+import { NotReadEmptyState } from "../../shell/NotReadEmptyState";
+import { ReadAt } from "../../shell/ReadAt";
 import { isLocked, useOperationLock } from "../../state/operation";
 import { useSnapshot } from "../../state/snapshot";
 import { useStatus } from "../../state/status";
 import { ActuationKeyboard } from "./ActuationKeyboard";
 import {
+  applyPreset,
   discardDraft,
   effectiveDraft,
   ownerOf,
@@ -51,6 +61,7 @@ import {
   limitsOf,
   sameValue,
   selectableOf,
+  sameSettingKeys,
   selectedValues,
   summarize,
   targetOf,
@@ -59,7 +70,10 @@ import {
   type ShowMode,
   type TriggerDraft,
 } from "./model";
+import PresetsMenu from "./presets";
 import { seedFrom, type ActuationPreviewUi } from "./preview";
+import { editErrorNote, editPrepareError } from "./shared/EditParts";
+import { gateReason } from "./shared/editTexts";
 import { Toolbar } from "./Toolbar";
 import { NothingToChange, TriggerReview } from "./TriggerReview";
 import "./actuation.css";
@@ -80,6 +94,8 @@ export default function ActuationPage() {
   const selection = stored.selection;
   const [flowOpen, setFlowShown] = useState(false);
   const [autoOpen, setAutoOpen] = useState(seed.open);
+  // The name of the user preset the draft was filled from (for the review).
+  const [userPresetName, setUserPresetName] = useState<string | null>(null);
 
   // The draft and the selection live in a store that survives leaving the
   // page; it drops a draft made on another profile or connection itself
@@ -181,19 +197,19 @@ export default function ActuationPage() {
     [keys, dict, t, tooltips, dirty, selection, draft, texts, basic, show],
   );
 
+  // Why nothing can be written now, whatever is selected (also the presets' reason).
+  const baseReason =
+    snapshot === null
+      ? dict.errors.writeBlocked.not_connected
+      : !snapshot.triggers.editable
+        ? t.disabled[snapshot.triggers.disabled ?? "limits_unknown"]
+        : stale
+          ? dict.errors.writeBlocked.snapshot_stale
+          : gateReason(status, dict);
   // Why "Review and write…" can't be used now (shown under the button).
-  let blockReason: string | null = null;
-  if (snapshot === null) {
-    blockReason = dict.errors.writeBlocked.not_connected;
-  } else if (!snapshot.triggers.editable) {
-    blockReason = t.disabled[snapshot.triggers.disabled ?? "limits_unknown"];
-  } else if (stale) {
-    blockReason = dict.errors.writeBlocked.snapshot_stale;
-  } else if (!status.write_gate.allowed) {
-    const reason = status.write_gate.reasons[0];
-    blockReason = dict.errors.writeBlocked[reason ?? "not_connected"];
-  } else if (status.busy !== null) {
-    blockReason = dict.errors.writeBlocked.busy;
+  let blockReason: string | null = baseReason;
+  if (blockReason !== null) {
+    // Said above.
   } else if (selection.size === 0) {
     blockReason = t.apply.reasons.selectKeys;
   } else if (summary.keys.length === 0) {
@@ -207,12 +223,25 @@ export default function ActuationPage() {
     setFlowShown(true);
   };
 
+  // A preset fills the draft and the selection, then opens the review.
+  const onPreset = (chosenPreset: PresetRef, next: TriggerDraft, chosen: ReadonlySet<number>, name: string) => {
+    if (flowOpen || isLocked()) return;
+    applyPreset(identityKey, next, chosen, chosenPreset);
+    setUserPresetName(chosenPreset.kind === "user" ? name : null);
+    setFlowShown(true);
+  };
+  const preset = stored.preset;
+
   // The intent is built when the flow prepares (and again on "Review again"),
   // from the state the user sees then, with that snapshot's revision.
   const prepare = async (): Promise<TriggerEditPreview> => {
     if (snapshot === null) {
       const error: AppError = { kind: "not_connected", detail: null, message: "no keyboard values to plan from" };
       throw error;
+    }
+    if (preset !== null && isDirty(draft) && summary.keys.length > 0) {
+      // The preset's own values, planned by the backend (refused, never clamped, when out of range).
+      return api.preparePresetEdit({ preset, keys: [...summary.keys], based_on: snapshot.revision });
     }
     const intent = buildIntent(summary, draft, snapshot.revision);
     if (intent === null) {
@@ -242,6 +271,14 @@ export default function ActuationPage() {
     });
 
   const showFlow = flowOpen || (autoOpen && seeded && snapshot !== null);
+  // The preset's name for the review: a built-in one by id, a user preset's as it was chosen.
+  const builtinNames: Readonly<Record<string, string>> = t.presets.builtin;
+  const presetLabel =
+    preset === null
+      ? null
+      : preset.kind === "builtin"
+        ? (builtinNames[preset.id] ?? preset.id)
+        : (userPresetName ?? t.presets.userFallback);
   // The store's "discarded" toast is not shown for changes the flow makes.
   useEffect(() => {
     setFlowOpen(showFlow);
@@ -253,19 +290,17 @@ export default function ActuationPage() {
 
   return (
     <div className="act-page">
-      <PageHeader title={t.title} description={t.description} />
+      <PageHeader title={dict.shell.nav.actuation} description={t.description} />
       {snapshot === null ? (
         <Card>
-          <EmptyState icon="keyboard" title={t.empty.title}>
-            {loading || status.connection.state === "reading" ? (
-              <p className="ow-row">
-                <Spinner />
-                <span>{t.empty.reading}</span>
-              </p>
-            ) : (
-              <p>{t.empty.body}</p>
-            )}
-          </EmptyState>
+          <NotReadEmptyState
+            icon="keyboard"
+            title={t.empty.title}
+            body={t.empty.body}
+            failed={t.empty.body}
+            loading={loading}
+            error={false}
+          />
         </Card>
       ) : (
         <>
@@ -289,27 +324,33 @@ export default function ActuationPage() {
           <Card
             title={t.board.title({ n: snapshot.profile })}
             className="act-board-card"
-            actions={
-              <span className="act-read-at">
-                <span className="ow-muted ow-small ow-num">{t.board.readAt({ time: format.time(snapshot.read_at) })}</span>
-                <IconButton
-                  icon="refresh"
-                  size="sm"
-                  label={t.board.readAgain}
-                  disabled={lock.busy || status.connection.state !== "ready"}
-                  onClick={readAgain}
-                />
-              </span>
-            }
+            actions={<ReadAt time={snapshot.read_at} />}
           >
-            <Toolbar
+            <Toolbar<ShowMode>
               selection={selection}
               onSelect={setSelection}
-              keys={keys}
               selectable={selectable}
               changed={changed}
-              show={show}
-              onShow={setShow}
+              same={(current) => sameSettingKeys(current, keys, selectable)}
+              changedHint={t.select.changedHint}
+              show={{
+                value: show,
+                onChange: setShow,
+                options: [
+                  { value: "actuation", label: t.show.actuation },
+                  { value: "rapid_trigger", label: t.show.rapidTrigger },
+                ],
+              }}
+              extra={
+                <PresetsMenu
+                  keys={keys}
+                  selection={selection}
+                  draft={draft}
+                  unitUm={unitUm}
+                  disabledReason={baseReason}
+                  onApply={onPreset}
+                />
+              }
             />
             <ActuationKeyboard
               label={t.board.label}
@@ -404,10 +445,14 @@ export default function ActuationPage() {
               ? t.review.titleNothing
               : t.review.title({ n: preview.changing, profile: preview.profile })
           }
-          review={(preview) => <TriggerReview preview={preview} leftOut={leftOut} unitUm={unitUm} />}
+          review={(preview) => (
+            <TriggerReview preview={preview} leftOut={leftOut} unitUm={unitUm} presetName={presetLabel} />
+          )}
           nothingToDo={() => <NothingToChange />}
           confirmLabel={() => dict.common.actions.writeToKeyboard}
           writesSettings
+          prepareError={editPrepareError(unitUm)}
+          errorNote={editErrorNote(dict, format, unitUm)}
           apply={apply}
           result={(report) => <EditReportView report={report} />}
           onClose={closeFlow}

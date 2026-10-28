@@ -11,6 +11,10 @@ use crate::backend::DeviceBackend;
 use crate::dto::{
     AppError, AppErrorKind, ErrorDetail, FileToken, Notice, PlanInvalidation, PlanToken,
 };
+use crate::ops::colors::ColorPending;
+use crate::ops::dead_band::DeadBandPending;
+use crate::ops::keymap::KeymapPending;
+use crate::ops::socd::SocdPending;
 
 /// How long a plan may wait for the user.
 pub(crate) const PLAN_TTL: Duration = Duration::from_secs(600);
@@ -23,6 +27,11 @@ pub(crate) enum PlanKind {
     TriggerEdit,
     LightEdit,
     Restore,
+    KeymapEdit,
+    ColorEdit,
+    DeadBandEdit,
+    SocdEdit,
+    Import,
 }
 
 /// A plan waiting for confirmation.
@@ -40,6 +49,10 @@ pub(crate) enum PendingPlan {
         prepared: Box<PreparedRestore>,
         skipped: usize,
     },
+    KeymapEdit(Box<KeymapPending>),
+    ColorEdit(Box<ColorPending>),
+    DeadBandEdit(Box<DeadBandPending>),
+    SocdEdit(Box<SocdPending>),
 }
 
 /// The pending plan with its token and binding.

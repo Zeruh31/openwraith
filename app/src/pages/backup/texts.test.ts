@@ -104,9 +104,20 @@ describe.each(LANGS)("restore texts (%s)", (lang) => {
       const view = planWarningView(warning, dict, format);
       expect(view.text.trim().length, warning.code).toBeGreaterThan(10);
       expect(view.text).not.toContain("undefined");
-      const amber = warning.code === "socd_power_differs_in_backup" || warning.code === "fn_builtin_overridden";
-      expect(view.tone).toBe(amber ? "warning" : "info");
+      const amber = warning.code === "socd_power_differs_in_backup";
+      const red = warning.code === "fn_builtin_overridden";
+      expect(view.tone).toBe(red ? "danger" : amber ? "warning" : "info");
     }
+    // A replaced critical shortcut is named (not "key number N"); the reset is untested.
+    const two = planWarningView({ code: "fn_builtin_overridden", index: 24, critical: true }, dict, format).text;
+    expect(two).toContain("Fn + 2");
+    expect(two).not.toContain("24");
+    const space = planWarningView({ code: "fn_builtin_overridden", index: 116, critical: true }, dict, format).text;
+    expect(space).toContain(`Fn + ${dict.common.keyNames.Space}`);
+    expect(space).toContain(lang === "en" ? "has not been tested" : "test edilmedi");
+    const f5 = planWarningView({ code: "fn_builtin_overridden", index: 6, critical: false }, dict, format);
+    expect(f5.tone).toBe("warning");
+    expect(f5.text).toContain("Fn + F5");
     expect(planWarningView(WARNINGS[1] as PlanWarningView, dict, format).technical).toBe("21/04 distance unit");
   });
 

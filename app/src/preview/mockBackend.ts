@@ -13,14 +13,25 @@
 //   switch, reconnect, simulator actions) or taken from another fixture
 //   (`fallback`);
 // - after the fixture's last recorded call, its recorded events are replayed
-//   so the app ends in the recorded final state.
+//   so the app ends in the recorded final state;
+// - the live key-depth view replays the frames the fixture recorded
+//   (`ui.depth_frames`) on its channel and resolves with the recorded report
+//   when the page stops it (or at once for a stop the backend decided);
+// - the macro library of "this PC" is kept in memory, starting from the
+//   recorded one.
 
 import type {
   AppError,
   AppEvent,
+  DepthFrame,
+  DepthStopRequest,
+  DepthViewReport,
   DeviceSnapshot,
   DeviceStatus,
+  KeysState,
   LastReport,
+  MacroLibraryView,
+  MacroProgramView,
   OpKind,
   ProgressEvent,
   ProgressStep,
@@ -90,7 +101,36 @@ const OP_KINDS: Partial<Record<CommandName, OpKind>> = {
   apply_all_profile_backup: "backup_all",
   prepare_restore: "restore_prepare",
   apply_restore: "restore",
+  prepare_keymap_edit: "keymap_edit",
+  apply_keymap_edit: "keymap_edit",
+  prepare_color_edit: "color_edit",
+  apply_color_edit: "color_edit",
+  prepare_dead_band_edit: "dead_band_edit",
+  apply_dead_band_edit: "dead_band_edit",
+  prepare_socd_edit: "socd_edit",
+  apply_socd_edit: "socd_edit",
+  prepare_preset_edit: "trigger_edit",
+  close_stray_travel_test: "travel_close",
+  export_profile: "export",
+  prepare_import: "import_prepare",
+  apply_import: "import",
 };
+
+/** Commands that only read the app's state: unrecorded, they answer `null` while no keyboard was read. */
+const STATE_VIEWS: readonly CommandName[] = ["get_keys_state", "get_colors_state", "get_dead_band_state", "get_socd_state"];
+
+/** Stops the page asks for: the recorded view waits for one of them. */
+const PAGE_STOPS: readonly string[] = ["requested", "page_left", "window_hidden"];
+
+/** A stable 16-hex-digit hash for macros saved in the preview (FNV-1a 64 over the program's JSON). */
+function previewHash(program: MacroProgramView): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const char of JSON.stringify(program)) {
+    hash ^= BigInt(char.charCodeAt(0));
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
 
 /** Fixtures preferred as fallbacks (successful flows first). */
 const FALLBACK_ORDER = [
@@ -102,6 +142,19 @@ const FALLBACK_ORDER = [
   "safety_list",
   "undo_preview",
   "profile_switch",
+  "keys_ready",
+  "keys_apply_ok",
+  "colors_ready",
+  "colors_apply_ok",
+  "dead_band_ready",
+  "dead_band_apply_ok",
+  "socd_ready_pairs",
+  "socd_apply_ok",
+  "presets_ready",
+  "depth_live",
+  "depth_stray_marker",
+  "export_done",
+  "import_apply_ok",
 ];
 
 function error(kind: AppError["kind"], message: string): AppError {
@@ -120,7 +173,13 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
   let opCounter = 900;
   let writesSent = 0;
   let tailPlayed = false;
+  /** Events already replayed (those recorded before the first call, at `subscribe`). */
+  let eventsPlayed = 0;
   let lastPreview: Recorded | null = null;
+  let hints: string[] = [];
+  let macroLibrary: MacroLibraryView | null = null;
+  let keysSeen: KeysState | null = null;
+  let depth: { finish: (reason: DepthStopRequest) => void } | null = null;
   const cursors = new Map<string, number>();
   const lastCall = fixture.calls[fixture.calls.length - 1];
 
@@ -211,7 +270,7 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
     if (tailPlayed || lastCall === undefined) return;
     tailPlayed = true;
     let previous = lastCall.at_ms + afterMs;
-    for (const item of fixture.events) {
+    for (const item of fixture.events.slice(eventsPlayed)) {
       if (item.at_ms > previous) {
         await wait(item.at_ms - previous);
         previous = item.at_ms;
@@ -249,6 +308,7 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
   const absorb = (rec: Recorded) => {
     switch (rec.command) {
       case "prepare_trigger_edit":
+      case "prepare_preset_edit":
       case "prepare_light_edit":
         lastPreview = rec;
         break;
@@ -256,7 +316,11 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
         if (rec.ok !== null) {
           lastReport = { kind: "edit", report: rec.ok };
           writesSent += rec.ok.items.length;
-          if (rec.ok.anything_written && lastPreview?.command === "prepare_trigger_edit" && snapshot !== null) {
+          if (
+            rec.ok.anything_written &&
+            (lastPreview?.command === "prepare_trigger_edit" || lastPreview?.command === "prepare_preset_edit") &&
+            snapshot !== null
+          ) {
             const preview = lastPreview.ok;
             for (const edit of preview?.keys ?? []) {
               const key = snapshot.triggers.keys.find((k) => k.key.index === edit.key.index);
@@ -275,8 +339,28 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
           }
         }
         break;
+      case "apply_keymap_edit":
+      case "apply_color_edit":
+      case "apply_dead_band_edit":
+      case "apply_socd_edit":
+        if (rec.ok !== null) {
+          lastReport = { kind: "edit", report: rec.ok };
+          writesSent += rec.ok.items.length;
+        }
+        break;
       case "apply_restore":
         if (rec.ok !== null) lastReport = { kind: "restore", report: rec.ok };
+        break;
+      case "apply_import":
+        if (rec.ok !== null) lastReport = { kind: "import", report: rec.ok };
+        break;
+      case "close_stray_travel_test":
+        if (rec.ok?.close.close === "acked") {
+          publish({ ...status, travel: { state: "closed", stray_reports: 0, marker_left: false } });
+        }
+        break;
+      case "get_keys_state":
+        keysSeen = rec.ok;
         break;
       case "apply_profile_switch":
         if (rec.ok !== null) {
@@ -396,6 +480,92 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
     }
   };
 
+  /** The recorded live view: this fixture's, else (with fallbacks) another fixture's, with its frames. */
+  const depthRecording = (): { report: DepthViewReport | null; err: AppError | null; frames: DepthFrame[] } | null => {
+    const ids = options.fallback ? [...FALLBACK_ORDER, ...Object.keys(options.library)] : [];
+    const sources = [fixture, ...ids.flatMap((id) => options.library[id] ?? [])];
+    for (const source of sources) {
+      for (const call of source.calls) {
+        if (call.command !== "start_depth_view") continue;
+        const frames = (source.ui?.["depth_frames"] as DepthFrame[] | undefined) ?? [];
+        return { report: clone(call.ok), err: clone(call.err), frames: clone(frames) };
+      }
+    }
+    return null;
+  };
+
+  /**
+   * The live key-depth view: busy and "open" while it runs, the recorded
+   * frames on the channel at their recorded times, then the recorded report
+   * when the page stops it (or at once for a stop the backend decided), and
+   * the `depth_view_stopped` notice.
+   */
+  const depthView = async (channel: ChannelRef | null): Promise<DepthViewReport> => {
+    const recording = depthRecording();
+    if (recording === null) {
+      throw error("internal", `the preview scenario "${fixture.id}" has no recording of start_depth_view`);
+    }
+    if (recording.err !== null) throw recording.err;
+    const report = recording.report;
+    if (report === null) throw error("internal", "the recorded live view has no report");
+    if (status.busy !== null || depth !== null) throw error("operation_running", "another operation is running (preview)");
+    requireReady();
+    const stop: { reason: DepthStopRequest | null } = { reason: null };
+    const stopped = new Promise<DepthStopRequest>((resolve) => {
+      depth = {
+        finish: (reason) => {
+          stop.reason ??= reason;
+          resolve(stop.reason);
+        },
+      };
+    });
+    setBusy("depth_view", `o-${opCounter++}`);
+    publish({ ...status, travel: { ...status.travel, state: "open" } });
+    let previous = 0;
+    for (const [index, frame] of recording.frames.entries()) {
+      await wait(frame.open_ms - previous);
+      previous = frame.open_ms;
+      if (stop.reason !== null) break;
+      if (channel !== null) deliver(channel.id, { index, message: frame });
+    }
+    const reason = PAGE_STOPS.includes(report.reason) ? await stopped : report.reason;
+    depth = null;
+    const final: DepthViewReport = { ...report, reason };
+    publish({
+      ...status,
+      busy: null,
+      write_gate: gateWith(status.write_gate.reasons.filter((r) => r !== "busy")),
+      travel: { ...status.travel, state: final.may_be_open ? "maybe_open" : "closed" },
+    });
+    send({ event: "notice", notice: { notice: "depth_view_stopped", reason: final.reason, close: final.close } });
+    return final;
+  };
+
+  /** The macro library of "this PC": the recorded one first (its notice once), then kept in memory. */
+  const macros = (): MacroLibraryView => {
+    if (macroLibrary !== null) return { ...clone(macroLibrary), notice: null };
+    const found = nextRecorded("list_macro_library");
+    if (found?.rec.command === "list_macro_library" && found.rec.err !== null) throw found.rec.err;
+    const recorded = found?.rec.command === "list_macro_library" ? found.rec.ok : null;
+    macroLibrary = recorded === null ? { entries: [], notice: null } : clone(recorded);
+    return clone(macroLibrary);
+  };
+
+  /** A program's content hash: a keyboard slot's or a library entry's when equal, else a preview hash. */
+  const hashOf = (program: MacroProgramView): string => {
+    const json = JSON.stringify(program);
+    for (const slot of keysSeen?.macros ?? []) {
+      if (slot.content.state === "program" && JSON.stringify(slot.content.program) === json) return slot.content.content_hash;
+    }
+    return macroLibrary?.entries.find((entry) => JSON.stringify(entry.program) === json)?.content_hash ?? previewHash(program);
+  };
+
+  const editLibrary = (change: (entries: MacroLibraryView["entries"]) => MacroLibraryView["entries"]): MacroLibraryView => {
+    macros();
+    macroLibrary = { entries: change(macroLibrary?.entries ?? []), notice: null };
+    return clone(macroLibrary);
+  };
+
   const handle = async (command: string, rawArgs: unknown): Promise<unknown> => {
     const args = argsRecord(rawArgs);
     const name = command as CommandName;
@@ -413,10 +583,17 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
       case "subscribe": {
         const subscription = args["channel"];
         if (isChannel(subscription)) subscriber = { channel: subscription, index: 0 };
-        if (options.replayEvents && fixture.calls.length === 0) {
+        // Without calls, every event; with calls, those recorded before the
+        // first one (e.g. a connection that hears a test left open); the
+        // rest follow the last call.
+        const firstCall = fixture.calls[0];
+        const early =
+          firstCall === undefined ? fixture.events : fixture.events.filter((item) => item.at_ms < firstCall.at_ms);
+        if (options.replayEvents && early.length > 0 && eventsPlayed === 0) {
+          eventsPlayed = early.length;
           void (async () => {
             let previous = 0;
-            for (const item of fixture.events) {
+            for (const item of early) {
               await wait(item.at_ms - previous);
               previous = item.at_ms;
               if (item.event.event === "status") publish({ ...item.event.status, sim: status.sim });
@@ -449,8 +626,43 @@ export function createMockBackend(source: Fixture, options: MockOptions): MockBa
         return simInfo();
       case "dev_sim_action":
         return simAction(args["action"] as SimAction);
+      case "get_hints_shown":
+        return [...hints];
+      case "mark_hint_shown": {
+        const hint = String(args["hint"]);
+        if (!hints.includes(hint)) hints = [...hints, hint];
+        return [...hints];
+      }
+      case "reset_hints_shown":
+        hints = [];
+        return [];
+      case "start_depth_view":
+        return depthView(isChannel(args["channel"]) ? args["channel"] : null);
+      case "stop_depth_view":
+        if (depth === null) return false;
+        depth.finish(args["reason"] as DepthStopRequest);
+        return true;
+      case "list_macro_library":
+        return macros();
+      case "save_library_macro": {
+        const program = args["program"] as MacroProgramView;
+        const hash = hashOf(program);
+        const entry = { content_hash: hash, name: String(args["name"]).trim(), program: clone(program), saved_at: new Date().toISOString() };
+        return editLibrary((entries) => [...entries.filter((e) => e.content_hash !== hash), entry]);
+      }
+      case "rename_library_macro":
+        return editLibrary((entries) =>
+          entries.map((e) => (e.content_hash === args["hash"] ? { ...e, name: String(args["name"]).trim() } : e)),
+        );
+      case "delete_library_macro":
+        return editLibrary((entries) => entries.filter((e) => e.content_hash !== args["hash"]));
       default:
         break;
+    }
+
+    // Views of the last full read: none while no keyboard was read.
+    if (STATE_VIEWS.includes(name) && !fixture.calls.some((call) => call.command === name)) {
+      if (snapshot === null || status.snapshot_revision === null) return null;
     }
 
     // Recorded calls (own fixture first).

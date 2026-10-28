@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::common::{DeviceId, DeviceIdentityView, FileRef, ForeignActivityView, OpId};
 use super::error::AppError;
 use super::progress::ProgressEvent;
+use super::travel::{DepthStopReason, TravelCloseView, TravelStatusView};
 
 /// An event on the `subscribe` channel.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -45,6 +46,24 @@ pub enum Notice {
     Connected,
     /// The keyboard was disconnected.
     Disconnected,
+    /// SOCD was switched on the keyboard (Fn + Right Shift): the SOCD view
+    /// is updated and a pending plan made against the old power (SOCD edit,
+    /// restore or import touching SOCD) was invalidated.
+    SocdToggledOnKeyboard {
+        /// SOCD on after the toggle (every profile).
+        power: bool,
+    },
+    /// The live key-depth view stopped.
+    DepthViewStopped {
+        /// Why.
+        reason: DepthStopReason,
+        /// How the close went.
+        close: TravelCloseView,
+    },
+    /// A key-depth test may still be open on the keyboard (a marker of an
+    /// earlier run, or stream reports nobody here asked for): offer
+    /// `close_stray_travel_test`.
+    StrayTravelTest,
 }
 
 /// Why a plan was invalidated.
@@ -108,6 +127,8 @@ pub struct DeviceStatus {
     pub interrupted: Option<InterruptedOp>,
     /// Whether this is the developer simulator.
     pub sim: bool,
+    /// Whether a key-depth test is (or may be) open on the keyboard.
+    pub travel: TravelStatusView,
 }
 
 /// The connection state machine.
@@ -255,6 +276,24 @@ pub enum OpKind {
     RestorePrepare,
     Restore,
     Recheck,
+    /// A keymap-group edit (keys, macros, advanced keys).
+    KeymapEdit,
+    /// A key-colour edit (custom table 1).
+    ColorEdit,
+    /// A dead-band edit.
+    DeadBandEdit,
+    /// A SOCD edit.
+    SocdEdit,
+    /// The live key-depth view.
+    DepthView,
+    /// The close of a key-depth test left open.
+    TravelClose,
+    /// An export of one profile to a file.
+    Export,
+    /// The comparison of an import.
+    ImportPrepare,
+    /// An import of a profile file.
+    Import,
 }
 
 /// An operation that was interrupted (the journal was left behind).

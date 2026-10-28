@@ -1,5 +1,6 @@
 // The header: app name, the connection pill (with a details popover), the
-// busy indicator and the profile switcher.
+// "Live" pill of the key-depth view, the busy indicator and the profile
+// switcher.
 
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -14,14 +15,15 @@ import { useDict, type Dict } from "../i18n";
 import { useFormat } from "../i18n/format";
 import type { DeviceStatus, ProfileSwitchPreview, ProfileSwitchReport } from "../ipc/bindings";
 import { api } from "../ipc/commands";
-import { navigate, type PageId } from "../routes";
+import { hasTabs, href, navigate, tabTarget } from "../routes";
 import { useAppInfo } from "../state/appInfo";
-import { useDraftPages } from "../state/drafts";
+import { useDraftEntries, type DraftInfo } from "../state/drafts";
 import { isLocked, useOperationLock } from "../state/operation";
 import { useStatus } from "../state/status";
 import { toast } from "../state/toasts";
 import { readAgain, reconnect, release } from "./actions";
 import { toggleDevSimPanel, useDevSimPanelOpen } from "./DevSimPanel";
+import { tabLabel } from "./PageTabs";
 import { canConnect, connectionSummary } from "./statusText";
 
 /** OpenWraith's mark (original artwork: a keycap with an open ring). */
@@ -42,8 +44,16 @@ export function AppLogo({ size = 28 }: { size?: number | undefined }) {
   );
 }
 
-function pageNames(pages: readonly PageId[], dict: Dict): string[] {
-  return pages.map((page) => dict.shell.nav[page]);
+/** "Keys > Macros: 1 unwritten change" (the page alone for a page-wide draft). */
+export function draftText(entry: DraftInfo, dict: Dict): string {
+  const page = dict.shell.nav[entry.page];
+  let where = page;
+  if (entry.tab !== null && hasTabs(entry.page)) {
+    where = dict.shell.drafts.where({ page, tab: tabLabel(dict, entry.page, entry.tab) });
+  }
+  return entry.count === null
+    ? dict.shell.drafts.entryUncounted({ where })
+    : dict.shell.drafts.entry({ where, count: entry.count });
 }
 
 /** The connection pill and its popover. */
@@ -180,12 +190,31 @@ export function DeviceStatusPill() {
   );
 }
 
-/** The current operation's step (from the status, so it survives a reload). */
+/** The key-depth view runs (it holds the keyboard until it is stopped). */
+export function depthViewLive(status: Pick<DeviceStatus, "busy" | "travel">): boolean {
+  return status.busy?.kind === "depth_view" || status.travel.state === "open";
+}
+
+/** "Live" while the key-depth view runs; it leads to the tab that stops it. */
+export function LivePill() {
+  const dict = useDict();
+  const status = useStatus();
+  if (!depthViewLive(status)) return null;
+  return (
+    <a className="ow-live-pill" href={href(tabTarget("actuation", "depth"))} title={dict.shell.header.liveTitle}>
+      <span className="ow-live-pill__dot" aria-hidden="true" />
+      <span>{dict.shell.header.live}</span>
+      <span className="sr-only">{dict.shell.header.liveTitle}</span>
+    </a>
+  );
+}
+
+/** The current operation's step (from the status, so it survives a reload); the live view shows the "Live" pill instead. */
 export function BusyIndicator() {
   const dict = useDict();
   const status = useStatus();
   const busy = status.busy;
-  if (busy === null) {
+  if (busy === null || busy.kind === "depth_view") {
     return null;
   }
   const text = busy.last === null ? dict.flow.opKinds[busy.kind] : stepLabel(busy.last.step, dict);
@@ -229,7 +258,7 @@ export function ProfileSwitcher() {
   const format = useFormat();
   const status = useStatus();
   const lock = useOperationLock();
-  const drafts = useDraftPages();
+  const drafts = useDraftEntries();
   const reasonId = useId();
   const [target, setTarget] = useState<number | null>(null);
   const opening = useRef(false);
@@ -274,8 +303,12 @@ export function ProfileSwitcher() {
                 <p>{dict.shell.switcher.saveWait({ seconds: format.seconds(plan.save_wait_ms) })}</p>
               ) : null}
               {drafts.length > 0 ? (
-                <Callout kind="warning">
-                  {dict.shell.switcher.drafts({ pages: format.list(pageNames(drafts, dict)) })}
+                <Callout kind="warning" title={dict.shell.switcher.drafts}>
+                  <ul>
+                    {drafts.map((entry) => (
+                      <li key={`${entry.page}/${entry.tab ?? ""}`}>{draftText(entry, dict)}</li>
+                    ))}
+                  </ul>
                 </Callout>
               ) : null}
             </div>
@@ -339,6 +372,7 @@ export function Header() {
       </div>
       <DeviceStatusPill />
       <div className="ow-header__spacer" />
+      <LivePill />
       <BusyIndicator />
       <ProfileSwitcher />
     </header>

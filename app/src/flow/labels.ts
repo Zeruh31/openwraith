@@ -2,16 +2,37 @@
 // details. Every function takes the dictionary, so it works in and outside
 // React.
 
-import { keyName, type Dict } from "../i18n";
+import { DICTIONARIES, keyName, type Dict } from "../i18n";
 import type { Format } from "../i18n/format";
 import type {
   AppError,
+  BindingView,
+  CommitTriggerReasonView,
+  DeviceStatus,
   ErrorDetail,
+  KeymapProblemView,
+  KeyRef,
+  LayerView,
   NotEditable,
   ProgressStep,
+  ResendReasonView,
   TableRef,
+  WriteBlockReason,
   WriteWarningView,
 } from "../ipc/bindings";
+
+/**
+ * "Another operation is running", or the live key-depth view by name: it
+ * holds the keyboard until it is stopped, and only the Key depth tab stops it.
+ */
+export function busyText(status: Pick<DeviceStatus, "busy">, dict: Dict): string {
+  return status.busy?.kind === "depth_view" ? dict.errors.depthViewRunning : dict.errors.writeBlocked.busy;
+}
+
+/** A write-gate reason as text ("busy" names the live key-depth view). */
+export function writeBlockText(reason: WriteBlockReason, status: Pick<DeviceStatus, "busy">, dict: Dict): string {
+  return reason === "busy" ? busyText(status, dict) : dict.errors.writeBlocked[reason];
+}
 
 /** "0x05". */
 export function hexByte(value: number): string {
@@ -182,7 +203,112 @@ export function describeDetail(detail: ErrorDetail, dict: Dict, format: Format):
       return detail.file_name === null ? null : d.io({ file: detail.file_name });
     case "unsupported_schema":
       return d.unsupported_schema({ found: detail.found, supported: detail.supported });
+    case "keymap":
+      return keymapProblemText(detail.problem, dict);
+    case "edit":
+      // Colour, dead band, SOCD and preset refusals: their pages explain
+      // them (the detail's problem) until a shared text exists.
+      return null;
   }
+}
+
+/** A key with its layer and number, as refusals name it: "Fn + F1 (#2)", "Caps Lock (#90)". */
+export function keyRefText(key: Pick<KeyRef, "index" | "name">, layer: LayerView, dict: Dict): string {
+  const k = dict.errors.keymap;
+  const name = keyName(dict, key.name);
+  return layer === "fn" ? k.keyRefFn({ key: name, index: key.index }) : k.keyRef({ key: name, index: key.index });
+}
+
+/** A binding (a key on a layer) as refusals name it. */
+export function bindingText(binding: BindingView, dict: Dict): string {
+  return keyRefText(binding.key, binding.layer, dict);
+}
+
+/**
+ * Why a key-assignment change was refused (nothing was written). Built-ins
+ * are always on the Fn layer; technical reasons stay in the English message
+ * (under "Technical details").
+ */
+export function keymapProblemText(problem: KeymapProblemView, dict: Dict): string {
+  const k = dict.errors.keymap;
+  const slot = (kind: "macro" | "advanced", n: number) =>
+    kind === "macro" ? dict.flow.tables.macro({ n: n + 1 }) : dict.flow.tables.advanced_key({ n: n + 1 });
+  switch (problem.problem) {
+    case "no_changes":
+    case "not_offered":
+    case "invalid_combo":
+    case "macro_last_delay":
+    case "macro_times_zero":
+    case "dks_shape":
+    case "knob":
+    case "fn_key":
+    case "unknown_model":
+    case "other":
+      return k[problem.problem];
+    case "too_many_changes":
+      return k.too_many_changes({ max: problem.max });
+    case "not_a_key":
+      return k.not_a_key({ index: problem.index });
+    case "slot_out_of_range":
+      return k.slot_out_of_range({ slot: slot(problem.kind, problem.slot) });
+    case "macro_too_long":
+      return k.macro_too_long({ steps: problem.steps, max: problem.max });
+    case "macro_unbalanced":
+      return k.macro_unbalanced({ step: problem.step + 1 });
+    case "dks_point":
+      return k.dks_point({ value: mmTenths(problem.value, dict), max: mmTenths(problem.max, dict) });
+    case "dks_steps":
+      return k.dks_steps({ row: problem.row + 1 });
+    case "mt_hold_time":
+      return k.mt_hold_time({
+        value: `${problem.value_ms} ms`,
+        min: `${problem.min_ms} ms`,
+        max: `${problem.max_ms} ms`,
+      });
+    case "swap_not_writable":
+      return k.swap_not_writable({ key: keyRefText(problem.key, problem.layer, dict) });
+    case "fn_locked":
+      return k.fn_locked({ key: keyRefText(problem.key, "fn", dict) });
+    case "builtin_not_acknowledged": {
+      const params = { key: keyRefText(problem.key, "fn", dict), function: builtinName(problem.key.index, problem.function, dict) };
+      return problem.critical ? k.builtin_not_acknowledged_critical(params) : k.builtin_not_acknowledged(params);
+    }
+    case "no_usage":
+      return k.no_usage({ key: keyRefText(problem.key, "base", dict) });
+    case "no_free_slot":
+      return k.no_free_slot[problem.kind];
+    case "slot_already_bound":
+      return k.slot_already_bound({ slot: tableName(problem.slot, dict), key: bindingText(problem.by, dict) });
+    case "binding_to_empty_slot":
+      return k.binding_to_empty_slot({ key: bindingText(problem.binding, dict), slot: tableName(problem.slot, dict) });
+    case "new_slot_replaces_edit":
+      return k.new_slot_replaces_edit({ key: keyRefText(problem.key, problem.layer, dict), slot: tableName(problem.slot, dict) });
+    case "slot_still_referenced":
+      return k.slot_still_referenced({
+        slot: tableName(problem.slot, dict),
+        keys: problem.by.map((binding) => bindingText(binding, dict)).join(", "),
+      });
+    case "unsupported_current_table":
+      return k.unsupported_current_table({ table: tableName(problem.table, dict) });
+  }
+}
+
+/** A distance in 0.1 mm as millimetres with one decimal in the UI language ("1,2 mm"). */
+function mmTenths(tenths: number, dict: Dict): string {
+  const text = (tenths / 10).toFixed(1);
+  return `${dict === DICTIONARIES.tr ? text.replace(".", ",") : text} mm`;
+}
+
+/** The localized name of a keyboard built-in Fn function, by key index (the library's English name otherwise). */
+export function builtinName(index: number, fallback: string, dict: Dict): string {
+  const names: Readonly<Record<string, string>> = dict.keys.builtins;
+  return names[String(index)] ?? fallback;
+}
+
+/** The short keycap label of a keyboard built-in Fn function (its full name when there is none). */
+export function builtinCap(index: number, fallback: string, dict: Dict): string {
+  const caps: Readonly<Record<string, string | undefined>> = dict.keys.builtinCaps;
+  return caps[String(index)] ?? builtinName(index, fallback, dict);
 }
 
 /** The localized title of an error. */
@@ -193,4 +319,35 @@ export function errorTitle(error: AppError, dict: Dict): string {
 /** The keyboard's profile after an error, if the error says. */
 export function activeProfileOf(error: AppError): number | null | undefined {
   return error.detail?.detail === "active_profile_now" ? error.detail.profile : undefined;
+}
+
+/** Why a write is in a key-assignment plan or report (the plan's own fields; any may be absent). */
+export interface WriteReasonFields {
+  commit_trigger: CommitTriggerReasonView | null;
+  resent_unchanged: boolean;
+  resent: ResendReasonView | null;
+  completes_binding?: boolean | undefined;
+  follows_macro_slot_0?: boolean | undefined;
+  clears?: boolean | undefined;
+}
+
+/**
+ * The reasons of one write, in words, from its own fields (never a fixed
+ * sentence): the commit trigger (the Fn keymap after a base keymap or
+ * before advanced keys, sent unchanged or with changes), a macro re-sent
+ * after slot 0, a write that completes a binding, one that empties a slot.
+ */
+export function writeReasonTexts(write: WriteReasonFields, dict: Dict): string[] {
+  const r = dict.flow.writeReasons;
+  const texts: string[] = [];
+  if (write.commit_trigger === "base_keymap") {
+    texts.push(write.resent_unchanged ? r.baseKeymapUnchanged : r.baseKeymapChanged);
+  } else if (write.commit_trigger === "advanced_keys") {
+    texts.push(write.resent_unchanged ? r.advancedKeysUnchanged : r.advancedKeysChanged);
+  }
+  if (write.resent !== null) texts.push(dict.flow.resent[write.resent]);
+  else if (write.follows_macro_slot_0 === true) texts.push(r.followsMacroSlot0);
+  if (write.clears === true) texts.push(r.clears);
+  if (write.completes_binding === true) texts.push(r.completesBinding);
+  return texts;
 }

@@ -1,25 +1,37 @@
-// The tools above the keyboard: selection shortcuts (all, none, invert, same
-// setting, changed keys, WASD, arrows, a row) and what the keys show.
+// The tools above the keyboard of the trigger and dead band tabs: selection
+// shortcuts (all, none, invert, same setting, changed keys, WASD, arrows, a
+// row), what the keys show, and the tab's own tools (the trigger tab's
+// presets).
 
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 
 import { Button } from "../../components/Button";
 import { SegmentedControl } from "../../components/Controls";
 import { ARROWS, invert, onlySelectable, selectAll, WASD, type Selection } from "../../components/keyboard";
 import { useDict } from "../../i18n";
-import type { KeyTriggerView } from "../../ipc/bindings";
-import { ROW_IDS, rowKeys, sameSettingKeys, type RowId, type ShowMode } from "./model";
+import { ROW_IDS, rowKeys, type RowId } from "./model";
+
+/** The "Show on keys" switch of a tab. */
+export interface ShowSwitch<S extends string> {
+  value: S;
+  onChange: (value: S) => void;
+  options: readonly { value: S; label: string }[];
+}
 
 /** Props of {@link Toolbar}. */
-export interface ToolbarProps {
+export interface ToolbarProps<S extends string> {
   selection: Selection;
   onSelect: (next: Set<number>) => void;
-  keys: ReadonlyMap<number, KeyTriggerView>;
   selectable: ReadonlySet<number>;
   /** Keys that differ from the basic setting. */
   changed: ReadonlySet<number>;
-  show: ShowMode;
-  onShow: (show: ShowMode) => void;
+  /** "Same setting": the keys that share a setting with a selected key. */
+  same: (selection: Selection) => Set<number>;
+  /** The tooltip of "Changed". */
+  changedHint: string;
+  show: ShowSwitch<S>;
+  /** The tab's own tools, after the selection tools. */
+  extra?: ReactNode | undefined;
 }
 
 function isRowId(value: string): value is RowId {
@@ -27,7 +39,16 @@ function isRowId(value: string): value is RowId {
 }
 
 /** Selection tools and the "Show on keys" switch. */
-export function Toolbar({ selection, onSelect, keys, selectable, changed, show, onShow }: ToolbarProps) {
+export function Toolbar<S extends string>({
+  selection,
+  onSelect,
+  selectable,
+  changed,
+  same,
+  changedHint,
+  show,
+  extra,
+}: ToolbarProps<S>) {
   const dict = useDict();
   const t = dict.actuation.select;
   const rowId = useId();
@@ -68,7 +89,7 @@ export function Toolbar({ selection, onSelect, keys, selectable, changed, show, 
           disabled={empty}
           title={t.sameHint}
           onClick={() => {
-            onSelect(sameSettingKeys(selection, keys, selectable));
+            onSelect(same(selection));
           }}
         >
           {t.same}
@@ -76,7 +97,7 @@ export function Toolbar({ selection, onSelect, keys, selectable, changed, show, 
         <Button
           size="sm"
           disabled={changed.size === 0}
-          title={t.changedHint}
+          title={changedHint}
           onClick={() => {
             onSelect(onlySelectable(changed, selectable));
           }}
@@ -119,19 +140,17 @@ export function Toolbar({ selection, onSelect, keys, selectable, changed, show, 
           ))}
         </select>
       </div>
+      {extra === undefined ? null : <div className="act-toolbar__extra">{extra}</div>}
       <div className="act-toolbar__show">
         <span className="act-toolbar__label" aria-hidden="true">
           {dict.actuation.show.label}
         </span>
-        <SegmentedControl<ShowMode>
+        <SegmentedControl<S>
           label={dict.actuation.show.label}
           size="sm"
-          value={show}
-          onChange={onShow}
-          options={[
-            { value: "actuation", label: dict.actuation.show.actuation },
-            { value: "rapid_trigger", label: dict.actuation.show.rapidTrigger },
-          ]}
+          value={show.value}
+          onChange={show.onChange}
+          options={show.options}
         />
       </div>
     </div>
