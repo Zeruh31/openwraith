@@ -25,8 +25,8 @@ one profile as a file and show live key depths.
 
 | Works now | Planned |
 |---|---|
-| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | A hardware run of the app's v0.2 (A11-A35) |
-| **Desktop app v0.2 (simulator-tested, not yet run on the keyboard):** Keys page (assignments, macros, advanced keys), trigger presets, dead band, SOCD, live key depth, key colours, profile export and import; the notification-area (tray) icon, start with Windows, notifications, automatic backups, reset detection and recovery, profiles per game, profile names, taking turns with the CLI | Linux and macOS builds of the app; signed installers |
+| **Desktop app v0.1** (Windows): backup and restore, actuation and Rapid Trigger, main light; English and Turkish | The full hardware run of the app's v0.2 (A11-A35) |
+| **Desktop app v0.2 (simulator-tested; a short check on the keyboard, the full run is still to do):** Keys page (assignments, macros, advanced keys), trigger presets, dead band, SOCD, live key depth, key colours, profile export and import; the notification-area (tray) icon, start with Windows, notifications, automatic backups, reset detection and recovery, profiles per game, profile names, taking turns with the CLI | Linux and macOS builds of the app; signed installers |
 | `openwraith list` / `info` / `show`: devices, model, firmware, triggers, lighting, keymap, macros, advanced keys, SOCD (read-only) | The gamepad (analog) mode |
 | `openwraith backup`: lossless backup of the active profile (read-only) | Switch types, side light, polling rate, Win-Lock (no confirmed write command yet) |
 | `openwraith backup --all-profiles`: all four onboard profiles (switches profiles, nothing else) | Other models of the family (W60, W65, W100) |
@@ -47,12 +47,15 @@ keyboard does that OpenWraith had not modelled (writing macro slot 0 empties
 the other macros; SOCD on/off is one setting for all profiles); both are
 handled now, and their re-check on the keyboard (H26, H27) passed on
 2026-10-28. The optional H25 was not run. The desktop app's v0.2 editors
-drive the same library paths; they were tested on the simulator and with
-recorded fixtures only, not yet on the keyboard. The same holds for what
-v0.2 adds around them (the notification-area icon, start with Windows,
-notifications, automatic backups, reset detection and recovery, profiles
-per game, the lock shared with the CLI): it adds no new way to write, and
-its hardware checks (A11-A35) are still to run. The packets use the
+drive the same library paths; they, and what v0.2 adds around them (the
+notification-area icon, start with Windows, notifications, automatic
+backups, reset detection and recovery, profiles per game, the lock shared
+with the CLI; no new way to write), were tested on the simulator and with
+recorded fixtures. On 2026-10-29 a short check on the keyboard passed: the
+live key depth view, a key-colour write and its Undo, a game rule with
+Notepad (profile switched in and back), and start with Windows with Task
+Manager's choice (parts of A12, A13, A26 and A30). The rest of the
+hardware checks A11-A35 is still to run. The packets use the
 command forms the vendor site sent and the keyboard accepted in the
 captures, built the way the site's code builds them; the cases captured in
 sessions 2-3 match byte for byte (tests compare them), and values whose
@@ -78,9 +81,10 @@ for every write. It uses the same library, so every rule under
 Not in this version: the side light, polling rate, switch types and
 calibration, Win-Lock, the gamepad (analog) mode, and mouse or media steps
 in macros (there is no confirmed write command for them yet); Linux and
-macOS builds of the app; signed installers. Version 0.2 has not run on the
-keyboard yet: its editors and its background parts were tested on the
-simulator and with recorded fixtures (hardware checks A11-A35 in
+macOS builds of the app; signed installers. Version 0.2 is a pre-release:
+its editors and its background parts were tested on the simulator and with
+recorded fixtures, and only a short check ran on the keyboard (the hardware
+checks A11-A35 and their results are in
 [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
 
 ### Install (Windows 10 and 11, x64)
@@ -88,8 +92,10 @@ simulator and with recorded fixtures (hardware checks A11-A35 in
 - **Installer.** Run `OpenWraith_0.2.0_x64-setup.exe` (installs for the
   current user without administrator rights; English or Turkish, from
   Windows' language) or `OpenWraith_0.2.0_x64_en-US.msi` (per machine).
-  Build them yourself as described under [Development](#development); they
-  end up in `target\release\bundle\nsis\` and `target\release\bundle\msi\`.
+  Download them from the
+  [Releases](https://github.com/Zeruh31/openwraith/releases) page, or build
+  them yourself as described under [Development](#development); they end up
+  in `target\release\bundle\nsis\` and `target\release\bundle\msi\`.
 - **Not signed yet.** Windows SmartScreen warns on the first start ("Windows
   protected your PC"): choose "More info", then "Run anyway".
 - **WebView2.** Windows 11 includes it. If it is missing, the installer
@@ -488,6 +494,9 @@ alike.
   check of a restore is not interrupted.
 
 ## Build (Windows)
+
+The [Releases](https://github.com/Zeruh31/openwraith/releases) page also
+has the command-line tool as a ready `openwraith.exe`. To build it:
 
 1. Install Rust with [rustup](https://rustup.rs/) (the default
    `x86_64-pc-windows-msvc` toolchain). The MSVC toolchain needs the Visual
@@ -921,8 +930,12 @@ renklerini ve profil dışa/içe aktarmayı; ayrıca bildirim alanı (tepsi)
 simgesini, Windows ile başlatmayı, bildirimleri, otomatik yedekleri,
 sıfırlama algılama ve kurtarmayı, oyuna göre profili, profil adlarını ve
 komut satırı aracıyla sırayla çalışmayı ekler. v0.2 simülatörde ve
-kaydedilmiş senaryolarla sınandı, uygulama üzerinden klavyede henüz
-denenmedi (donanım denetimleri A11-A35). Komut satırı aracının salt okunur
+kaydedilmiş senaryolarla sınandı. 2026-10-29'da klavyede kısa bir deneme
+geçti: canlı tuş derinliği, bir tuş rengi yazması ve Geri al, Not
+Defteri'yle bir oyun kuralı (profile geçiş ve geri dönüş), Windows ile
+başlatma ve Görev Yöneticisi'ndeki seçim (A12, A13, A26 ve A30'un
+bölümleri). A11-A35 donanım denetimlerinin geri kalanı henüz yapılmadı.
+Komut satırı aracının salt okunur
 komutları: `list` (bağlı klavyeler, hiçbiri açılmaz), `info`, `profile`,
 `backup` (aktif profil), `show` (tablo veya `--json`), `monitor` ve
 `restore ... --dry-run`. Klavyeye yazan komutlar: `backup --all-profiles`
@@ -964,19 +977,21 @@ aşağıdaki güvenlik kurallarının hepsi uygulama için de geçerlidir.
 Bu sürümde olmayanlar: yan ışık, polling rate, switch türleri ve
 kalibrasyon, Win-Lock, oyun kumandası (analog) modu ve makrolarda fare ya
 da medya adımları (bunlar için henüz doğrulanmış bir yazma komutu yok);
-uygulamanın Linux ve macOS sürümleri; imzalı kurulum dosyaları. 0.2 sürümü
-klavyede henüz çalıştırılmadı: düzenleyicileri ve arka plan bölümleri
-simülatörde ve kaydedilmiş senaryolarla sınandı (donanım denetimleri
-A11-A35, [docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md)).
+uygulamanın Linux ve macOS sürümleri; imzalı kurulum dosyaları. 0.2 bir
+ön sürümdür: düzenleyicileri ve arka plan bölümleri simülatörde ve
+kaydedilmiş senaryolarla sınandı, klavyede yalnızca kısa bir deneme yapıldı
+(donanım denetimleri A11-A35 ve sonuçları
+[docs/HARDWARE_TESTS.md](docs/HARDWARE_TESTS.md) dosyasında).
 
 **Kurulum (Windows 10 ve 11, x64):**
 
 - `OpenWraith_0.2.0_x64-setup.exe` yalnızca geçerli kullanıcı için, yönetici
   izni istemeden kurar (Windows'un diline göre Türkçe ya da İngilizce);
   `OpenWraith_0.2.0_x64_en-US.msi` bilgisayardaki herkes için kurar. Kurulum
-  dosyalarını aşağıdaki geliştirici komutlarıyla kendiniz üretebilirsiniz;
-  `target\release\bundle\nsis\` ve `target\release\bundle\msi\` klasörlerine
-  yazılırlar.
+  dosyalarını [Releases](https://github.com/Zeruh31/openwraith/releases)
+  sayfasından indirebilir ya da aşağıdaki geliştirici komutlarıyla kendiniz
+  üretebilirsiniz; `target\release\bundle\nsis\` ve
+  `target\release\bundle\msi\` klasörlerine yazılırlar.
 - Kurulum dosyaları henüz imzalı değil. Windows SmartScreen ilk açılışta
   "Windows bilgisayarınızı korudu" uyarısı verir: "Ek bilgi" ve ardından
   "Yine de çalıştır" seçin.
@@ -1402,6 +1417,10 @@ ikisi de bunlara uyar.
   çıktısındaki `note` alanı da bunu belirtir. Esas olan ham baytlardır.
 
 ### Komut satırı aracı
+
+Hazır `openwraith.exe`
+[Releases](https://github.com/Zeruh31/openwraith/releases) sayfasında da
+bulunur.
 
 **Derleme (Windows):** [rustup](https://rustup.rs/) ile Rust'ı kurun (MSVC
 araç zinciri ve Visual Studio Build Tools içindeki "Desktop development with
